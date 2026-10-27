@@ -1134,6 +1134,8 @@ public class UndoTests
 
         public void AppendLines(string path, IEnumerable<string> lines) => inner.AppendLines(path, lines);
 
+        public void SetLastWriteTimeUtc(string path, DateTime utc) => inner.SetLastWriteTimeUtc(path, utc);
+
         public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);
 
         public long GetAvailableFreeSpace(string path) => inner.GetAvailableFreeSpace(path);

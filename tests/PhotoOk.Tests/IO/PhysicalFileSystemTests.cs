@@ -132,6 +132,22 @@ public sealed class PhysicalFileSystemTests : IDisposable
     }
 
     [Fact]
+    public void SetLastWriteTimeUtc_ChangesOnlyTheTime()
+    {
+        var path = P("t.jpg");
+        Write(_fs.CreateNew(path), "content");
+        var time = new DateTime(2020, 5, 6, 7, 8, 9, DateTimeKind.Utc);
+
+        _fs.SetLastWriteTimeUtc(path, time);
+
+        Assert.Equal(time, File.GetLastWriteTimeUtc(path));
+        Assert.Equal(time, _fs.GetFile(path).LastWriteTimeUtc);
+        Assert.Equal("content", File.ReadAllText(path));
+        Assert.Throws<FileNotFoundException>(() => _fs.SetLastWriteTimeUtc(P("none.jpg"), time));
+        Assert.False(File.Exists(P("none.jpg")));
+    }
+
+    [Fact]
     public void AppendLine_WritesUtf8WithoutBom()
     {
         var path = P("log.jsonl");

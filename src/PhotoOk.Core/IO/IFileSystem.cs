@@ -46,6 +46,12 @@ public interface IFileSystem
     /// </summary>
     void AppendLines(string path, IEnumerable<string> lines);
 
+    /// <summary>
+    /// 파일의 마지막 쓰기 시각만 바꾼다(내용은 그대로). 파일이 없으면 <see cref="FileNotFoundException"/>.
+    /// 앱이 만든 파일(검증을 마친 복사 임시 파일)에 원본의 시각을 옮길 때만 쓴다. 원본에는 쓰지 않는다.
+    /// </summary>
+    void SetLastWriteTimeUtc(string path, DateTime utc);
+
     /// <summary>경로가 속한 볼륨의 루트. 예: <c>D:\</c>.</summary>
     string GetVolumeRoot(string path);
 

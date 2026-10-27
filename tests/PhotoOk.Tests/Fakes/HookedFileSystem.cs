@@ -16,6 +16,9 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     /// <summary>덧붙이기 호출마다 (경로, 줄 수), 호출한 순서대로. <see cref="AppendLine"/>은 1줄로 남긴다.</summary>
     public List<(string Path, int Lines)> Appends { get; } = [];
 
+    /// <summary><see cref="SetLastWriteTimeUtc"/>를 부른 경로, 부른 순서대로.</summary>
+    public List<string> TimesSet { get; } = [];
+
     public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
         inner.EnumerateFiles(directory, recursive, onInaccessible);
 
@@ -57,6 +60,12 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
         var list = lines.ToList();
         Appends.Add((path, list.Count));
         inner.AppendLines(path, list);
+    }
+
+    public void SetLastWriteTimeUtc(string path, DateTime utc)
+    {
+        TimesSet.Add(path);
+        inner.SetLastWriteTimeUtc(path, utc);
     }
 
     public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);

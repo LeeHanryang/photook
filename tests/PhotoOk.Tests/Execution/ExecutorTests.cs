@@ -306,6 +306,37 @@ public class ExecutorTests
     }
 
     [Fact]
+    public void Execute_Copy_KeepsSourceLastWriteTime_SetOnTempAfterVerifyBeforeRename()
+    {
+        var taken = new DateTime(2019, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+        var a = Bytes(3000, 23);
+        _fs.AddFile(@"E:\DCIM\a.jpg", a, taken);
+        _fs.NowUtc = Now; // 새로 쓰는 파일의 시각은 원본과 다르다
+        var timeAtRename = (DateTime?)null;
+        _hooked.BeforeMove = (source, _) => timeAtRename = _fs.GetFile(source).LastWriteTimeUtc;
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length)));
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Equal(taken, _fs.GetFile(@"D:\Archive\a.jpg").LastWriteTimeUtc);
+        Assert.Equal(taken, _fs.GetFile(@"E:\DCIM\a.jpg").LastWriteTimeUtc);
+        Assert.Equal(taken, timeAtRename); // 이름을 붙이기 전에 임시 파일에 시각을 넣었다
+        Assert.Equal([@"D:\Archive\a.jpg.photook-tmp"], _hooked.TimesSet);
+    }
+
+    [Fact]
+    public void Execute_Copy_DoesNotSetTime_WhenVerificationFails()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 3000, 24);
+        _fs.CorruptNextWrite();
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length)));
+
+        Assert.Equal(RunOutcome.CompletedWithFailures, result.Outcome);
+        Assert.Empty(_hooked.TimesSet);
+    }
+
+    [Fact]
     public void Execute_WritesJournal_ToBothLocations()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 13);

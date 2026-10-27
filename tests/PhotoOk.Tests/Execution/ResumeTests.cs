@@ -114,9 +114,11 @@ public class ResumeTests
             Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
             Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length));
 
-        // 폴더 준비 2 + 계획 묶음(RunStarted, Planned×3) 2 = 4, op1: Started×2·CreateNew·Write·Move·Completed×2 = 7,
-        // op2: Started×2·CreateNew·Write 1번 = 4 → 15. b의 두 번째 조각을 쓰다 죽는다.
-        _fs.CrashAfter(15);
+        _fs.NowUtc = Now; // 새로 쓰는 파일의 시각(원본은 기본 시각)
+
+        // 폴더 준비 2 + 계획 묶음(RunStarted, Planned×3) 2 = 4, op1: Started×2·CreateNew·Write·시각·Move·Completed×2 = 8,
+        // op2: Started×2·CreateNew·Write 1번 = 4 → 16. b의 두 번째 조각을 쓰다 죽는다.
+        _fs.CrashAfter(16);
         Assert.Throws<SimulatedCrashException>(() => NewExecutor().Execute(plan));
         _fs.ClearFault();
 
@@ -138,6 +140,11 @@ public class ResumeTests
         Assert.Equal(c, _fs.ReadAllBytes(@"D:\Archive\2026\c.jpg"));
         Assert.Equal(b, _fs.ReadAllBytes(@"E:\DCIM\b.jpg"));
         Assert.Empty(TempFiles());
+        foreach (var name in new[] { "a.jpg", "b.jpg", "c.jpg" })
+        {
+            // 이어 하기가 다시 복사한 파일(b)도 원본의 마지막 쓰기 시각을 가진다.
+            Assert.Equal(_fs.GetFile($@"E:\DCIM\{name}").LastWriteTimeUtc, _fs.GetFile($@"D:\Archive\2026\{name}").LastWriteTimeUtc);
+        }
 
         var after = JournalReader.Load(_fs, journal);
         Assert.True(after.Finished);

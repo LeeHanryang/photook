@@ -50,9 +50,12 @@ public sealed class PhysicalEndToEndTests : IDisposable
             [Path.Combine(source, "DSCF0001.JPG")] = TestImages.Jpeg(new DateTime(2026, 10, 14, 11, 0, 0), "FUJIFILM", "X-T5"),
             [Path.Combine(source, "IMG_0002.JPG")] = TestImages.Jpeg(new DateTime(2026, 10, 15, 8, 15, 0), "Canon", "EOS R6"),
         };
+        var fileTime = new DateTime(2026, 10, 14, 12, 0, 0, DateTimeKind.Utc);
         foreach (var (path, content) in originals)
         {
             File.WriteAllBytes(path, content);
+            File.SetLastWriteTimeUtc(path, fileTime); // 지금과 다른 시각이라야 복사본이 원본 시각을 가졌는지 알 수 있다
+            fileTime = fileTime.AddMinutes(7);
         }
 
         var times = originals.Keys.ToDictionary(p => p, File.GetLastWriteTimeUtc, StringComparer.OrdinalIgnoreCase);
@@ -84,6 +87,7 @@ public sealed class PhysicalEndToEndTests : IDisposable
         {
             Assert.True(File.Exists(destination), $"대상이 없습니다: {destination}");
             Assert.Equal(originals[original], File.ReadAllBytes(destination));
+            Assert.Equal(File.GetLastWriteTimeUtc(original), File.GetLastWriteTimeUtc(destination));
         }
 
         Assert.Equal(expected.Keys.Order(StringComparer.OrdinalIgnoreCase), FilesOutsidePhotook(archive));

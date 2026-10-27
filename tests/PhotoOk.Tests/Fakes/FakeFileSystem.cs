@@ -16,7 +16,7 @@ namespace PhotoOk.Tests.Fakes;
 /// <item>검사용 보조(<see cref="ReadAllBytes"/>, <see cref="AllFiles"/>)는 분리된 볼륨의 내용도 본다.</item>
 /// </list>
 /// 변경 작업(<see cref="MutatingOps"/>)은 시도한 횟수로 센다: CreateNew, CreateNew 스트림의 Write 1회마다, Move,
-/// CreateDirectory, RemoveEmptyDirectory, AppendLine, AppendLines(호출 1회). 검증에서 실패하는 시도도 센다.
+/// CreateDirectory, RemoveEmptyDirectory, AppendLine, AppendLines(호출 1회), SetLastWriteTimeUtc. 검증에서 실패하는 시도도 센다.
 /// <see cref="AppendLines"/>는 이 가짜 디스크에서 원자적이다(모의 크래시는 호출 전체의 앞에서만 난다). 실제 디스크에서 묶음 중간에
 /// 끊기는 경우는 기록을 읽는 쪽(RunStarted의 계획 수, 잘린 줄 규칙)이 가려낸다.
 /// </summary>
@@ -526,6 +526,27 @@ public sealed class FakeFileSystem : IFileSystem
             }
 
             file.LastWriteTimeUtc = NowUtc;
+        }
+    }
+
+    public void SetLastWriteTimeUtc(string path, DateTime utc)
+    {
+        lock (_gate)
+        {
+            BeginMutation();
+            var full = Normalize(path);
+            EnsureVolumePresent(full);
+            if (!_files.TryGetValue(full, out var file))
+            {
+                throw new FileNotFoundException($"파일을 찾을 수 없습니다: {path}", path);
+            }
+
+            if (file.Writers > 0)
+            {
+                throw new IOException($"다른 곳에서 쓰는 중인 파일입니다: {path}");
+            }
+
+            file.LastWriteTimeUtc = ToUtc(utc);
         }
     }
 

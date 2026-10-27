@@ -237,8 +237,9 @@ public sealed class Executor(ExecutionContext context)
     }
 
     /// <summary>
-    /// 임시 이름에 쓰면서 원본 해시를 구하고 → 임시 파일을 다시 읽어 비교하고 → 일치할 때만 진짜 이름으로 옮긴다.
-    /// 실패한 임시 파일은 격리 폴더로 치운다.
+    /// 임시 이름에 쓰면서 원본 해시를 구하고 → 임시 파일을 다시 읽어 비교하고 → 일치하면 원본의 마지막 쓰기 시각을 임시 파일에 옮긴 뒤
+    /// 진짜 이름으로 옮긴다(촬영 정보가 없는 파일은 이 시각으로 날짜를 정하므로, 다시 정리해도 같은 날짜에 놓이게 한다).
+    /// 실패한 임시 파일은 격리 폴더로 치운다. 이어 하기가 다시 복사할 때도 이 경로를 쓴다.
     /// </summary>
     private StepResult Copy(Run run, PlannedOperation op)
     {
@@ -259,6 +260,7 @@ public sealed class Executor(ExecutionContext context)
             run.SafeDelete.Quarantine(temp);
         }
 
+        var sourceTime = fs.GetFile(op.Source).LastWriteTimeUtc;
         var createdTemp = false;
         try
         {
@@ -293,6 +295,8 @@ public sealed class Executor(ExecutionContext context)
                 run.SafeDelete.Quarantine(temp);
                 return StepResult.Failed(VerificationFailedMessage);
             }
+
+            fs.SetLastWriteTimeUtc(temp, sourceTime);
 
             try
             {

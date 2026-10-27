@@ -134,6 +134,16 @@ public sealed class PhysicalFileSystem : IFileSystem
         stream.Flush(flushToDisk: true);
     }
 
+    public void SetLastWriteTimeUtc(string path, DateTime utc)
+    {
+        if (!File.Exists(path))
+        {
+            throw new FileNotFoundException($"파일을 찾을 수 없습니다: {path}", path);
+        }
+
+        File.SetLastWriteTimeUtc(path, utc);
+    }
+
     public string GetVolumeRoot(string path)
     {
         var root = Path.GetPathRoot(Path.GetFullPath(path));

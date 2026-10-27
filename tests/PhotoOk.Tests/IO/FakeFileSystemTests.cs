@@ -591,6 +591,32 @@ public sealed class FakeFileSystemTests
     }
 
     [Fact]
+    public void SetLastWriteTimeUtc_ChangesOnlyTheTime_AndCountsAsMutatingOp()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile(@"D:\a.jpg", [1, 2, 3]);
+        var before = fs.MutatingOps;
+        var time = new DateTime(2020, 5, 6, 7, 8, 9, DateTimeKind.Utc);
+
+        fs.SetLastWriteTimeUtc(@"D:\a.jpg", time);
+
+        Assert.Equal(1, fs.MutatingOps - before);
+        Assert.Equal(time, fs.GetFile(@"D:\a.jpg").LastWriteTimeUtc);
+        Assert.Equal(B("\u0001\u0002\u0003"), fs.ReadAllBytes(@"D:\a.jpg"));
+    }
+
+    [Fact]
+    public void SetLastWriteTimeUtc_Throws_WhenMissing_OrOpenForWriting()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddDirectory(@"D:\");
+
+        Assert.Throws<FileNotFoundException>(() => fs.SetLastWriteTimeUtc(@"D:\none.jpg", DateTime.UtcNow));
+        using var writing = fs.CreateNew(@"D:\w.jpg");
+        Assert.Throws<IOException>(() => fs.SetLastWriteTimeUtc(@"D:\w.jpg", DateTime.UtcNow));
+    }
+
+    [Fact]
     public void AppendLine_Throws_WhenParentDirectoryMissing()
     {
         var fs = new FakeFileSystem();
