@@ -79,6 +79,18 @@ public class PresetSerializerTests
     }
 
     [Fact]
+    public void Deserialize_Throws_OnUnknownTokenInPreset()
+    {
+        var preset = new Preset("잘못된 토큰", TimeOnly.MinValue,
+            [new LayoutBranch("기본", BranchCondition.Always, [new LevelTemplate("{연도}"), new LevelTemplate("{분류}")])],
+            [], new Dictionary<string, IReadOnlyList<string>>());
+        var json = PresetSerializer.Serialize(preset);
+
+        var ex = Assert.Throws<PresetException>(() => PresetSerializer.Deserialize(json));
+        Assert.Contains("분류", ex.Message);
+    }
+
+    [Fact]
     public void Deserialize_Throws_PresetException_OnBrokenJson()
     {
         Assert.Throws<PresetException>(() => PresetSerializer.Deserialize("{ not json"));

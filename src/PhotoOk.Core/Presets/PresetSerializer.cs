@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using PhotoOk.Core.Layout;
 
 namespace PhotoOk.Core.Presets;
 
@@ -53,6 +54,23 @@ public static class PresetSerializer
         if (preset.DeviceAliases is null || preset.FormatGroups is null)
         {
             throw new PresetException("기기 별칭 또는 포맷 묶음이 지정되어 있지 않습니다");
+        }
+
+        foreach (var level in preset.Branches.SelectMany(branch => branch.Levels))
+        {
+            if (level?.Template is null)
+            {
+                throw new PresetException("폴더 단계의 템플릿이 지정되어 있지 않습니다");
+            }
+
+            try
+            {
+                PathTemplate.Parse(level.Template);
+            }
+            catch (TemplateException ex)
+            {
+                throw new PresetException(ex.Message);
+            }
         }
     }
 }

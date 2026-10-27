@@ -1,0 +1,123 @@
+using System.Collections.Concurrent;
+using System.Globalization;
+using System.Text;
+using PhotoOk.Core.Metadata;
+using PhotoOk.Core.Planning;
+using PhotoOk.Core.Presets;
+using PhotoOk.Core.Scanning;
+using PhotoOk.Core.Sessions;
+
+namespace PhotoOk.Core.Layout;
+
+public sealed record LayoutInput(Session Session, FileGroup Group, IReadOnlyList<ReviewReason> Reasons, TimeZoneInfo Zone);
+
+/// <summary>프리셋의 폴더 템플릿을 파일 그룹마다 실제 상대 폴더로 바꾼다.</summary>
+public sealed class LayoutRenderer(Preset preset)
+{
+    private readonly DeviceAliasResolver _devices = new(preset.DeviceAliases);
+    private readonly ConcurrentDictionary<string, PathTemplate> _templates = new(StringComparer.Ordinal);
+
+    /// <summary>위에서부터 <see cref="BranchCondition.Always"/>이거나 (<see cref="BranchCondition.NeedsReview"/>이고 사유가 있는) 첫 분기.</summary>
+    public LayoutBranch SelectBranch(IReadOnlyList<ReviewReason> reasons)
+    {
+        foreach (var branch in preset.Branches)
+        {
+            if (branch.When == BranchCondition.Always
+                || (branch.When == BranchCondition.NeedsReview && reasons.Count > 0))
+            {
+                return branch;
+            }
+        }
+
+        throw new InvalidOperationException("조건에 맞는 분기가 없습니다");
+    }
+
+    /// <summary>아카이브 루트 기준 상대 폴더. 구분자는 <c>\</c>.</summary>
+    public string RenderDirectory(LayoutInput input)
+    {
+        var levels = new List<string>();
+        foreach (var level in SelectBranch(input.Reasons).Levels)
+        {
+            var template = _templates.GetOrAdd(level.Template, PathTemplate.Parse);
+            var rendered = RenderLevel(template, input);
+            if (rendered is null)
+            {
+                if (level.WhenEmpty == EmptyValue.Replace && !string.IsNullOrEmpty(level.Replacement))
+                {
+                    levels.Add(PathSanitizer.SanitizeSegment(level.Replacement));
+                }
+
+                continue;
+            }
+
+            levels.Add(PathSanitizer.SanitizeSegment(rendered));
+        }
+
+        return string.Join('\\', levels);
+    }
+
+    /// <summary>단계의 모든 토큰이 빈 값이면 null. 토큰이 하나도 없는 단계는 항상 글자 그대로.</summary>
+    private string? RenderLevel(PathTemplate template, LayoutInput input)
+    {
+        var text = new StringBuilder();
+        var hasToken = false;
+        var anyValue = false;
+        foreach (var part in template.Parts)
+        {
+            if (part.Token is null)
+            {
+                text.Append(part.Literal);
+                continue;
+            }
+
+            hasToken = true;
+            var value = TokenValue(part, input);
+            if (!string.IsNullOrEmpty(value))
+            {
+                anyValue = true;
+                text.Append(value);
+            }
+        }
+
+        return hasToken && !anyValue ? null : text.ToString();
+    }
+
+    private string TokenValue(TemplatePart part, LayoutInput input)
+    {
+        var primary = input.Group.Primary;
+        var culture = CultureInfo.InvariantCulture;
+        switch (part.Token)
+        {
+            case "연도": return ShootDay(input).ToString(part.Format ?? "yyyy", culture);
+            case "월": return ShootDay(input).ToString(part.Format ?? "MM", culture);
+            case "일": return ShootDay(input).ToString(part.Format ?? "dd", culture);
+            case "날짜": return ShootDay(input).ToString(part.Format ?? "yyyy-MM-dd", culture);
+            case "기간": return PeriodFormatter.Format(input.Session.Start, input.Session.End);
+            case "기기": return _devices.Resolve(primary) ?? "";
+            case "제조사": return primary.CameraMake?.Trim() ?? "";
+            case "모델": return primary.CameraModel?.Trim() ?? "";
+            case "포맷": return FormatGroupName(primary);
+            case "확장자": return Path.GetExtension(primary.Path).TrimStart('.').ToUpperInvariant();
+            case "원래폴더": return Path.GetFileName(Path.GetDirectoryName(primary.Path)) ?? "";
+            case "사유": return string.Join('·', input.Reasons.Select(ReviewReasonText.Label));
+            default: throw new InvalidOperationException($"알 수 없는 토큰: {{{part.Token}}}");
+        }
+    }
+
+    private DateOnly ShootDay(LayoutInput input) =>
+        ShootDate.ShootDay(ShootDate.EffectiveTime(input.Group.Primary, input.Zone), preset.DayStart);
+
+    private string FormatGroupName(PhotoInfo primary)
+    {
+        var extension = Path.GetExtension(primary.Path);
+        foreach (var (name, extensions) in preset.FormatGroups)
+        {
+            if (extensions.Any(e => string.Equals(e, extension, StringComparison.OrdinalIgnoreCase)))
+            {
+                return name;
+            }
+        }
+
+        return "";
+    }
+}
