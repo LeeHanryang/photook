@@ -12,12 +12,14 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
 {
     private const string BusyCloseTitle = "실행 중입니다";
     private const string BusyCloseMessage = "지금 파일까지 마치고 멈춘 뒤 닫을까요?";
+    private const string StoppingCloseTitle = "멈추는 중입니다";
+    private const string StoppingCloseMessage = "지금 파일을 마치는 중입니다. 그래도 바로 닫을까요? 기록이 남아 있어 나중에 이어 하거나 되돌릴 수 있습니다.";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsBusy))]
     private ObservableObject? current;
 
-    /// <summary>닫기를 승인받고 멈추기를 기다리는 화면. 같은 요청에 두 번 묻지 않는다.</summary>
+    /// <summary>닫기를 승인받고 멈추기를 기다리는 화면.</summary>
     private IBusyViewModel? _closingAfter;
 
     /// <summary>지금 화면이 <see cref="IBusyViewModel"/>이고 작업 중이면 true.</summary>
@@ -35,6 +37,8 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
     /// <summary>
     /// 창을 닫아도 되면 true. 작업 중이면 사용자에게 묻고, 예면 지금 화면에 멈추기를 요청한 뒤 false를 돌려준다
     /// (멈추면 <see cref="CloseRequested"/>). 아니오면 작업을 그대로 두고 false.
+    /// 멈추기를 기다리는 중에 다시 닫으려 하면 바로 닫을지 묻는다(예면 true). 멈추지 않는 화면이 창을 붙잡지 않게 하기 위해서다.
+    /// 예외를 밖으로 던지지 않는다.
     /// </summary>
     public bool ConfirmClose()
     {
@@ -45,8 +49,8 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
 
         if (ReferenceEquals(_closingAfter, busy))
         {
-            // 이미 멈추는 중이다. 다시 묻지 않고 멈출 때까지 기다린다.
-            return false;
+            // 이미 멈추는 중이다. 기다릴지, 기록을 믿고 바로 닫을지 사용자가 정한다.
+            return dialogs.Confirm(StoppingCloseTitle, StoppingCloseMessage);
         }
 
         if (!dialogs.Confirm(BusyCloseTitle, BusyCloseMessage))
@@ -57,7 +61,17 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
         // Cancel 안에서 바로 멈출 수도 있으므로 구독을 먼저 한다.
         _closingAfter = busy;
         busy.BusyEnded += OnClosingScreenStopped;
-        busy.Cancel();
+        try
+        {
+            busy.Cancel();
+        }
+        catch (Exception)
+        {
+            // 멈추기 요청이 실패했다. 멈추는 중으로 남겨 두면 창이 닫히지 않으므로 처음 상태로 돌린다.
+            busy.BusyEnded -= OnClosingScreenStopped;
+            _closingAfter = null;
+        }
+
         return false;
     }
 

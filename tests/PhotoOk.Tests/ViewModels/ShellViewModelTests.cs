@@ -10,6 +10,8 @@ public class ShellViewModelTests
 {
     private const string BusyTitle = "실행 중입니다";
     private const string BusyMessage = "지금 파일까지 마치고 멈춘 뒤 닫을까요?";
+    private const string StoppingTitle = "멈추는 중입니다";
+    private const string StoppingMessage = "지금 파일을 마치는 중입니다. 그래도 바로 닫을까요? 기록이 남아 있어 나중에 이어 하거나 되돌릴 수 있습니다.";
 
     private readonly FakeDialogService _dialogs = new();
 
@@ -29,7 +31,16 @@ public class ShellViewModelTests
 
         public event EventHandler? BusyEnded;
 
-        public void Cancel() => CancelCount++;
+        public bool ThrowOnCancel { get; set; }
+
+        public void Cancel()
+        {
+            CancelCount++;
+            if (ThrowOnCancel)
+            {
+                throw new InvalidOperationException("모의 취소 실패");
+            }
+        }
 
         /// <summary>작업이 멈춘 상황을 흉내 낸다.</summary>
         public void EndBusy()
@@ -120,8 +131,10 @@ public class ShellViewModelTests
         Assert.Equal(0, closeRequests);
     }
 
-    [Fact]
-    public void Closing_AgainWhileStopping_DoesNotAskTwice()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Closing_AgainWhileStopping_AsksToCloseNow(bool closeNow)
     {
         var shell = new ShellViewModel(_dialogs);
         var screen = new FakeBusyScreen();
@@ -129,15 +142,45 @@ public class ShellViewModelTests
         var closeRequests = 0;
         shell.CloseRequested += (_, _) => closeRequests++;
         _dialogs.ConfirmAnswers.Enqueue(true);
-
-        Assert.False(shell.ConfirmClose());
         Assert.False(shell.ConfirmClose());
 
-        Assert.Single(_dialogs.Confirms);
+        // 멈추기를 기다리는 동안 다시 닫으려 하면 바로 닫을지 묻는다(멈추지 않는 화면이 창을 붙잡지 않게).
+        _dialogs.ConfirmAnswers.Enqueue(closeNow);
+        Assert.Equal(closeNow, shell.ConfirmClose());
+
+        Assert.Equal([(BusyTitle, BusyMessage), (StoppingTitle, StoppingMessage)], _dialogs.Confirms);
+        Assert.Equal(1, screen.CancelCount);
+        Assert.Equal(0, closeRequests);
+
+        if (!closeNow)
+        {
+            // 기다리기로 했으면 멈춘 뒤 그대로 닫힌다.
+            screen.EndBusy();
+            Assert.Equal(1, closeRequests);
+        }
+    }
+
+    [Fact]
+    public void Closing_WhenCancelThrows_DoesNotThrow_AndResetsState()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        var screen = new FakeBusyScreen { ThrowOnCancel = true };
+        shell.Navigate(screen);
+        var closeRequests = 0;
+        shell.CloseRequested += (_, _) => closeRequests++;
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        Assert.False(shell.ConfirmClose());
         Assert.Equal(1, screen.CancelCount);
 
+        // 멈추는 중으로 남지 않았으므로 다음 닫기 시도는 처음 질문을 다시 한다.
+        _dialogs.ConfirmAnswers.Enqueue(false);
+        Assert.False(shell.ConfirmClose());
+        Assert.Equal([(BusyTitle, BusyMessage), (BusyTitle, BusyMessage)], _dialogs.Confirms);
+
+        // 구독도 풀렸으므로 나중에 작업이 끝나도 창을 닫지 않는다.
         screen.EndBusy();
-        Assert.Equal(1, closeRequests);
+        Assert.Equal(0, closeRequests);
     }
 
     [Fact]
