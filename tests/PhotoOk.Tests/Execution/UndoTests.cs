@@ -684,24 +684,30 @@ public class UndoTests
 
         var first = NewUndoer().Undo(journal);
 
-        Assert.Equal(0, first.Undone);
-        var skip = Assert.Single(first.Skipped);
-        Assert.Equal("op3", skip.OpId);
-        Assert.StartsWith("파일 작업 중 오류가 발생했습니다", skip.Reason);
-        Assert.Equal([JournalEvent.UndoStarted], Entries(journal).Skip(countBefore).Select(e => e.Event).ToList());
-        Assert.Equal(pa, _fs.ReadAllBytes(Day14)); // op2·op1은 건드리지 않았다
-        Assert.Equal(pb, _fs.ReadAllBytes(TempB));
+        // op3에서 멈춘다. op1은 건드리지 않는다. 다만 마무리 단계가 임시 이름(TempB)의 B는 꺼낸다: 원래 자리(14일)에 A가 있으므로 옆 이름으로.
+        const string RescuedB = @"D:\Archive\2026\14\P_1.JPG";
+        Assert.Equal(1, first.Undone);
+        Assert.Equal(2, first.Skipped.Count);
+        Assert.Equal("op3", first.Skipped[0].OpId);
+        Assert.StartsWith("파일 작업 중 오류가 발생했습니다", first.Skipped[0].Reason);
+        Assert.Equal(new UndoSkip("op2", TempB, RenamedBack + RescuedB), first.Skipped[1]);
+        Assert.Equal([JournalEvent.UndoStarted, JournalEvent.Undone],
+            Entries(journal).Skip(countBefore).Select(e => e.Event).ToList());
+        Assert.Equal(pa, _fs.ReadAllBytes(Day14)); // op3·op1은 건드리지 않았다
+        Assert.Equal(pb, _fs.ReadAllBytes(RescuedB));
+        Assert.False(_fs.FileExists(TempB));
         var state = JournalReader.Load(_fs, journal);
         Assert.Equal(OpStatus.Completed, StateOf(state, "op1").Status);
-        Assert.Equal(OpStatus.Completed, StateOf(state, "op2").Status);
+        Assert.Equal(OpStatus.Undone, StateOf(state, "op2").Status);
 
         _hooked.BeforeMove = null; // 뷰어를 닫았다
         var second = NewUndoer().Undo(journal);
 
-        Assert.Equal(3, second.Undone);
+        Assert.Equal(2, second.Undone);
         Assert.Empty(second.Skipped);
         Assert.Equal(pa, _fs.ReadAllBytes(Day15));
-        Assert.Equal(pb, _fs.ReadAllBytes(Day14));
+        Assert.False(_fs.FileExists(Day14)); // B는 이미 옆 이름으로 돌아와 있다(보이는 이름, 잃지 않는다)
+        Assert.Equal(pb, _fs.ReadAllBytes(RescuedB));
         Assert.DoesNotContain(_fs.AllFiles(), p => p.Contains(".photook-tmp", StringComparison.OrdinalIgnoreCase));
     }
 
@@ -971,6 +977,184 @@ public class UndoTests
                 new UndoSkip("op1", Temp, MovedMissing),
             ],
             undo.Skipped);
+    }
+
+    // ------------------------------------------------------------------
+    // 마무리 단계: 되돌리기가 어떤 이유로 끝나든 임시 이름의 파일을 꺼낸다
+    // ------------------------------------------------------------------
+
+    private const string RenamedBack = "원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: ";
+
+    private (PlannedOperation FirstLeg, PlannedOperation SecondLeg, PlannedOperation Copy) SwapOps(Plan plan)
+    {
+        var firstLeg = plan.Operations.Single(o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
+        var secondLeg = plan.Operations.Single(o => o.Kind == OperationKind.Move && o.Source == firstLeg.Destination);
+        var copy = plan.Operations.Single(o => o.Kind == OperationKind.Copy);
+        return (firstLeg, secondLeg, copy);
+    }
+
+    [Fact]
+    public void Undo_FinalizerRescuesSwapTemp_WhenSourceFailsMidRead()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var (firstLeg, secondLeg, copy) = SwapOps(plan);
+        var restored = $@"{Day14Dir}\P_1.JPG";
+        // SD 카드의 원본이 열리기는 하지만 읽는 도중 실패한다(불량 섹터). 미리 확인을 통과한 뒤, 두 번째 다리를 돌려놓은 직후에 생겼다.
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (string.Equals(source, secondLeg.Destination, StringComparison.OrdinalIgnoreCase))
+            {
+                _fs.FailReadsAfterOpen(@"E:\DCIM\P.JPG");
+            }
+        };
+
+        var first = NewUndoer().Undo(run.JournalPath!);
+
+        // 복사본을 남기느라 멈췄지만, 멈추기 전에 임시 이름으로 옮긴 B는 보이는 이름으로 꺼내야 한다.
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG")); // 복사본은 남는다
+        Assert.False(_fs.FileExists($@"{Day15Dir}\P.JPG"));
+        Assert.Contains(new UndoSkip(copy.Id, copy.Destination, KeptNoSource), first.Skipped);
+        Assert.Contains(new UndoSkip(firstLeg.Id, firstLeg.Destination, RenamedBack + restored), first.Skipped);
+        var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.Equal(OpStatus.Undone, StateOf(state, secondLeg.Id).Status);
+        Assert.Equal(OpStatus.Undone, StateOf(state, firstLeg.Id).Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
+        Assert.Equal(restored, Entries(run.JournalPath!).Single(e => e.Event == JournalEvent.Undone && e.OpId == firstLeg.Id).Destination);
+
+        // 원본을 여전히 읽을 수 없어도 다시 실행하면 해로운 변화가 없고 임시 이름도 생기지 않는다.
+        var again = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal([new UndoSkip(copy.Id, copy.Destination, KeptNoSource)], again.Skipped);
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.False(_fs.DirectoryExists(Day15Dir)); // 비어 있는 15일 폴더만 치운다
+        Assert.Equal(1, again.Undone);
+    }
+
+    [Fact]
+    public void Undo_PreScan_BlocksBeforeStart_WhenSourceFailsMidRead()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var (firstLeg, _, copy) = SwapOps(plan);
+        _fs.FailReadsAfterOpen(@"E:\DCIM\P.JPG"); // 열리지만 읽다가 실패하는 원본
+        var journalBefore = _fs.ReadAllBytes(run.JournalPath!);
+        var opsBefore = _fs.MutatingOps;
+
+        var first = NewUndoer().Undo(run.JournalPath!);
+
+        // 미리 확인도 루프처럼 원본을 끝까지 읽어 본다. 못 읽으면 파일을 하나도 건드리기 전에 멈춘다.
+        Assert.Equal(0, first.Undone);
+        Assert.Equal([new UndoSkip(copy.Id, copy.Destination, KeptNoSource)], first.Skipped);
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes($@"{Day15Dir}\P.JPG"));
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.Equal(journalBefore, _fs.ReadAllBytes(run.JournalPath!));
+        Assert.False(JournalReader.Load(_fs, run.JournalPath!).UndoStarted);
+
+        _fs.ClearFault();
+        var second = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(second.Skipped);
+        Assert.Equal(plan.Operations.Count, second.Undone);
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.Equal(OpStatus.Undone, StateOf(JournalReader.Load(_fs, run.JournalPath!), firstLeg.Id).Status);
+    }
+
+    [Fact]
+    public void Undo_FinalizerRescuesSwapTemp_WhenPersistentIoErrorStopsPass()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var (firstLeg, secondLeg, copy) = SwapOps(plan);
+        var restored = $@"{Day14Dir}\P_1.JPG";
+        _fs.FailReadsOf(copy.Destination); // 복사본을 읽을 때마다 입출력 오류가 난다(불량 섹터·접근 거부)
+
+        var first = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));
+        Assert.Equal(pa, _fs.ReadAllBytes(copy.Destination));
+        var blocked = Assert.Single(first.Skipped, s => s.OpId == copy.Id);
+        Assert.StartsWith("파일 작업 중 오류가 발생했습니다", blocked.Reason);
+        Assert.Contains(new UndoSkip(firstLeg.Id, firstLeg.Destination, RenamedBack + restored), first.Skipped);
+        var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.Equal(OpStatus.Undone, StateOf(state, secondLeg.Id).Status);
+        Assert.Equal(OpStatus.Undone, StateOf(state, firstLeg.Id).Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
+
+        // 오류가 계속돼도 다시 실행하면 임시 이름이 생기지 않는다.
+        var again = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(0, again.Undone);
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));
+        Assert.Equal(pa, _fs.ReadAllBytes(copy.Destination));
+    }
+
+    [Fact]
+    public void Undo_FinalizerRunsAfterCancellation()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var (firstLeg, secondLeg, copy) = SwapOps(plan);
+        var restored = $@"{Day14Dir}\P_1.JPG";
+        using var cts = new CancellationTokenSource();
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (string.Equals(source, secondLeg.Destination, StringComparison.OrdinalIgnoreCase))
+            {
+                cts.Cancel(); // 두 번째 다리를 돌려놓은 직후 사용자가 취소했다
+            }
+        };
+
+        var result = NewUndoer().Undo(run.JournalPath!, cts.Token);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));            // 복사본이 원래 자리에 있으므로 옆 이름으로
+        Assert.Equal(pa, _fs.ReadAllBytes(copy.Destination));   // 복사는 처리하지 않았다
+        Assert.Equal(2, result.Undone);
+        Assert.Equal([new UndoSkip(firstLeg.Id, firstLeg.Destination, RenamedBack + restored)], result.Skipped);
+        var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.Equal(OpStatus.Undone, StateOf(state, secondLeg.Id).Status);
+        Assert.Equal(OpStatus.Undone, StateOf(state, firstLeg.Id).Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
+    }
+
+    [Theory]
+    [InlineData(JournalEvent.Skipped)] // 건너뛴 작업
+    [InlineData(null)]                 // 시작하지 않은 작업(Pending)
+    public void Undo_PreScan_DoesNotBlock_ForSkippedHolder(JournalEvent? holderEvent)
+    {
+        // 복사본 자리를 원본으로 쓰는 이동이 있지만 실행되지 않았다(Skipped·Pending). 그 자리를 쥐고 있는 것이 아니므로 막지 않는다.
+        const string Spot = @"D:\Archive\2026\14\P.JPG";
+        var copied = AddFile(@"E:\DCIM\P.JPG", 100, 54);
+        _fs.AddFile(Spot, copied);
+        var ops = new[]
+        {
+            Copy("op1", @"E:\DCIM\P.JPG", Spot, copied.Length),
+            Move("op2", Spot, @"D:\Archive\2026\15\P.JPG", copied.Length),
+        };
+        var events = new List<(string, JournalEvent, string?)>
+        {
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, Hash(Spot)),
+        };
+        if (holderEvent is { } ev)
+        {
+            events.Add(("op2", ev, null));
+        }
+
+        var journal = WriteJournal(ops, events.ToArray());
+        _fs.RemoveVolume(@"E:\");
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal(0, result.Undone);
+        Assert.Equal([new UndoSkip("op1", Spot, KeptNoSource)], result.Skipped); // 멈추지 않고 복사본만 남긴다
+        Assert.True(JournalReader.Load(_fs, journal).UndoStarted);
+        Assert.Equal(copied, _fs.ReadAllBytes(Spot));
     }
 
     [Fact]

@@ -31,6 +31,8 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이나 폴더가 있으면
 /// 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>…)으로 돌려놓고 Undone으로 기록하며, 결과에 그 경로를 알린다.
 /// 이 실행의 자리 바꾸기 임시 경로에 있는 파일은 크기가 달라졌어도 항상 꺼낸다.
+/// 마무리 단계: UndoStarted를 쓴 뒤라면 되돌리기가 어떤 이유로 끝나든(끝까지 처리, 멈춤, 취소) 자리 바꾸기 임시 경로에 남은 파일을
+/// 모두 꺼낸다(<see cref="RescueTempMoves"/>). 보관 드라이브가 없을 때만 건너뛴다.
 /// 그런 사유가 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다(남긴 복사본 때문에 비어 있지 않을 수 있다).
 /// 보관 드라이브가 없으면 아무것도 쓰지 않고 그 사유 하나만 돌려준다. 받은 기록 파일 자체를 읽을 수 없으면 예외가 그대로 나간다.
 /// 기록을 남길 수 없으면 <see cref="JournalUnavailableException"/>.
@@ -48,6 +50,7 @@ public sealed class Undoer(ExecutionContext context)
     internal const string UnknownFolderMessage = "만들었는지 알 수 없는 폴더라 그대로 둡니다";
     internal const string RenamedBackMessage = "원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: ";
     internal const string SizeChangedRestoredMessage = "크기가 달라졌지만 숨겨지지 않도록 원래 자리로 되돌렸습니다: ";
+    internal const string RescueFailedMessage = "임시 이름의 파일을 꺼내지 못했습니다: ";
 
     public UndoResult Undo(string journalPath, CancellationToken ct = default)
     {
@@ -122,7 +125,66 @@ public sealed class Undoer(ExecutionContext context)
             }
         }
 
+        // 어떤 이유로 끝났든(끝까지 처리, 멈춤, 취소) 임시 이름에 남은 사진은 꺼낸다. 취소 토큰은 보지 않는다.
+        RescueTempMoves(run, pending);
+
         return new UndoResult(run.Undone, run.Skipped.ToList());
+    }
+
+    /// <summary>
+    /// 마무리 단계. 이 실행의 자리 바꾸기 임시 경로(<see cref="IsRunTempMove"/>)에 아직 파일이 있고 그 작업이 이번에 기록되지 않았다면,
+    /// 원래 자리가 비어 있으면 그리로, 아니면 옆의 첫 빈 이름으로 옮기고 Undone으로 기록한다(크기는 보지 않는다).
+    /// 두 번째 다리를 돌려놓은 뒤 멈추면 사진이 첫 다리의 임시 이름에 있는데, 멈춘 원인(읽을 수 없는 원본, 계속되는 입출력 오류)이
+    /// 그대로면 다음 되돌리기도 같은 자리에서 멈춰 첫 다리까지 오지 못하기 때문이다.
+    /// 보관 드라이브가 없으면 아무것도 할 수 없으므로 건너뛴다. 꺼내는 이동이 실패하면 그 파일은 두고 알린 뒤 다음 파일로 넘어간다.
+    /// </summary>
+    private void RescueTempMoves(UndoRun run, IEnumerable<OpState> pending)
+    {
+        var fs = context.FileSystem;
+        if (!IsVolumePresent(run.ArchiveRoot))
+        {
+            return;
+        }
+
+        foreach (var state in pending)
+        {
+            var op = state.Operation;
+            if (run.Resolved.Contains(op.Id) || !IsRunTempMove(op) || !fs.FileExists(op.Destination))
+            {
+                continue;
+            }
+
+            Outcome outcome;
+            try
+            {
+                outcome = RescueRunTemp(op);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                run.Skipped.Add(new UndoSkip(op.Id, op.Destination, RescueFailedMessage + op.Destination));
+                continue;
+            }
+
+            Apply(run, op, outcome);
+        }
+    }
+
+    /// <summary>임시 경로의 파일을 원래 자리가 비어 있으면 그리로, 파일이나 폴더가 있으면 옆의 첫 빈 이름으로 옮긴다.</summary>
+    private Outcome RescueRunTemp(PlannedOperation op)
+    {
+        var fs = context.FileSystem;
+        if (fs.FileExists(op.Source!) || fs.DirectoryExists(op.Source!))
+        {
+            return RestoreBesideOriginal(op);
+        }
+
+        if (fs.GetFile(op.Destination).Length != op.Length)
+        {
+            return MoveBackDespiteSize(op);
+        }
+
+        MoveBack(op);
+        return Outcome.Undone(op.Source);
     }
 
     // ------------------------------------------------------------------
@@ -387,7 +449,8 @@ public sealed class Undoer(ExecutionContext context)
     /// 시작 전 미리 확인: 이번 되돌리기가 처리할 복사 중, 원본을 확인할 수 없어(드라이브 없음·읽기 불가) 남겨야 하는데 그 복사본 자리가
     /// 아직 되돌리지 않은 다른 작업의 원래 자리인 것. 있으면 그 복사의 사유를 돌려주고, 되돌리기는 아무것도 쓰지 않고 멈춰야 한다.
     /// 루프에서 <see cref="KeepCopyForNow"/>가 막는 조건과 같게 본다: 복사본이 있고, Completed면 기록한 해시 그대로여야 한다
-    /// (복사본을 읽을 수 없으면 그대로인 것으로 보고 막는 쪽을 택한다). 아무 파일도 바꾸지 않는다.
+    /// (복사본을 읽을 수 없으면 그대로인 것으로 보고 막는 쪽을 택한다). 원본은 루프와 같은 경로(<see cref="CheckSource"/>, 끝까지 읽는
+    /// 해시)로 확인한다. 열리기만 하고 읽다가 실패하는 원본(불량 섹터)도 여기서 잡아야 한다. 아무 파일도 바꾸지 않는다.
     /// </summary>
     private UndoSkip? FindKeptCopyHoldingOpenSpot(UndoRun run, IEnumerable<OpState> pending)
     {
@@ -405,7 +468,7 @@ public sealed class Undoer(ExecutionContext context)
                 continue;
             }
 
-            if (IsSourceUnavailable(op.Source) && run.HoldsOpenSpot(op))
+            if (CheckSource(op, state.Hash ?? string.Empty) == SourceState.Unavailable && run.HoldsOpenSpot(op))
             {
                 return new UndoSkip(op.Id, op.Destination, KeptCopyReason(op));
             }
@@ -425,34 +488,6 @@ public sealed class Undoer(ExecutionContext context)
         try
         {
             return string.Equals(context.Hasher.Hash(op.Destination), hash, StringComparison.Ordinal);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            return true;
-        }
-    }
-
-    /// <summary>
-    /// 원본 드라이브가 없거나, 원본 파일이 있는데 열 수 없는지(<see cref="SourceState.Unavailable"/>와 같은 조건).
-    /// 원본이 없는 것은 해당하지 않는다(그 복사본은 최종적으로 남기고, 막힌 자리는 이름을 바꿔 되돌리기로 푼다). 파일은 열어 보기만 한다.
-    /// </summary>
-    private bool IsSourceUnavailable(string source)
-    {
-        var fs = context.FileSystem;
-        if (!IsVolumePresent(source))
-        {
-            return true;
-        }
-
-        if (!fs.FileExists(source))
-        {
-            return false;
-        }
-
-        try
-        {
-            using var stream = fs.OpenRead(source);
-            return false;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -576,13 +611,16 @@ public sealed class Undoer(ExecutionContext context)
         /// <summary>이번 되돌리기에서 Undone·UndoSkipped로 기록한 작업.</summary>
         public HashSet<string> Resolved { get; } = new(StringComparer.Ordinal);
 
-        /// <summary>복사본 자리가 아직 Undone·UndoSkipped가 아닌 다른 작업의 원래 자리(원본 경로)인지.</summary>
+        /// <summary>
+        /// 복사본 자리가 아직 되돌리지 않은(Completed·Started·Failed이고 이번에 기록하지 않은) 다른 작업의 원래 자리(원본 경로)인지.
+        /// 실행하지 않은 작업(Pending·Skipped)은 그 자리를 쥐고 있지 않다.
+        /// </summary>
         public bool HoldsOpenSpot(PlannedOperation copy)
         {
             var spot = Path.GetFullPath(copy.Destination);
             return operations.Any(o => o.Operation.Id != copy.Id
                 && o.Operation.Source is not null
-                && o.Status is not (OpStatus.Undone or OpStatus.UndoSkipped)
+                && o.Status is (OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
                 && !Resolved.Contains(o.Operation.Id)
                 && string.Equals(Path.GetFullPath(o.Operation.Source), spot, StringComparison.OrdinalIgnoreCase));
         }

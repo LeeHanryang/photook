@@ -29,6 +29,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly HashSet<string> _removedVolumes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, long> _freeSpace = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReads = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IHandle> _handles = new();
     private int? _crashAtOps;
     private bool _corruptNextWrite;
@@ -137,13 +138,14 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
-    /// <summary>크래시 예약, <see cref="FailReadsOf"/>, <see cref="CorruptNextWrite"/>를 모두 해제한다. (분리된 볼륨은 <see cref="RestoreVolume"/>으로 되돌린다.)</summary>
+    /// <summary>크래시 예약, <see cref="FailReadsOf"/>, <see cref="FailReadsAfterOpen"/>, <see cref="CorruptNextWrite"/>를 모두 해제한다. (분리된 볼륨은 <see cref="RestoreVolume"/>으로 되돌린다.)</summary>
     public void ClearFault()
     {
         lock (_gate)
         {
             _crashAtOps = null;
             _failReads.Clear();
+            _failReadsAfterOpen.Clear();
             _corruptNextWrite = false;
         }
     }
@@ -163,6 +165,18 @@ public sealed class FakeFileSystem : IFileSystem
         lock (_gate)
         {
             _failReads.Add(Normalize(path));
+        }
+    }
+
+    /// <summary>
+    /// 이 경로는 <see cref="OpenRead"/>로 열리지만, 그 스트림에서 읽으면 <see cref="IOException"/>을 던진다
+    /// (불량 섹터·CRC 오류처럼 열기는 되고 읽는 도중에 실패하는 상황).
+    /// </summary>
+    public void FailReadsAfterOpen(string path)
+    {
+        lock (_gate)
+        {
+            _failReadsAfterOpen.Add(Normalize(path));
         }
     }
 
@@ -275,7 +289,7 @@ public sealed class FakeFileSystem : IFileSystem
                 throw new IOException($"다른 곳에서 쓰는 중인 파일입니다: {path}");
             }
 
-            var stream = new ReadStream(this, file);
+            var stream = new ReadStream(this, file, failOnRead: _failReadsAfterOpen.Contains(full));
             file.Readers++;
             _handles.Add(stream);
             return stream;
@@ -675,13 +689,41 @@ public sealed class FakeFileSystem : IFileSystem
     {
         private readonly FakeFileSystem _fs;
         private readonly FakeFile _file;
+        private readonly bool _failOnRead;
         private bool _released;
 
-        public ReadStream(FakeFileSystem fs, FakeFile file)
+        public ReadStream(FakeFileSystem fs, FakeFile file, bool failOnRead)
             : base(file.Content.ToArray(), writable: false)
         {
             _fs = fs;
             _file = file;
+            _failOnRead = failOnRead;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            ThrowIfFaulted();
+            return base.Read(buffer, offset, count);
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            ThrowIfFaulted();
+            return base.Read(buffer);
+        }
+
+        public override int ReadByte()
+        {
+            ThrowIfFaulted();
+            return base.ReadByte();
+        }
+
+        private void ThrowIfFaulted()
+        {
+            if (_failOnRead)
+            {
+                throw new IOException($"모의 읽기 오류(열린 뒤): {_file.Path}");
+            }
         }
 
         // 크래시로 핸들이 풀려도 이미 가진 스냅샷은 읽을 수 있다(프로세스가 죽었으니 어차피 쓰이지 않는다).
