@@ -293,6 +293,67 @@ public sealed class PhysicalFileSystemTests : IDisposable
     }
 
     [Fact]
+    public void EnumerateFiles_IncludesHiddenAndSystemFiles()
+    {
+        Directory.CreateDirectory(P("sub"));
+        var hidden = P("hidden.jpg");
+        var system = Path.Combine(P("sub"), "system.jpg");
+        File.WriteAllText(hidden, "h");
+        File.WriteAllText(system, "s");
+        File.SetAttributes(hidden, FileAttributes.Hidden);
+        File.SetAttributes(system, FileAttributes.Hidden | FileAttributes.System);
+
+        try
+        {
+            var files = _fs.EnumerateFiles(_root, recursive: true).ToList();
+
+            Assert.Contains(hidden, files);
+            Assert.Contains(system, files);
+        }
+        finally
+        {
+            File.SetAttributes(hidden, FileAttributes.Normal);
+            File.SetAttributes(system, FileAttributes.Normal);
+        }
+    }
+
+    [Fact]
+    public void EnumerateFiles_SkipsInaccessibleFolder_AndKeepsTheRest()
+    {
+        // SD 카드 루트의 System Volume Information처럼 열 수 없는 폴더가 있어도 나머지 파일은 모두 나와야 한다.
+        var locked = P("a-locked");
+        Directory.CreateDirectory(locked);
+        File.WriteAllText(Path.Combine(locked, "secret.jpg"), "x");
+        Directory.CreateDirectory(P("z-open"));
+        File.WriteAllText(P("top.jpg"), "t");
+        File.WriteAllText(Path.Combine(P("z-open"), "deep.jpg"), "d");
+
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var deny = new System.Security.AccessControl.FileSystemAccessRule(user,
+            System.Security.AccessControl.FileSystemRights.ListDirectory, System.Security.AccessControl.AccessControlType.Deny);
+        var info = new DirectoryInfo(locked);
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(deny);
+        info.SetAccessControl(acl);
+
+        try
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFiles(locked)); // 정말 열 수 없는 폴더인지 확인
+
+            var files = _fs.EnumerateFiles(_root, recursive: true).ToList();
+
+            Assert.Contains(P("top.jpg"), files);
+            Assert.Contains(Path.Combine(P("z-open"), "deep.jpg"), files);
+        }
+        finally
+        {
+            acl = info.GetAccessControl();
+            acl.RemoveAccessRule(deny);
+            info.SetAccessControl(acl);
+        }
+    }
+
+    [Fact]
     public void EnumerateFiles_Throws_WhenDirectoryMissing()
     {
         Assert.Throws<DirectoryNotFoundException>(() => _fs.EnumerateFiles(P("none"), recursive: true).ToList());

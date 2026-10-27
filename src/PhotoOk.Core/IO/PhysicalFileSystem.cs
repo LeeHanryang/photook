@@ -15,10 +15,14 @@ public sealed class PhysicalFileSystem : IFileSystem
             throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {directory}");
         }
 
-        return Directory.EnumerateFiles(
-            directory,
-            "*",
-            recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
+        // 드라이브 루트의 System Volume Information처럼 열 수 없는 폴더는 건너뛰고 나머지를 끝까지 나열한다.
+        // 숨김·시스템 파일도 사진일 수 있으므로 속성으로 거르지 않는다.
+        return Directory.EnumerateFiles(directory, "*", new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            RecurseSubdirectories = recursive,
+            AttributesToSkip = FileAttributes.None,
+        });
     }
 
     public bool FileExists(string path) => File.Exists(path);
