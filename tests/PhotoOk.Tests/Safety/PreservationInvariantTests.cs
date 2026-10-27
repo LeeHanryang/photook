@@ -20,6 +20,7 @@ namespace PhotoOk.Tests.Safety;
 /// <item>I3(이동): 원본 내용 각각이 원본 자리, 대상 자리, 되돌림 폴더, 임시 이름 중 적어도 한 곳에 있다.</item>
 /// </list>
 /// 각 시나리오는 먼저 충돌 없이 실행해 변경 작업 수 N을 재고, k = 0..N-1마다 새 가짜 디스크에서 k번째 변경 작업 직전에 강제 종료한다.
+/// 이어 하기 중 강제 종료도 같은 방식이다: 실행을 작업 도중의 정해진 시점 k에서 끊은 뒤, 이어 하기의 변경 작업 j = 0..M-1마다 끊는다.
 /// </summary>
 public class PreservationInvariantTests(ITestOutputHelper output)
 {
@@ -351,6 +352,82 @@ public class PreservationInvariantTests(ITestOutputHelper output)
                 Assert.Equal(RunOutcome.Completed, resumed.Outcome);
                 AssertAllDestinationsPresent(s, "이어 하기 후");
             }
+
+            var undo = s.Undoer.Undo(journal);
+            AssertI1(s, "되돌리기 후");
+            AssertI2(s, "되돌리기 후");
+            AssertArchiveAsBefore(s, "되돌리기 후");
+            Assert.True(undo.Skipped.Count == 0, "[되돌리기 후] 남긴 작업: " + string.Join(", ", undo.Skipped.Select(x => x.Reason)));
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // 실행 중 강제 종료 → 이어 하기 중 강제 종료 → 다시 이어 하기 → 되돌리기
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Resume_CopyRun_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(복사)", () => Import(@"E:\DCIM", TransferMode.Copy), copyTempRequired: true);
+
+    [Fact]
+    public void Resume_MoveRun_SameVolume_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(같은 드라이브 이동)", () => Import(@"D:\Inbox", TransferMode.Move), copyTempRequired: false);
+
+    [Fact]
+    public void Resume_SwapAndCopyIntoVacatedSpot_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(자리 바꾸기)", SwapAndCopyIntoVacatedSpot, copyTempRequired: true);
+
+    /// <summary>
+    /// 실행을 작업 도중(기록에 Started로 남은 작업이 있고, <paramref name="copyTempRequired"/>면 쓰다 만 복사 임시 파일도 있는 시점)
+    /// 고정된 k에서 끊는다. 그 상태에서 이어 하기의 변경 작업 수 M을 잰 뒤, j = 0..M-1마다 같은 실행 중단을 새로 재현하고
+    /// 이어 하기를 j에서 끊는다. 그 뒤 다시 이어 하기 → 모든 대상이 있다, 되돌리기 → 아카이브가 처음과 같다.
+    /// </summary>
+    private void CrashResumeAtEveryStep(string name, Func<Scenario> build, bool copyTempRequired)
+    {
+        var clean = build();
+        var before = clean.Fs.MutatingOps;
+        Assert.Equal(RunOutcome.Completed, clean.Executor.Execute(clean.Plan).Outcome);
+        var n = clean.Fs.MutatingOps - before;
+
+        (Scenario Scenario, string Journal) CrashExecuteAt(int k)
+        {
+            var s = build();
+            s.Fs.CrashAfter(k);
+            Assert.Throws<SimulatedCrashException>(() => s.Executor.Execute(s.Plan));
+            s.Fs.ClearFault();
+            return (s, FindJournal(s)!);
+        }
+
+        bool IsMidOperation(int k)
+        {
+            var (s, journal) = CrashExecuteAt(k);
+            var midOperation = JournalReader.Load(s.Fs, journal).Operations.Any(o => o.Status == OpStatus.Started);
+            var copyTemp = s.Fs.AllFiles().Any(p => p.EndsWith(TempMarker, StringComparison.OrdinalIgnoreCase));
+            return midOperation && (!copyTempRequired || copyTemp);
+        }
+
+        var k = Enumerable.Range(n / 2, n - n / 2).Concat(Enumerable.Range(0, n / 2)).First(IsMidOperation);
+
+        var (measured, measuredJournal) = CrashExecuteAt(k);
+        var resumeStart = measured.Fs.MutatingOps;
+        Assert.Equal(RunOutcome.Completed, measured.Executor.Resume(measuredJournal).Outcome);
+        var m = measured.Fs.MutatingOps - resumeStart;
+        AssertAllDestinationsPresent(measured, "충돌 없는 이어 하기");
+        Assert.True(m >= 3, $"이어 하기의 변경 작업 수가 너무 적습니다: {m}");
+        output.WriteLine($"{name}: 실행 중단 k = {k} / N = {n}");
+
+        ForEachCrashPoint(name, m, j =>
+        {
+            var (s, journal) = CrashExecuteAt(k);
+            s.Fs.CrashAfter(j);
+            Assert.Throws<SimulatedCrashException>(() => s.Executor.Resume(journal));
+            AssertPreserved(s, "이어 하기 중 종료");
+
+            s.Fs.ClearFault();
+            var resumed = s.Executor.Resume(journal);
+            Assert.Equal(RunOutcome.Completed, resumed.Outcome);
+            AssertPreserved(s, "다시 이어 하기 후");
+            AssertAllDestinationsPresent(s, "다시 이어 하기 후");
 
             var undo = s.Undoer.Undo(journal);
             AssertI1(s, "되돌리기 후");
