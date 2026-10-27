@@ -728,6 +728,136 @@ public class UndoTests
         Assert.Equal(OpStatus.UndoSkipped, StateOf(state, "op2").Status);
     }
 
+    // ------------------------------------------------------------------
+    // 임시 이름에 사진이 남지 않는다
+    // ------------------------------------------------------------------
+
+    private const string Day14Dir = @"D:\Archive\2026\2026-10-14";
+    private const string Day15Dir = @"D:\Archive\2026\2026-10-15";
+
+    /// <summary>
+    /// 이동 모드에서 B(14일 폴더, 15일 사진)는 15일로 옮기고, SD 카드의 A(14일 사진)는 다른 드라이브라 복사로 B가 비우는 자리에 들어간다.
+    /// 계획: 15일 폴더 만들기, B → 임시 이름, A 복사 → 14일 자리, 임시 이름 → 15일. 실행까지 마친다.
+    /// </summary>
+    private (ExecutionResult Run, Plan Plan, byte[] A, byte[] B) RunCrossVolumeCopyIntoVacatedSpot()
+    {
+        byte[] pa = [1, 1, 1, 1];
+        byte[] pb = [2, 2, 2];
+        _fs.AddFile(@"E:\DCIM\P.JPG", pa);
+        _fs.AddFile($@"{Day14Dir}\P.JPG", pb);
+        var groups = new[]
+        {
+            new FileGroup(Info(@"E:\DCIM\P.JPG", pa, new DateTime(2026, 10, 14, 10, 0, 0, DateTimeKind.Unspecified)), []),
+            new FileGroup(Info($@"{Day14Dir}\P.JPG", pb, new DateTime(2026, 10, 15, 10, 0, 0, DateTimeKind.Unspecified)), []),
+        };
+        var preset = BuiltInPresets.DateOnly;
+        var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
+        var plan = new Planner(_fs, new XxHasher(_fs))
+            .Create(new PlanRequest(sessions, preset, Archive, TransferMode.Move, TimeZoneInfo.Utc));
+        Assert.Contains(plan.Operations, o => o.Kind == OperationKind.Copy && o.Destination == $@"{Day14Dir}\P.JPG");
+        Assert.Contains(plan.Operations, o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
+
+        var run = Run(plan);
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.Equal(pb, _fs.ReadAllBytes($@"{Day15Dir}\P.JPG"));
+        return (run, plan, pa, pb);
+    }
+
+    private List<string> TempNamedFiles() =>
+        _fs.AllFiles().Where(p => Path.GetFileName(p).Contains(".photook-tmp", StringComparison.OrdinalIgnoreCase)
+                                  && !p.Contains(@"\.photook\", StringComparison.OrdinalIgnoreCase)).ToList();
+
+    [Fact]
+    public void Undo_RestoresSwapOriginalUnderSuffixedName_WhenKeptCopyHoldsSpot_SourceWiped()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        _fs.AddDirectory(@"E:\Elsewhere");
+        _fs.Move(@"E:\DCIM\P.JPG", @"E:\Elsewhere\P.JPG"); // SD 카드에서 사진을 지웠다(그 경로에는 이제 없다)
+        var firstLeg = plan.Operations.Single(o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
+        var copy = plan.Operations.Single(o => o.Kind == OperationKind.Copy);
+        var restored = $@"{Day14Dir}\P_1.JPG";
+
+        var result = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));                 // 원래 사진은 보이는 이름으로 돌아왔다
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));     // 유일한 사본이 된 복사본은 남는다
+        Assert.False(_fs.FileExists($@"{Day15Dir}\P.JPG"));
+        Assert.Contains(new UndoSkip(copy.Id, copy.Destination, KeptNoSource), result.Skipped);
+        Assert.Contains(new UndoSkip(firstLeg.Id, firstLeg.Destination,
+            $"원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: {restored}"), result.Skipped);
+
+        var entries = Entries(run.JournalPath!);
+        var undone = entries.Single(e => e.Event == JournalEvent.Undone && e.OpId == firstLeg.Id);
+        Assert.Equal(restored, undone.Destination);
+        Assert.Equal(OpStatus.Undone, StateOf(JournalReader.Load(_fs, run.JournalPath!), firstLeg.Id).Status);
+    }
+
+    [Fact]
+    public void Undo_StopsPass_WhenUnavailableSourceCopyHoldsAnotherOpsSpot_ThenCompletesAfterReconnect()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var firstLeg = plan.Operations.Single(o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
+        var copy = plan.Operations.Single(o => o.Kind == OperationKind.Copy);
+        _fs.RemoveVolume(@"E:\"); // SD 카드를 뺐다
+
+        var first = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Equal(new UndoSkip(copy.Id, copy.Destination, "원본 드라이브가 연결되어 있지 않습니다"), first.Skipped[^1]);
+        var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, firstLeg.Id).Status);
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.DoesNotContain(Entries(run.JournalPath!), e => e.OpId == firstLeg.Id && e.Event is JournalEvent.Undone or JournalEvent.UndoSkipped);
+
+        _fs.RestoreVolume(@"E:\");
+        var second = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(second.Skipped);
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.False(_fs.DirectoryExists(Day15Dir));
+        Assert.Equal(pa, _fs.ReadAllBytes(Quarantined(run.RunId, @"2026\2026-10-14\P.JPG")));
+        Assert.Equal(pa, _fs.ReadAllBytes(@"E:\DCIM\P.JPG"));
+        Assert.All(JournalReader.Load(_fs, run.JournalPath!).Operations, o => Assert.Equal(OpStatus.Undone, o.Status));
+    }
+
+    [Fact]
+    public void Undo_NeverLeavesTempName_ForUnrecordedFirstLeg_WhenSpotTaken()
+    {
+        // 첫 다리(op1: 14일 → 임시 이름)는 옮겼지만 Failed로 기록됐고, op2 복사가 그 자리를 채웠다. 원본 사진은 지워졌다.
+        const string Spot = @"D:\Archive\2026\14\P.JPG";
+        const string Temp = Spot + ".photook-tmp-op1";
+        var original = Bytes(100, 44);
+        var copied = Bytes(80, 45);
+        _fs.AddFile(Temp, original);
+        _fs.AddFile(Spot, copied);
+        var ops = new[]
+        {
+            Move("op1", Spot, Temp, original.Length),
+            Copy("op2", @"E:\DCIM\P.JPG", Spot, copied.Length),
+        };
+        var journal = WriteJournal(ops,
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Failed, null),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, Hash(Spot)));
+        _fs.AddFile(@"D:\Archive\2026\14\P_1.JPG", Bytes(10, 46)); // 첫 번째 붙임 이름도 이미 있다
+        _fs.AddDirectory(@"E:\DCIM"); // SD 카드는 꽂혀 있지만 사진은 지웠다
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(original, _fs.ReadAllBytes(@"D:\Archive\2026\14\P_2.JPG"));
+        Assert.Equal(copied, _fs.ReadAllBytes(Spot));
+        Assert.Equal(1, result.Undone);
+        Assert.Equal(
+            [
+                new UndoSkip("op2", Spot, KeptNoSource),
+                new UndoSkip("op1", Temp, @"원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: D:\Archive\2026\14\P_2.JPG"),
+            ],
+            result.Skipped);
+        Assert.Equal(OpStatus.Undone, StateOf(JournalReader.Load(_fs, journal), "op1").Status);
+    }
+
     [Fact]
     public void Undo_WritesUndoStarted_OnceBeforeFirstAction()
     {

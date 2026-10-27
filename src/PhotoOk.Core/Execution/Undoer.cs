@@ -25,7 +25,10 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// UndoSkipped는 최종이다. 다만 다시 연결·재시도하면 풀리는 사유는 기록하지 않고 결과로만 알려, 나중에 되돌리기를 다시 하면 이어서 처리된다.
 /// 그중 디스크 상태를 그대로 남겨 앞 작업들의 판단을 틀리게 할 수 있는 것(작업 중 입출력 오류, 원래 드라이브가 없어 못 돌려놓은 이동)은
 /// 그 자리에서 이번 되돌리기를 멈춘다. 뒤의 작업은 그 작업이 풀린 뒤의 디스크를 봐야 하기 때문이다.
-/// 원본을 확인할 수 없어 복사본을 남기는 경우는 멈추지 않는다: 복사본을 남겨도 다른 작업이 기대는 디스크 상태는 바뀌지 않는다.
+/// 원본을 확인할 수 없어 복사본을 남기는 경우는 멈추지 않는다. 다만 그 복사본 자리가 아직 되돌리지 않은 다른 작업의 원래 자리라면
+/// 남긴 복사본이 그 작업을 막으므로 멈춘다.
+/// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이 있으면
+/// 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>…)으로 돌려놓고 Undone으로 기록하며, 결과에 그 경로를 알린다.
 /// 그런 사유가 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다(남긴 복사본 때문에 비어 있지 않을 수 있다).
 /// 보관 드라이브가 없으면 아무것도 쓰지 않고 그 사유 하나만 돌려준다. 받은 기록 파일 자체를 읽을 수 없으면 예외가 그대로 나간다.
 /// 기록을 남길 수 없으면 <see cref="JournalUnavailableException"/>.
@@ -41,6 +44,7 @@ public sealed class Undoer(ExecutionContext context)
     internal const string SourceVolumeMissingMessage = "원래 드라이브가 연결되어 있지 않아 옮기지 않았습니다";
     internal const string NotPerformedMessage = "실행되지 않은 작업이라 되돌릴 것이 없습니다";
     internal const string UnknownFolderMessage = "만들었는지 알 수 없는 폴더라 그대로 둡니다";
+    internal const string RenamedBackMessage = "원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: ";
 
     public UndoResult Undo(string journalPath, CancellationToken ct = default)
     {
@@ -55,7 +59,7 @@ public sealed class Undoer(ExecutionContext context)
         }
 
         var run = new UndoRun(state.RunId, state.ArchiveRoot, new JournalWriter(fs, [path]),
-            new SafeDelete(fs, state.ArchiveRoot, state.RunId));
+            new SafeDelete(fs, state.ArchiveRoot, state.RunId), state.Operations);
 
         // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
         if (!state.UndoStarted)
@@ -146,7 +150,7 @@ public sealed class Undoer(ExecutionContext context)
             case SourceState.Matches:
                 break;
             case SourceState.Unavailable:
-                return Outcome.Transient(SourceGoneMessage);
+                return KeepCopyForNow(run, op);
             default:
                 return Outcome.Skipped(SourceGoneMessage);
         }
@@ -179,7 +183,10 @@ public sealed class Undoer(ExecutionContext context)
 
         if (sourceExists)
         {
-            return Outcome.Skipped(SpotTakenMessage);
+            // 임시 이름은 스캔에 보이지 않는다. 그 이름으로 남기지 말고 원래 자리 옆에 보이는 이름으로 돌려놓는다.
+            return IsTempName(op.Destination) && SameVolume(op.Source, op.Destination)
+                ? RestoreBesideOriginal(op)
+                : Outcome.Skipped(SpotTakenMessage);
         }
 
         if (!SameVolume(op.Source, op.Destination))
@@ -244,7 +251,7 @@ public sealed class Undoer(ExecutionContext context)
             case SourceState.Matches:
                 break;
             case SourceState.Unavailable:
-                return Outcome.Transient(SourceGoneMessage);
+                return KeepCopyForNow(run, op);
             case SourceState.Missing:
                 return Outcome.Skipped(SourceGoneMessage);
             default:
@@ -269,9 +276,17 @@ public sealed class Undoer(ExecutionContext context)
             return Outcome.Blocked(SourceVolumeMissingMessage);
         }
 
-        if (fs.FileExists(op.Source) || !SameVolume(op.Source, op.Destination))
+        if (!SameVolume(op.Source, op.Destination))
         {
             return Outcome.Skipped(NotPerformedMessage);
+        }
+
+        if (fs.FileExists(op.Source))
+        {
+            // 임시 이름(이 작업의 ID가 들어 있다)에 계획한 크기의 파일이 있으면 이 작업이 옮긴 것이다. 임시 이름으로 남기지 않는다.
+            return IsTempName(op.Destination) && fs.GetFile(op.Destination).Length == op.Length
+                ? RestoreBesideOriginal(op)
+                : Outcome.Skipped(NotPerformedMessage);
         }
 
         // 옮긴 뒤 크기가 달라 실패로 기록된 경우. 파일은 새 자리에 있으므로 알린다.
@@ -333,14 +348,68 @@ public sealed class Undoer(ExecutionContext context)
         fs.Move(op.Destination, op.Source!);
     }
 
+    /// <summary>
+    /// 원본을 확인할 수 없어 복사본을 남긴다. 복사본 자리가 아직 되돌리지 않은 다른 작업의 원래 자리라면(자리 바꾸기에서 비운 자리를
+    /// 다른 드라이브의 복사가 채운 경우) 남긴 복사본이 그 작업을 막으므로 이번 되돌리기를 멈춘다. 아니면 기록하지 않고 계속한다.
+    /// </summary>
+    private Outcome KeepCopyForNow(UndoRun run, PlannedOperation op)
+    {
+        if (!run.HoldsOpenSpot(op))
+        {
+            return Outcome.Transient(SourceGoneMessage);
+        }
+
+        return op.Source is not null && !IsVolumePresent(op.Source)
+            ? Outcome.Blocked(Executor.SourceVolumeMissingMessage)
+            : Outcome.Blocked(SourceGoneMessage);
+    }
+
+    /// <summary>
+    /// 원래 자리에 다른 파일이 있을 때 임시 이름의 파일을 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>, <c>_2</c>…)으로 옮긴다.
+    /// 덮어쓰지 않는 이동이므로 그사이 이름이 채워지면 예외가 나고 이번 되돌리기는 멈춘다.
+    /// </summary>
+    private Outcome RestoreBesideOriginal(PlannedOperation op)
+    {
+        var fs = context.FileSystem;
+        var source = op.Source!;
+        var directory = Path.GetDirectoryName(source)!;
+        var name = Path.GetFileNameWithoutExtension(source);
+        var extension = Path.GetExtension(source);
+        string target;
+        var n = 1;
+        do
+        {
+            target = Path.Combine(directory, $"{name}_{n}{extension}");
+            n++;
+        }
+        while (fs.FileExists(target) || fs.DirectoryExists(target));
+
+        fs.CreateDirectory(directory);
+        fs.Move(op.Destination, target);
+        return Outcome.Undone(target, RenamedBackMessage + target);
+    }
+
+    private static bool IsTempName(string path) =>
+        Path.GetFileName(path).Contains(Executor.TempSuffix, StringComparison.OrdinalIgnoreCase);
+
     private void Apply(UndoRun run, PlannedOperation op, Outcome outcome)
     {
+        if (outcome.Kind is OutcomeKind.Undone or OutcomeKind.Skipped)
+        {
+            run.Resolved.Add(op.Id);
+        }
+
         switch (outcome.Kind)
         {
             case OutcomeKind.Undone:
                 run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Undone, op.Id, op.Kind, Destination: outcome.Location,
                     TimestampUtc: context.UtcNow()));
                 run.Undone++;
+                if (outcome.Reason is not null)
+                {
+                    run.Skipped.Add(new UndoSkip(op.Id, op.Destination, outcome.Reason));
+                }
+
                 break;
 
             case OutcomeKind.Skipped:
@@ -380,7 +449,8 @@ public sealed class Undoer(ExecutionContext context)
     /// </summary>
     private readonly record struct Outcome(OutcomeKind Kind, string? Reason, string? Location)
     {
-        public static Outcome Undone(string? location) => new(OutcomeKind.Undone, null, location);
+        /// <summary><paramref name="note"/>가 있으면 기록은 Undone이지만 사용자에게 알릴 내용이 있다(결과의 Skipped에 함께 싣는다).</summary>
+        public static Outcome Undone(string? location, string? note = null) => new(OutcomeKind.Undone, note, location);
 
         public static Outcome Skipped(string reason) => new(OutcomeKind.Skipped, reason, null);
 
@@ -389,8 +459,23 @@ public sealed class Undoer(ExecutionContext context)
         public static Outcome Blocked(string reason) => new(OutcomeKind.Blocked, reason, null);
     }
 
-    private sealed class UndoRun(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete)
+    private sealed class UndoRun(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete,
+        IReadOnlyList<OpState> operations)
     {
+        /// <summary>이번 되돌리기에서 Undone·UndoSkipped로 기록한 작업.</summary>
+        public HashSet<string> Resolved { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>복사본 자리가 아직 Undone·UndoSkipped가 아닌 다른 작업의 원래 자리(원본 경로)인지.</summary>
+        public bool HoldsOpenSpot(PlannedOperation copy)
+        {
+            var spot = Path.GetFullPath(copy.Destination);
+            return operations.Any(o => o.Operation.Id != copy.Id
+                && o.Operation.Source is not null
+                && o.Status is not (OpStatus.Undone or OpStatus.UndoSkipped)
+                && !Resolved.Contains(o.Operation.Id)
+                && string.Equals(Path.GetFullPath(o.Operation.Source), spot, StringComparison.OrdinalIgnoreCase));
+        }
+
         public string RunId { get; } = runId;
 
         public string ArchiveRoot { get; } = archiveRoot;
