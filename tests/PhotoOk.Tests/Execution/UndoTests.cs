@@ -1035,6 +1035,108 @@ public class UndoTests
     }
 
     [Fact]
+    public void Undo_PreScanBlock_StillRescuesSwapTemp_WhenEarlierUndoCouldNotRescueIt()
+    {
+        var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();
+        var (firstLeg, secondLeg, copy) = SwapOps(plan);
+        var restored = $@"{Day14Dir}\P_1.JPG";
+        var rescueFailures = 0;
+        _hooked.BeforeMove = (source, _) =>
+        {
+            // 마무리 단계가 임시 이름의 B를 꺼내려는 이동이 한 번 실패한다(잠깐 다른 프로그램이 파일을 잡고 있었다).
+            if (string.Equals(source, firstLeg.Destination, StringComparison.OrdinalIgnoreCase) && rescueFailures++ == 0)
+            {
+                throw new IOException("모의 이동 실패");
+            }
+        };
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (string.Equals(source, secondLeg.Destination, StringComparison.OrdinalIgnoreCase))
+            {
+                _fs.FailReadsAfterOpen(@"E:\DCIM\P.JPG");
+            }
+        };
+
+        var first = NewUndoer().Undo(run.JournalPath!);
+
+        // 첫 되돌리기는 B를 임시 이름에 남긴 채 끝났다.
+        Assert.Equal([firstLeg.Destination], TempNamedFiles());
+        Assert.Contains(first.Skipped, s => s.OpId == firstLeg.Id && s.Reason.StartsWith("임시 이름의 파일을 꺼내지 못했습니다", StringComparison.Ordinal));
+        Assert.True(JournalReader.Load(_fs, run.JournalPath!).UndoStarted);
+
+        // 원본은 여전히 읽을 수 없다: 미리 확인이 막지만, 이미 시작한 되돌리기라 임시 이름의 B는 꺼내야 한다.
+        _hooked.AfterMove = null;
+        var second = NewUndoer().Undo(run.JournalPath!);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes(restored));
+        Assert.Equal(pa, _fs.ReadAllBytes(copy.Destination));
+        Assert.Equal(1, second.Undone);
+        Assert.Contains(new UndoSkip(copy.Id, copy.Destination, KeptNoSource), second.Skipped);
+        Assert.Contains(new UndoSkip(firstLeg.Id, firstLeg.Destination, RenamedBack + restored), second.Skipped);
+        var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.Equal(OpStatus.Undone, StateOf(state, firstLeg.Id).Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
+        Assert.Equal(restored, Entries(run.JournalPath!).Single(e => e.Event == JournalEvent.Undone && e.OpId == firstLeg.Id).Destination);
+    }
+
+    [Fact]
+    public void Undo_PreScan_DoesNotReadSources_OfCopiesThatHoldNoSpot()
+    {
+        // 다른 작업의 원래 자리를 차지하지 않는 복사는 미리 확인에서 원본·복사본을 끝까지 읽을 필요가 없다(SD 카드를 두 번 읽지 않는다).
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 61);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 62);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        var run = Run(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length)));
+        var reads = new List<string>();
+        var counting = new CountingReads(_hooked, reads);
+
+        var result = new Undoer(new ExecutionContext(counting, new XxHasher(counting), AppData, () => Now)).Undo(run.JournalPath!);
+
+        Assert.Equal(2, result.Undone);
+        // 원본과 복사본은 되돌리기 루프에서 한 번씩만 읽는다.
+        Assert.Equal(1, reads.Count(p => string.Equals(p, @"E:\DCIM\a.jpg", StringComparison.OrdinalIgnoreCase)));
+        Assert.Equal(1, reads.Count(p => string.Equals(p, @"E:\DCIM\b.jpg", StringComparison.OrdinalIgnoreCase)));
+        Assert.Equal(1, reads.Count(p => string.Equals(p, @"D:\Archive\2026\a.jpg", StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>OpenRead로 연 경로를 남긴다.</summary>
+    private sealed class CountingReads(PhotoOk.Core.IO.IFileSystem inner, List<string> reads) : PhotoOk.Core.IO.IFileSystem
+    {
+        public IEnumerable<string> EnumerateFiles(string directory, bool recursive) => inner.EnumerateFiles(directory, recursive);
+
+        public bool FileExists(string path) => inner.FileExists(path);
+
+        public bool DirectoryExists(string path) => inner.DirectoryExists(path);
+
+        public PhotoOk.Core.IO.FileEntry GetFile(string path) => inner.GetFile(path);
+
+        public Stream OpenRead(string path)
+        {
+            reads.Add(path);
+            return inner.OpenRead(path);
+        }
+
+        public Stream CreateNew(string path) => inner.CreateNew(path);
+
+        public void Move(string source, string destination) => inner.Move(source, destination);
+
+        public void CreateDirectory(string path) => inner.CreateDirectory(path);
+
+        public bool IsDirectoryEmpty(string path) => inner.IsDirectoryEmpty(path);
+
+        public void RemoveEmptyDirectory(string path) => inner.RemoveEmptyDirectory(path);
+
+        public void AppendLine(string path, string line) => inner.AppendLine(path, line);
+
+        public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);
+
+        public long GetAvailableFreeSpace(string path) => inner.GetAvailableFreeSpace(path);
+    }
+
+    [Fact]
     public void Undo_PreScan_BlocksBeforeStart_WhenSourceFailsMidRead()
     {
         var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();

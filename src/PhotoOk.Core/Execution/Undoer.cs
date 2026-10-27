@@ -27,7 +27,8 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// 그 자리에서 이번 되돌리기를 멈춘다. 뒤의 작업은 그 작업이 풀린 뒤의 디스크를 봐야 하기 때문이다.
 /// 원본을 확인할 수 없어 복사본을 남기는 경우는 멈추지 않는다. 다만 그 복사본 자리가 아직 되돌리지 않은 다른 작업의 원래 자리라면
 /// 남긴 복사본이 그 작업을 막으므로 멈춘다. 이 경우는 시작 전에 미리 확인해, 파일을 하나도 건드리지 않고 UndoStarted도 쓰지 않은 채
-/// 그 사유 하나만 돌려준다(루프 안의 같은 확인은 안전망이다).
+/// 그 사유 하나만 돌려준다(루프 안의 같은 확인은 안전망이다). 단, 앞선 되돌리기가 이미 시작한 기록이면 멈추기 전에 마무리 단계로
+/// 임시 이름에 남은 사진을 꺼낸다(앞선 마무리 단계의 이동이 실패했을 수 있다).
 /// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이나 폴더가 있으면
 /// 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>…)으로 돌려놓고 Undone으로 기록하며, 결과에 그 경로를 알린다.
 /// 이 실행의 자리 바꾸기 임시 경로에 있는 파일은 크기가 달라졌어도 항상 꺼낸다.
@@ -75,10 +76,17 @@ public sealed class Undoer(ExecutionContext context)
 
         // 남길 복사본이 다른 작업의 원래 자리를 막고 있으면 파일을 하나도 건드리기 전에 멈춘다. 루프 안에서 멈추면 이미 처리한
         // 뒤 작업(자리 바꾸기의 두 번째 다리)이 사진을 임시 이름으로 옮긴 뒤라, 드라이브를 다시 꽂을 때까지 사진이 숨는다.
+        // 다만 앞선 되돌리기가 이미 시작했다면 그때 임시 이름에 남은 사진이 있을 수 있다. 그것은 멈추기 전에 꺼낸다.
         var blocking = FindKeptCopyHoldingOpenSpot(run, pending);
         if (blocking is not null)
         {
-            return new UndoResult(0, [blocking]);
+            run.Skipped.Add(blocking);
+            if (state.UndoStarted)
+            {
+                RescueTempMoves(run, pending);
+            }
+
+            return new UndoResult(run.Undone, run.Skipped.ToList());
         }
 
         // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
@@ -458,7 +466,8 @@ public sealed class Undoer(ExecutionContext context)
         foreach (var state in pending)
         {
             var op = state.Operation;
-            if (op.Kind != OperationKind.Copy || op.Source is null || !fs.FileExists(op.Destination))
+            // 자리를 차지하지 않는 복사는 막지 않으므로, 끝까지 읽는 확인(SD 카드 전체를 다시 읽는다)을 하기 전에 거른다.
+            if (op.Kind != OperationKind.Copy || op.Source is null || !run.HoldsOpenSpot(op) || !fs.FileExists(op.Destination))
             {
                 continue;
             }
@@ -468,7 +477,7 @@ public sealed class Undoer(ExecutionContext context)
                 continue;
             }
 
-            if (CheckSource(op, state.Hash ?? string.Empty) == SourceState.Unavailable && run.HoldsOpenSpot(op))
+            if (CheckSource(op, state.Hash ?? string.Empty) == SourceState.Unavailable)
             {
                 return new UndoSkip(op.Id, op.Destination, KeptCopyReason(op));
             }
