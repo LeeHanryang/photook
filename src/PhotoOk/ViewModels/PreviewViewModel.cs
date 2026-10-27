@@ -1,0 +1,680 @@
+using System.Collections.ObjectModel;
+using System.Globalization;
+using System.IO;
+using System.Windows.Media;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using PhotoOk.Core.Execution;
+using PhotoOk.Core.IO;
+using PhotoOk.Core.Layout;
+using PhotoOk.Core.Metadata;
+using PhotoOk.Core.Planning;
+using PhotoOk.Core.Presets;
+using PhotoOk.Core.Scanning;
+using PhotoOk.Core.Workflow;
+using PhotoOk.Services;
+
+namespace PhotoOk.ViewModels;
+
+/// <summary>
+/// 스캔 결과로 세운 계획을 보여 주는 화면: 요약, 촬영 카드(이벤트 이름 입력), 정리 후 폴더 트리, 선택 파일의 "왜 이 경로인가".
+/// 이벤트 이름이 바뀌면 <c>replanDelay</c>만큼 기다렸다가 백그라운드에서 계획을 다시 세우고, 가장 나중 요청의 결과만 반영한다.
+/// 계획을 세우는 동안(<see cref="IsReplanning"/>)과 실행 전 점검 오류가 있을 때는 실행할 수 없다. 디스크는 읽기만 한다.
+/// 상태는 화면(UI) 스레드에서만 바꾼다.
+/// </summary>
+public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
+{
+    private const string ReviewGroupId = "판단 필요";
+    private const int ThumbnailLimit = 12;
+    private const int CardThumbnailSize = 96;
+    private const int GridThumbnailSize = 160;
+    private const int BlockingLineLimit = 5;
+    private const string ConfirmTitle = "확인이 필요한 오류가 있습니다";
+    private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
+
+    private readonly ShellViewModel _shell;
+    private readonly ImportSettings _settings;
+    private readonly ScanOutcome _scan;
+    private readonly IFileSystem _fileSystem;
+    private readonly IThumbnailProvider _thumbnails;
+    private readonly IDialogService _dialogs;
+    private readonly FileLog _log;
+    private readonly Func<Plan, int, ObservableObject> _createRun;
+    private readonly Func<ObservableObject> _createBack;
+    private readonly TimeSpan _replanDelay;
+    private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome> _buildPlan;
+    private readonly LayoutRenderer _renderer;
+    private readonly DeviceAliasResolver _aliases;
+
+    /// <summary>스캔한 모든 파일(대표·딸린 파일)의 정보와 그 파일이 속한 묶음. 키는 전체 경로.</summary>
+    private readonly Dictionary<string, (PhotoInfo Info, FileGroup Group)> _files = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>화면을 떠나면 취소한다(썸네일 요청).</summary>
+    private readonly CancellationTokenSource _lifetime = new();
+
+    private CancellationTokenSource _thumbnailCts = new();
+    private CancellationTokenSource? _replanCts;
+    private int _generation;
+    private int _appliedGeneration;
+    private bool _reviewCardAdded;
+    private Plan? _plan;
+    private Dictionary<string, PlannedOperation> _placementBySource = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, PlannedSkip> _skipBySource = new(StringComparer.OrdinalIgnoreCase);
+
+    private int _reviewCount;
+    private int _duplicateCount;
+    private int _transferCount;
+    private long _transferBytes;
+    private long _freeBytes;
+    private string _transferText = "";
+    private IReadOnlyList<string> _planNotes = [];
+    private string? _blockingReason;
+    private bool _isReplanning;
+    private FileDetailViewModel? _detail;
+
+    [ObservableProperty]
+    private SessionItemViewModel? selectedSession;
+
+    [ObservableProperty]
+    private ThumbnailItemViewModel? selectedThumbnail;
+
+    /// <param name="replanDelay">이벤트 이름 입력이 멈춘 뒤 다시 계획하기까지 기다리는 시간(앱 0.5초, 테스트 0).</param>
+    /// <param name="buildPlan">계획을 세우는 함수. 생략하면 <paramref name="workflow"/>의 것을 쓴다(스캔과 같은 인스턴스여야 해시를 다시 쓴다).</param>
+    public PreviewViewModel(ShellViewModel shell, ImportWorkflow workflow, ImportSettings settings, ScanOutcome scan,
+        IFileSystem fileSystem, IThumbnailProvider thumbnails, IDialogService dialogs, FileLog log,
+        Func<Plan, int, ObservableObject> createRun, Func<ObservableObject> createBack, TimeSpan replanDelay,
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null)
+    {
+        ArgumentNullException.ThrowIfNull(workflow);
+        ArgumentNullException.ThrowIfNull(settings);
+        ArgumentNullException.ThrowIfNull(scan);
+
+        _shell = shell;
+        _settings = settings;
+        _scan = scan;
+        _fileSystem = fileSystem;
+        _thumbnails = thumbnails;
+        _dialogs = dialogs;
+        _log = log;
+        _createRun = createRun;
+        _createBack = createBack;
+        _replanDelay = replanDelay;
+        _buildPlan = buildPlan ?? workflow.BuildPlan;
+        _renderer = new LayoutRenderer(settings.Preset);
+        _aliases = new DeviceAliasResolver(settings.Preset.DeviceAliases);
+
+        foreach (var session in scan.Sessions)
+        {
+            foreach (var group in session.Groups)
+            {
+                foreach (var file in group.AllFiles)
+                {
+                    _files[FullPath(file.Path)] = (file, group);
+                }
+            }
+        }
+
+        ScanErrors = scan.Errors.Select(DescribeScanError).ToList();
+
+        foreach (var session in scan.Sessions)
+        {
+            var groups = session.Groups;
+            AddCard(new SessionItemViewModel(session.Id, CardTitle(session.Id, groups.Count), DevicesOf(groups),
+                isReviewGroup: false, groups.Select(g => g.Primary.Path).ToList(), OnEventNameChanged));
+        }
+
+        SelectedSession = Sessions.FirstOrDefault();
+        RequestReplan(TimeSpan.Zero);
+    }
+
+    public event EventHandler? BusyEnded;
+
+    /// <summary>날짜순 촬영 카드, 그 뒤에 판단 필요 묶음(있을 때).</summary>
+    public ObservableCollection<SessionItemViewModel> Sessions { get; } = [];
+
+    /// <summary>아카이브 기준 정리 후 폴더 트리.</summary>
+    public ObservableCollection<FolderNodeViewModel> FolderTree { get; } = [];
+
+    /// <summary>선택 촬영의 처음 12장.</summary>
+    public ObservableCollection<ThumbnailItemViewModel> Thumbnails { get; } = [];
+
+    /// <summary>선택 파일(기본은 선택 촬영의 첫 파일) 정보. 계획이 아직 없으면 null.</summary>
+    public FileDetailViewModel? Detail
+    {
+        get => _detail;
+        private set => SetProperty(ref _detail, value);
+    }
+
+    /// <summary>판단 필요 분기로 가는 파일 수.</summary>
+    public int ReviewCount
+    {
+        get => _reviewCount;
+        private set => SetProperty(ref _reviewCount, value);
+    }
+
+    /// <summary>같은 파일이 이미 있어 건너뛰는 파일 수(보관 폴더에 있거나 이번 가져오기 안에서 겹침).</summary>
+    public int DuplicateCount
+    {
+        get => _duplicateCount;
+        private set => SetProperty(ref _duplicateCount, value);
+    }
+
+    /// <summary>복사·이동할 파일 수.</summary>
+    public int TransferCount
+    {
+        get => _transferCount;
+        private set => SetProperty(ref _transferCount, value);
+    }
+
+    public long TransferBytes
+    {
+        get => _transferBytes;
+        private set
+        {
+            if (SetProperty(ref _transferBytes, value))
+            {
+                OnPropertyChanged(nameof(TransferSizeText));
+            }
+        }
+    }
+
+    /// <summary>보관 폴더 드라이브의 여유 공간. 알 수 없으면 0.</summary>
+    public long FreeBytes
+    {
+        get => _freeBytes;
+        private set
+        {
+            if (SetProperty(ref _freeBytes, value))
+            {
+                OnPropertyChanged(nameof(FreeSpaceText));
+            }
+        }
+    }
+
+    /// <summary>예: "복사 120개", "복사 3개 · 이동 117개".</summary>
+    public string TransferText
+    {
+        get => _transferText;
+        private set => SetProperty(ref _transferText, value);
+    }
+
+    public string TransferSizeText => FormatBytes(TransferBytes);
+
+    public string FreeSpaceText => FormatBytes(FreeBytes);
+
+    /// <summary>스캔 중 읽지 못한 폴더·파일. 예외 원문 없이 사유와 경로만.</summary>
+    public IReadOnlyList<string> ScanErrors { get; }
+
+    /// <summary>스캔 오류가 있으면 "오류 N건 확인 필요".</summary>
+    public string? ScanErrorNotice => ScanErrors.Count == 0
+        ? null
+        : string.Create(CultureInfo.InvariantCulture, $"오류 {ScanErrors.Count}건 확인 필요");
+
+    /// <summary>계획 메모와 실행 전 점검 경고.</summary>
+    public IReadOnlyList<string> PlanNotes
+    {
+        get => _planNotes;
+        private set => SetProperty(ref _planNotes, value);
+    }
+
+    /// <summary>실행할 수 없는 이유(실행 전 점검 오류를 줄바꿈으로 이은 것). 실행할 수 있으면 null.</summary>
+    public string? BlockingReason
+    {
+        get => _blockingReason;
+        private set
+        {
+            if (SetProperty(ref _blockingReason, value))
+            {
+                ExecuteCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    /// <summary>계획을 다시 세우는 중이면 true. 이때는 실행할 수 없다.</summary>
+    public bool IsReplanning
+    {
+        get => _isReplanning;
+        private set
+        {
+            if (SetProperty(ref _isReplanning, value))
+            {
+                OnPropertyChanged(nameof(IsBusy));
+                ExecuteCommand.NotifyCanExecuteChanged();
+            }
+        }
+    }
+
+    public bool IsBusy => IsReplanning;
+
+    /// <summary>가장 나중 계획 요청이 끝나면(반영·취소·실패) 완료된다.</summary>
+    public Task WhenPlanned { get; private set; } = Task.CompletedTask;
+
+    /// <summary>진행 중인 재계획을 멈춘다. 결과는 반영하지 않는다. 예외를 던지지 않는다.</summary>
+    public void Cancel()
+    {
+        try
+        {
+            _replanCts?.Cancel();
+        }
+        catch (AggregateException ex)
+        {
+            _log.Error("계획 취소 중 오류", ex);
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanExecute))]
+    private Task Execute()
+    {
+        // 명령의 Execute는 CanExecute를 확인하지 않으므로 여기서도 막는다.
+        if (!CanExecute() || _plan is not { } plan)
+        {
+            return Task.CompletedTask;
+        }
+
+        if (_scan.Errors.Count > 0)
+        {
+            var message = string.Create(CultureInfo.InvariantCulture,
+                $"읽지 못한 폴더나 파일 {_scan.Errors.Count}건이 있습니다. 그래도 실행할까요?");
+            if (!_dialogs.Confirm(ConfirmTitle, message))
+            {
+                return Task.CompletedTask;
+            }
+        }
+
+        Leave();
+        _shell.Navigate(_createRun(plan, _scan.Errors.Count));
+        return Task.CompletedTask;
+    }
+
+    private bool CanExecute() =>
+        _plan is not null && !IsReplanning && _appliedGeneration == _generation && BlockingReason is null;
+
+    [RelayCommand]
+    private void Back()
+    {
+        Cancel();
+        Leave();
+        _shell.Navigate(_createBack());
+    }
+
+    partial void OnSelectedSessionChanged(SessionItemViewModel? value)
+    {
+        CancelAndReplace(ref _thumbnailCts);
+        var ct = _thumbnailCts.Token;
+
+        Thumbnails.Clear();
+        foreach (var path in value?.Files.Take(ThumbnailLimit) ?? [])
+        {
+            var item = new ThumbnailItemViewModel(path);
+            Thumbnails.Add(item);
+            _ = LoadThumbnailAsync(path, GridThumbnailSize, image => item.Image = image, ct);
+        }
+
+        SelectedThumbnail = Thumbnails.FirstOrDefault();
+        UpdateDetail();
+    }
+
+    partial void OnSelectedThumbnailChanged(ThumbnailItemViewModel? value) => UpdateDetail();
+
+    private void OnEventNameChanged(SessionItemViewModel card) => RequestReplan(_replanDelay);
+
+    /// <summary>
+    /// 새 세대 번호로 계획을 요청한다. 앞선 요청은 취소하고, 앞선 요청의 결과가 늦게 와도 버린다.
+    /// </summary>
+    private void RequestReplan(TimeSpan delay)
+    {
+        _replanCts?.Cancel();
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _replanCts = cts;
+        var generation = ++_generation;
+        IsReplanning = true;
+        ExecuteCommand.NotifyCanExecuteChanged();
+
+        // 이름은 지금(화면 스레드에서) 읽어 둔다.
+        var eventNames = Sessions
+            .Where(card => !card.IsReviewGroup && !string.IsNullOrWhiteSpace(card.EventName))
+            .ToDictionary(card => card.SessionId, card => card.EventName, StringComparer.Ordinal);
+
+        WhenPlanned = ReplanAsync(generation, eventNames, delay, cts.Token);
+    }
+
+    private async Task ReplanAsync(int generation, IReadOnlyDictionary<string, string> eventNames, TimeSpan delay,
+        CancellationToken ct)
+    {
+        try
+        {
+            if (delay > TimeSpan.Zero)
+            {
+                await Task.Delay(delay, ct);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            var build = Task.Run(() => _buildPlan(_settings, _scan, eventNames), CancellationToken.None);
+
+            // 계획 세우기는 중간에 멈출 수 없다. 취소되면 기다리지 않고 결과만 버린다. 버린 작업의 오류도 관찰해 둔다.
+            _ = build.ContinueWith(t => _ = t.Exception, CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            var outcome = await build.WaitAsync(ct);
+
+            if (generation == _generation && !ct.IsCancellationRequested)
+            {
+                Apply(generation, outcome);
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 더 새 요청이 왔거나 화면을 떠났다.
+        }
+        catch (Exception ex) when (generation == _generation)
+        {
+            _log.Error("계획을 세우지 못했습니다", ex);
+            ApplyFailure();
+        }
+        catch (Exception)
+        {
+            // 더 새 요청이 있으므로 이 요청의 오류는 의미가 없다.
+        }
+        finally
+        {
+            if (generation == _generation)
+            {
+                IsReplanning = false;
+                BusyEnded?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
+
+    private void Apply(int generation, PlanOutcome outcome)
+    {
+        var plan = outcome.Plan;
+        _plan = plan;
+        _appliedGeneration = generation;
+
+        // 자리 바꾸기에서는 원본을 먼저 임시 이름으로 옮긴 뒤 그 임시 파일을 최종 자리로 옮긴다. 원래 원본 경로로 찾게 한다.
+        var originalOfTemp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var placements = new Dictionary<string, PlannedOperation>(StringComparer.OrdinalIgnoreCase);
+        var copies = 0;
+        var moves = 0;
+        long bytes = 0;
+        var reviewSources = new List<string>();
+        foreach (var op in plan.Operations)
+        {
+            if (op.Kind == OperationKind.CreateDirectory || op.Source is null)
+            {
+                continue;
+            }
+
+            if (!FolderNodeViewModel.IsPlacement(op))
+            {
+                originalOfTemp[op.Destination] = op.Source;
+                continue;
+            }
+
+            var source = originalOfTemp.GetValueOrDefault(op.Source, op.Source);
+            placements[source] = op;
+            if (op.Kind == OperationKind.Copy)
+            {
+                copies++;
+            }
+            else
+            {
+                moves++;
+            }
+
+            bytes += op.Length;
+            if (op.Reasons.Count > 0)
+            {
+                reviewSources.Add(source);
+            }
+        }
+
+        _placementBySource = placements;
+        _skipBySource = plan.Skipped
+            .GroupBy(skip => FullPath(skip.Source), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+        ReviewCount = reviewSources.Count;
+        DuplicateCount = plan.Skipped.Count(skip => skip.Reason is SkipReason.DuplicateAtDestination or SkipReason.DuplicateInPlan);
+        TransferCount = copies + moves;
+        TransferBytes = bytes;
+        TransferText = DescribeTransfer(copies, moves);
+        FreeBytes = FreeSpace(plan.ArchiveRoot);
+
+        PlanNotes = plan.Notes
+            .Concat(outcome.Issues.Where(i => i.Severity == Severity.Warning).Select(DescribeIssue))
+            .ToList();
+        BlockingReason = DescribeBlocking(outcome.Issues.Where(i => i.Severity == Severity.Error).ToList());
+
+        FolderTree.Clear();
+        foreach (var node in FolderNodeViewModel.Build(plan))
+        {
+            FolderTree.Add(node);
+        }
+
+        // 판단 필요 사유는 이벤트 이름과 관계없으므로 묶음 카드는 첫 계획으로 한 번만 만든다.
+        if (!_reviewCardAdded)
+        {
+            _reviewCardAdded = true;
+            AddReviewCard(reviewSources);
+        }
+
+        UpdateDetail();
+        ExecuteCommand.NotifyCanExecuteChanged();
+    }
+
+    private void ApplyFailure()
+    {
+        _plan = null;
+        FolderTree.Clear();
+        Detail = null;
+        BlockingReason = PlanFailedMessage;
+        ExecuteCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <param name="sources">판단 필요 분기로 가는 작업의 원본 경로(계획 순서).</param>
+    private void AddReviewCard(IEnumerable<string> sources)
+    {
+        var groups = new List<FileGroup>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in sources)
+        {
+            if (_files.TryGetValue(FullPath(source), out var entry) && seen.Add(entry.Group.Primary.Path))
+            {
+                groups.Add(entry.Group);
+            }
+        }
+
+        if (groups.Count == 0)
+        {
+            return;
+        }
+
+        AddCard(new SessionItemViewModel(ReviewGroupId, CardTitle(ReviewGroupId, groups.Count), DevicesOf(groups),
+            isReviewGroup: true, groups.Select(g => g.Primary.Path).ToList(), eventNameChanged: null));
+    }
+
+    private void AddCard(SessionItemViewModel card)
+    {
+        Sessions.Add(card);
+        if (card.Files.Count > 0)
+        {
+            _ = LoadThumbnailAsync(card.Files[0], CardThumbnailSize, image => card.Thumbnail = image, _lifetime.Token);
+        }
+    }
+
+    private void UpdateDetail()
+    {
+        var path = SelectedThumbnail?.Path ?? SelectedSession?.Files.FirstOrDefault();
+        if (_plan is null || path is null || !_files.TryGetValue(FullPath(path), out var entry))
+        {
+            Detail = null;
+            return;
+        }
+
+        var (info, group) = entry;
+        var reasons = ReviewDetector.Detect(group, _settings.Preset, _aliases);
+        var branch = _renderer.SelectBranch(reasons);
+        var key = FullPath(path);
+
+        string destination;
+        string? skipNote = null;
+        if (_placementBySource.TryGetValue(key, out var op))
+        {
+            destination = op.Destination;
+        }
+        else if (_skipBySource.TryGetValue(key, out var skip))
+        {
+            destination = skip.Destination;
+            skipNote = skip.Reason switch
+            {
+                SkipReason.AlreadyInPlace => "이미 제자리에 있어 건너뜁니다",
+                SkipReason.DuplicateAtDestination => "보관 폴더에 같은 파일이 있어 건너뜁니다",
+                SkipReason.DuplicateInPlan => "같은 파일을 이번에 이미 가져오므로 건너뜁니다",
+                _ => "건너뜁니다",
+            };
+        }
+        else
+        {
+            destination = "";
+        }
+
+        Detail = new FileDetailViewModel(
+            Path.GetFileName(info.Path),
+            _aliases.Resolve(group.Primary) ?? "알 수 없음",
+            info.CaptureTime?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "촬영 시각 없음",
+            destination,
+            branch.Name,
+            string.Join('\\', branch.Levels.Select(level => level.Template)),
+            reasons.Select(ReviewReasonText.Label).ToList(),
+            skipNote);
+    }
+
+    private async Task LoadThumbnailAsync(string path, int size, Action<ImageSource> apply, CancellationToken ct)
+    {
+        try
+        {
+            var image = await _thumbnails.GetAsync(path, size, ct);
+            if (image is not null && !ct.IsCancellationRequested)
+            {
+                apply(image);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 화면을 떠났거나 다른 촬영을 골랐다.
+        }
+        catch (Exception ex)
+        {
+            _log.Error("미리보기 그림을 만들지 못했습니다", ex);
+        }
+    }
+
+    /// <summary>화면을 떠날 때 썸네일 요청과 남은 재계획을 멈춘다.</summary>
+    private void Leave()
+    {
+        try
+        {
+            _lifetime.Cancel();
+        }
+        catch (AggregateException ex)
+        {
+            _log.Error("미리보기 화면 정리 중 오류", ex);
+        }
+    }
+
+    private void CancelAndReplace(ref CancellationTokenSource cts)
+    {
+        try
+        {
+            cts.Cancel();
+        }
+        catch (AggregateException ex)
+        {
+            _log.Error("썸네일 요청 취소 중 오류", ex);
+        }
+
+        cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+    }
+
+    private string DevicesOf(IEnumerable<FileGroup> groups) =>
+        string.Join(", ", groups
+            .Select(g => _aliases.Resolve(g.Primary))
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    private long FreeSpace(string archiveRoot)
+    {
+        try
+        {
+            return _fileSystem.GetAvailableFreeSpace(archiveRoot);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return 0;
+        }
+    }
+
+    private static string CardTitle(string label, int count) =>
+        string.Create(CultureInfo.InvariantCulture, $"{label} · {count}장");
+
+    private static string DescribeTransfer(int copies, int moves) => (copies, moves) switch
+    {
+        (0, 0) => "옮길 파일 없음",
+        (_, 0) => string.Create(CultureInfo.InvariantCulture, $"복사 {copies}개"),
+        (0, _) => string.Create(CultureInfo.InvariantCulture, $"이동 {moves}개"),
+        _ => string.Create(CultureInfo.InvariantCulture, $"복사 {copies}개 · 이동 {moves}개"),
+    };
+
+    /// <summary>스캔 오류 사유의 첫 부분(한국어)과 경로만 보인다. 사유 뒤에 붙은 예외 원문은 화면에 보이지 않는다.</summary>
+    private static string DescribeScanError(ScanError error)
+    {
+        var separator = error.Message.IndexOf(": ", StringComparison.Ordinal);
+        var reason = separator < 0 ? error.Message : error.Message[..separator];
+        return reason + ": " + error.Path;
+    }
+
+    private static string DescribeIssue(PreflightIssue issue) =>
+        issue.Path is null ? issue.Message : issue.Message + ": " + issue.Path;
+
+    private static string? DescribeBlocking(IReadOnlyList<PreflightIssue> errors)
+    {
+        if (errors.Count == 0)
+        {
+            return null;
+        }
+
+        var lines = errors.Take(BlockingLineLimit).Select(DescribeIssue).ToList();
+        if (errors.Count > BlockingLineLimit)
+        {
+            lines.Add(string.Create(CultureInfo.InvariantCulture, $"외 {errors.Count - BlockingLineLimit}건"));
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    internal static string FormatBytes(long bytes)
+    {
+        const double Kb = 1024;
+        const double Mb = Kb * 1024;
+        const double Gb = Mb * 1024;
+        return bytes switch
+        {
+            < 1024 => string.Create(CultureInfo.InvariantCulture, $"{bytes} B"),
+            < 1024 * 1024 => string.Create(CultureInfo.InvariantCulture, $"{bytes / Kb:0.0} KB"),
+            < 1024L * 1024 * 1024 => string.Create(CultureInfo.InvariantCulture, $"{bytes / Mb:0.0} MB"),
+            _ => string.Create(CultureInfo.InvariantCulture, $"{bytes / Gb:0.0} GB"),
+        };
+    }
+
+    private static string FullPath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return path;
+        }
+    }
+}

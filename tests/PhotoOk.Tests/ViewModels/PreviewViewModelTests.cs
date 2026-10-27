@@ -1,0 +1,366 @@
+using System.IO;
+using CommunityToolkit.Mvvm.ComponentModel;
+using PhotoOk.Core.Hashing;
+using PhotoOk.Core.Planning;
+using PhotoOk.Core.Presets;
+using PhotoOk.Core.Scanning;
+using PhotoOk.Core.Workflow;
+using PhotoOk.Services;
+using PhotoOk.Tests.Fakes;
+using PhotoOk.ViewModels;
+
+namespace PhotoOk.Tests.ViewModels;
+
+public class PreviewViewModelTests
+{
+    private const string Archive = @"D:\Archive";
+    private const string LogFolder = @"C:\Users\test\AppData\Local\PhotoOk\logs";
+    private const long Gb = 1024L * 1024 * 1024;
+    private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
+    private static readonly DateTime Oct14 = new(2026, 10, 14, 10, 0, 0, DateTimeKind.Unspecified);
+    private static readonly DateTime Oct15 = new(2026, 10, 15, 10, 0, 0, DateTimeKind.Unspecified);
+
+    private readonly FakeFileSystem _fs = new();
+    private readonly FakeMetadataReader _reader = new();
+    private readonly FakeDialogService _dialogs = new();
+    private readonly FakeThumbnailProvider _thumbnails = new();
+    private readonly ShellViewModel _shell;
+    private readonly ObservableObject _runScreen = new ScreenStub();
+    private readonly ObservableObject _backScreen = new ScreenStub();
+    private readonly List<(Plan Plan, int ScanErrors)> _runRequests = [];
+    private readonly ImportSettings _settings = new([@"E:\DCIM"], true, Archive, BuiltInPresets.DateEvent, TransferMode.Copy);
+    private readonly ImportWorkflow _workflow;
+
+    public PreviewViewModelTests()
+    {
+        _shell = new ShellViewModel(_dialogs);
+        _fs.AddDirectory(Archive);
+        _fs.SetFreeSpace(@"D:\", 50 * Gb);
+        _workflow = new ImportWorkflow(_fs, _reader, new XxHasher(_fs), TimeZoneInfo.Utc);
+    }
+
+    private sealed class ScreenStub : ObservableObject;
+
+    private void AddPhoto(string path, byte[] content, DateTime? capture, string? model = null)
+    {
+        _fs.AddFile(path, content);
+        _reader.Set(path, capture, model is null ? null : "Maker", model);
+    }
+
+    /// <summary>
+    /// 14일 A(3바이트)·B(2바이트), 15일 C(보관 폴더에 같은 파일이 있음), 촬영일 없는 D(4바이트).
+    /// </summary>
+    private void AddStandardPhotos()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1, 1, 1], Oct14, "CAM-1");
+        AddPhoto(@"E:\DCIM\B.JPG", [2, 2], Oct14, "CAM-2");
+        AddPhoto(@"E:\DCIM\C.JPG", [3, 3, 3, 3, 3], Oct15);
+        _fs.AddFile(@"D:\Archive\2026\2026-10-15\C.JPG", [3, 3, 3, 3, 3]);
+        _fs.AddFile(@"E:\DCIM\D.JPG", [4, 4, 4, 4], new DateTime(2026, 10, 20, 0, 0, 0, DateTimeKind.Utc));
+        _reader.Set(@"E:\DCIM\D.JPG", null);
+    }
+
+    private async Task<ScanOutcome> ScanAsync() => await _workflow.ScanAsync(_settings, null, CancellationToken.None);
+
+    private async Task<PreviewViewModel> CreateAsync(ScanOutcome? scan = null,
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null)
+    {
+        scan ??= await ScanAsync();
+        var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs,
+            new FileLog(_fs, LogFolder),
+            createRun: (plan, errors) =>
+            {
+                _runRequests.Add((plan, errors));
+                return _runScreen;
+            },
+            createBack: () => _backScreen,
+            replanDelay: TimeSpan.Zero,
+            buildPlan: buildPlan);
+        _shell.Navigate(vm);
+        await vm.WhenPlanned;
+        return vm;
+    }
+
+    private static IEnumerable<FolderNodeViewModel> Flatten(IEnumerable<FolderNodeViewModel> nodes) =>
+        nodes.SelectMany(n => new[] { n }.Concat(Flatten(n.Children)));
+
+    private static FolderNodeViewModel Node(PreviewViewModel vm, params string[] path)
+    {
+        var nodes = (IEnumerable<FolderNodeViewModel>)vm.FolderTree;
+        FolderNodeViewModel? node = null;
+        foreach (var name in path)
+        {
+            node = nodes.SingleOrDefault(n => n.Name == name)
+                ?? throw new Xunit.Sdk.XunitException(
+                    $"트리에 '{name}'이 없습니다. 있는 것: {string.Join(", ", Flatten(vm.FolderTree).Select(n => n.Name))}");
+            nodes = node.Children;
+        }
+
+        return node!;
+    }
+
+    [Fact]
+    public async Task Preview_ShowsSummaryCounts()
+    {
+        AddStandardPhotos();
+
+        var vm = await CreateAsync();
+
+        Assert.False(vm.IsReplanning);
+        Assert.False(vm.IsBusy);
+        Assert.Equal(1, vm.ReviewCount);
+        Assert.Equal(1, vm.DuplicateCount);
+        Assert.Equal(3, vm.TransferCount);
+        Assert.Equal(9, vm.TransferBytes);
+        Assert.Equal(50 * Gb, vm.FreeBytes);
+        Assert.Null(vm.BlockingReason);
+        Assert.Empty(vm.ScanErrors);
+        Assert.Null(vm.ScanErrorNotice);
+        Assert.True(vm.ExecuteCommand.CanExecute(null));
+
+        // 날짜순 촬영 카드 뒤에 판단 필요 묶음
+        Assert.Equal("2026-10-14 · 2장", vm.Sessions[0].Title);
+        Assert.Equal("CAM-1, CAM-2", vm.Sessions[0].Devices);
+        Assert.Equal("2026-10-15 · 1장", vm.Sessions[1].Title);
+        var review = vm.Sessions[^1];
+        Assert.True(review.IsReviewGroup);
+        Assert.Equal("판단 필요 · 1장", review.Title);
+        Assert.All(vm.Sessions.Take(vm.Sessions.Count - 1), s => Assert.False(s.IsReviewGroup));
+
+        // 폴더 트리: 이번 실행으로 놓이는 파일만, 새 폴더 표시
+        var day = Node(vm, "2026", "2026-10-14");
+        Assert.Equal(2, day.FileCount);
+        Assert.True(day.IsNew);
+        Assert.Equal(2, Node(vm, "2026").FileCount);
+        Assert.DoesNotContain(Flatten(vm.FolderTree), n => n.Name == "2026-10-15");
+        Assert.Equal(1, Node(vm, "판단 필요").FileCount);
+    }
+
+    [Fact]
+    public async Task Preview_ExistingFolder_IsNotNew()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1], Oct14);
+        _fs.AddDirectory(@"D:\Archive\2026");
+
+        var vm = await CreateAsync();
+
+        Assert.False(Node(vm, "2026").IsNew);
+        Assert.True(Node(vm, "2026", "2026-10-14").IsNew);
+    }
+
+    [Fact]
+    public async Task EventName_Change_ReplansAndUpdatesTree()
+    {
+        AddStandardPhotos();
+        var vm = await CreateAsync();
+        var busyEnded = 0;
+        vm.BusyEnded += (_, _) => busyEnded++;
+
+        vm.Sessions[0].EventName = "결혼식";
+        await vm.WhenPlanned;
+
+        var renamed = Node(vm, "2026", "2026-10-14 결혼식");
+        Assert.Equal(2, renamed.FileCount);
+        Assert.DoesNotContain(Flatten(vm.FolderTree), n => n.Name == "2026-10-14");
+        Assert.False(vm.IsReplanning);
+        Assert.Equal(1, busyEnded);
+        Assert.Equal(@"D:\Archive\2026\2026-10-14 결혼식\A.JPG", vm.Detail!.Destination);
+    }
+
+    [Fact]
+    public async Task Replan_LatestEditWins()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        using var slowStarted = new ManualResetEventSlim();
+        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        {
+            if (names.Values.Contains("a"))
+            {
+                slowStarted.Set();
+                gate.Wait(Wait);
+            }
+
+            return _workflow.BuildPlan(settings, scan, names);
+        });
+
+        vm.Sessions[0].EventName = "a";
+        var first = vm.WhenPlanned;
+        Assert.True(slowStarted.Wait(Wait));
+        Assert.True(vm.IsReplanning);
+        Assert.False(vm.ExecuteCommand.CanExecute(null));
+
+        vm.Sessions[0].EventName = "b";
+        await vm.WhenPlanned;
+        Assert.NotNull(Node(vm, "2026", "2026-10-14 b"));
+
+        gate.Set();
+        await first;
+        await Task.Delay(50);
+
+        Assert.NotNull(Node(vm, "2026", "2026-10-14 b"));
+        Assert.DoesNotContain(Flatten(vm.FolderTree), n => n.Name == "2026-10-14 a");
+        Assert.False(vm.IsReplanning);
+        Assert.True(vm.ExecuteCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Back_DuringReplan_CancelsAndNavigates()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        using var slowStarted = new ManualResetEventSlim();
+        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        {
+            if (names.Values.Contains("a"))
+            {
+                slowStarted.Set();
+                gate.Wait(Wait);
+            }
+
+            return _workflow.BuildPlan(settings, scan, names);
+        });
+        var busyEnded = 0;
+        vm.BusyEnded += (_, _) => busyEnded++;
+
+        vm.Sessions[0].EventName = "a";
+        Assert.True(slowStarted.Wait(Wait));
+        vm.BackCommand.Execute(null);
+
+        // 계획 세우기가 끝나기(gate)를 기다리지 않고 멈춘다.
+        var stopped = vm.WhenPlanned;
+        Assert.Same(stopped, await Task.WhenAny(stopped, Task.Delay(TimeSpan.FromSeconds(5))));
+        gate.Set();
+
+        Assert.Same(_backScreen, _shell.Current);
+        Assert.False(vm.IsBusy);
+        Assert.Equal(1, busyEnded);
+        Assert.Empty(_dialogs.Errors);
+    }
+
+    [Fact]
+    public async Task Execute_IsBlocked_ByPreflightError()
+    {
+        AddStandardPhotos();
+        _fs.SetFreeSpace(@"D:\", 100);
+
+        var vm = await CreateAsync();
+
+        Assert.NotNull(vm.BlockingReason);
+        Assert.StartsWith("대상 드라이브 공간이 부족합니다", vm.BlockingReason, StringComparison.Ordinal);
+        Assert.False(vm.ExecuteCommand.CanExecute(null));
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+        Assert.Empty(_runRequests);
+        Assert.Same(vm, _shell.Current);
+    }
+
+    [Fact]
+    public async Task Execute_AsksConfirmation_WhenScanErrors()
+    {
+        AddStandardPhotos();
+        var scan = await ScanAsync();
+        scan = scan with { Errors = [new ScanError(@"E:\DCIM\bad.jpg", "파일을 읽지 못했습니다: boom")] };
+        var vm = await CreateAsync(scan);
+
+        Assert.Equal([@"파일을 읽지 못했습니다: E:\DCIM\bad.jpg"], vm.ScanErrors);
+        Assert.Equal("오류 1건 확인 필요", vm.ScanErrorNotice);
+        Assert.True(vm.ExecuteCommand.CanExecute(null));
+
+        _dialogs.ConfirmAnswers.Enqueue(false);
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        var confirm = Assert.Single(_dialogs.Confirms);
+        Assert.Equal("확인이 필요한 오류가 있습니다", confirm.Title);
+        Assert.Equal("읽지 못한 폴더나 파일 1건이 있습니다. 그래도 실행할까요?", confirm.Message);
+        Assert.Empty(_runRequests);
+        Assert.Same(vm, _shell.Current);
+
+        _dialogs.ConfirmAnswers.Enqueue(true);
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        var run = Assert.Single(_runRequests);
+        Assert.Equal(1, run.ScanErrors);
+        Assert.Contains(run.Plan.Operations, o => o.Destination == @"D:\Archive\2026\2026-10-14\A.JPG");
+        Assert.Same(_runScreen, _shell.Current);
+    }
+
+    [Fact]
+    public async Task Execute_WithoutScanErrors_NavigatesWithoutAsking()
+    {
+        AddStandardPhotos();
+        var vm = await CreateAsync();
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        Assert.Empty(_dialogs.Confirms);
+        var run = Assert.Single(_runRequests);
+        Assert.Equal(0, run.ScanErrors);
+        Assert.Same(_runScreen, _shell.Current);
+    }
+
+    [Fact]
+    public async Task Detail_ShowsWhyThisPath()
+    {
+        AddStandardPhotos();
+        var vm = await CreateAsync();
+
+        vm.SelectedSession = vm.Sessions[0];
+
+        var detail = vm.Detail!;
+        Assert.Equal("A.JPG", detail.FileName);
+        Assert.Equal("CAM-1", detail.Device);
+        Assert.Equal("2026-10-14 10:00:00", detail.CaptureTime);
+        Assert.Equal(@"D:\Archive\2026\2026-10-14\A.JPG", detail.Destination);
+        Assert.Equal("기본", detail.BranchName);
+        Assert.Equal(@"{연도}\{날짜} {이벤트}", detail.Template);
+        Assert.Empty(detail.Reasons);
+        Assert.Null(detail.SkipNote);
+        Assert.Contains(@"E:\DCIM\A.JPG", _thumbnails.Requests);
+
+        vm.SelectedSession = vm.Sessions[^1];
+
+        detail = vm.Detail!;
+        Assert.Equal("D.JPG", detail.FileName);
+        Assert.Equal("판단 필요", detail.BranchName);
+        Assert.Equal(["촬영일 없음"], detail.Reasons);
+        Assert.StartsWith(@"D:\Archive\판단 필요\촬영일 없음\", detail.Destination, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Detail_SkippedDuplicate_SaysWhy()
+    {
+        AddStandardPhotos();
+        var vm = await CreateAsync();
+
+        vm.SelectedSession = vm.Sessions[1];
+
+        var detail = vm.Detail!;
+        Assert.Equal("C.JPG", detail.FileName);
+        Assert.Equal(@"D:\Archive\2026\2026-10-15\C.JPG", detail.Destination);
+        Assert.Equal("보관 폴더에 같은 파일이 있어 건너뜁니다", detail.SkipNote);
+    }
+
+    [Fact]
+    public async Task Thumbnails_RequestedOnlyForFirst12OfSelectedSession()
+    {
+        for (var i = 0; i < 15; i++)
+        {
+            AddPhoto($@"E:\DCIM\P{i:00}.JPG", [(byte)i], Oct14.AddMinutes(i));
+        }
+
+        AddPhoto(@"E:\DCIM\Z.JPG", [99], Oct15);
+        AddPhoto(@"E:\DCIM\Y.JPG", [98], Oct15.AddMinutes(1));
+
+        var vm = await CreateAsync();
+        vm.SelectedSession = vm.Sessions[0];
+
+        Assert.Equal(12, vm.Thumbnails.Count);
+        Assert.Equal(@"E:\DCIM\P00.JPG", vm.Thumbnails[0].Path);
+        Assert.DoesNotContain(@"E:\DCIM\P12.JPG", _thumbnails.Requests);
+        Assert.DoesNotContain(@"E:\DCIM\Y.JPG", _thumbnails.Requests); // 다른 촬영은 대표 한 장만
+
+        vm.SelectedThumbnail = vm.Thumbnails[3];
+        Assert.Equal("P03.JPG", vm.Detail!.FileName);
+    }
+}

@@ -6,6 +6,7 @@ using PhotoOk.Core.IO;
 using PhotoOk.Core.Metadata;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Settings;
+using PhotoOk.Core.Workflow;
 using PhotoOk.Services;
 using PhotoOk.ViewModels;
 using CoreExecutionContext = PhotoOk.Core.Execution.ExecutionContext;
@@ -21,6 +22,9 @@ public partial class App : Application
     private const string ErrorTitle = "문제가 생겼습니다";
     private const string ErrorMessage = "예기치 못한 오류가 생겨 작업을 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
     private const string StartFailedMessage = "PhotoOK를 시작하지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
+
+    /// <summary>이벤트 이름 입력이 멈춘 뒤 다시 계획하기까지 기다리는 시간.</summary>
+    private static readonly TimeSpan ReplanDelay = TimeSpan.FromSeconds(0.5);
 
     private readonly IDialogService _dialogs = new WpfDialogService();
     private FileLog? _log;
@@ -86,8 +90,30 @@ public partial class App : Application
         new(shell, services.FileSystem, services.Presets, services.Paths.SettingsPath,
             AppSettingsStore.Load(services.FileSystem, services.Paths.SettingsPath), driveRoot,
             services.FolderPicker, services.FilePicker, services.Dialogs,
-            createScan: _ => new ScanPlaceholderViewModel(), // 스캔 화면이 생기면 여기서 만든다.
+            createScan: settings => CreateScanScreen(services, shell, settings),
             createStart: () => CreateStartScreen(services, shell));
+
+    /// <summary>
+    /// 스캔 화면. 가져오기 한 번에 쓰는 <see cref="ImportWorkflow"/>(해시 캐시)를 여기서 만들어 미리보기 화면과 나눠 쓴다.
+    /// 스캔은 화면을 만들자마자 시작한다(<see cref="ScanViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).
+    /// </summary>
+    private static ScanViewModel CreateScanScreen(AppServices services, ShellViewModel shell, ImportSettings settings)
+    {
+        var workflow = new ImportWorkflow(services.FileSystem, services.Reader, services.Hasher, TimeZoneInfo.Local);
+        var scan = new ScanViewModel(shell, workflow, settings, services.Dialogs, services.Log,
+            createPreview: outcome => CreatePreviewScreen(services, shell, workflow, settings, outcome),
+            createSource: () => CreateSourceScreen(services, shell, driveRoot: null));
+        _ = scan.StartAsync();
+        return scan;
+    }
+
+    /// <summary>미리보기 화면. 뒤로 가면 가져오기 화면(저장해 둔 마지막 선택이 다시 보인다).</summary>
+    private static PreviewViewModel CreatePreviewScreen(AppServices services, ShellViewModel shell, ImportWorkflow workflow,
+        ImportSettings settings, ScanOutcome outcome) =>
+        new(shell, workflow, settings, outcome, services.FileSystem, services.Thumbnails, services.Dialogs, services.Log,
+            createRun: (_, _) => new RunPlaceholderViewModel(), // 실행 화면이 생기면 여기서 만든다.
+            createBack: () => CreateSourceScreen(services, shell, driveRoot: null),
+            replanDelay: ReplanDelay);
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {

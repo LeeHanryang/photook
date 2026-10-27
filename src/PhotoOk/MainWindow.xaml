@@ -15,8 +15,14 @@
         <DataTemplate DataType="{x:Type vm:SourceViewModel}">
             <views:SourceView />
         </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:ScanPlaceholderViewModel}">
-            <views:ScanPlaceholderView />
+        <DataTemplate DataType="{x:Type vm:ScanViewModel}">
+            <views:ScanView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:PreviewViewModel}">
+            <views:PreviewView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:RunPlaceholderViewModel}">
+            <views:RunPlaceholderView />
         </DataTemplate>
     </Window.Resources>
 
