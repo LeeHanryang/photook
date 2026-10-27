@@ -34,6 +34,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failSetTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _deniedDirs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _deniedReads = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _linkedDirs = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IHandle> _handles = new();
     private int? _crashAtOps;
@@ -226,6 +227,18 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
+    /// <summary>
+    /// 이 경로의 <see cref="OpenRead"/>가 <see cref="UnauthorizedAccessException"/>을 던지게 한다(읽기 권한이 없는 파일).
+    /// 존재 확인은 true다. <see cref="DenyDirectory"/>처럼 권한 문제라 <see cref="ClearFault"/>로 풀리지 않는다.
+    /// </summary>
+    public void DenyReadsOf(string path)
+    {
+        lock (_gate)
+        {
+            _deniedReads.Add(Normalize(path));
+        }
+    }
+
     /// <summary>드라이브를 뽑은 것처럼 만든다. 접근하면 <see cref="DirectoryNotFoundException"/>, 존재 확인은 false.</summary>
     public void RemoveVolume(string volumeRoot)
     {
@@ -381,6 +394,11 @@ public sealed class FakeFileSystem : IFileSystem
                 }
 
                 throw new FileNotFoundException($"파일을 찾을 수 없습니다: {path}", path);
+            }
+
+            if (_deniedReads.Contains(full))
+            {
+                throw new UnauthorizedAccessException($"모의 읽기 권한 거부: {path}");
             }
 
             if (_failReads.Contains(full))

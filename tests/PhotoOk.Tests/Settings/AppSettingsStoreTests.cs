@@ -77,4 +77,13 @@ public class AppSettingsStoreTests
 
         Assert.Same(AppSettings.Default, AppSettingsStore.Load(_fs, SettingsPath));
     }
+
+    [Fact]
+    public void Settings_DefaultsWhenFileIsUnreadable()
+    {
+        AppSettingsStore.Save(_fs, SettingsPath, Sample(@"D:\A"));
+        _fs.DenyReadsOf(SettingsPath);
+
+        Assert.Same(AppSettings.Default, AppSettingsStore.Load(_fs, SettingsPath));
+    }
 }

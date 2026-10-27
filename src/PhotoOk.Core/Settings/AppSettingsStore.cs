@@ -27,7 +27,7 @@ public static class AppSettingsStore
         WriteIndented = false,
     };
 
-    /// <summary>파일이 없거나 읽을 수 있는 줄이 없으면 <see cref="AppSettings.Default"/>.</summary>
+    /// <summary>파일이 없거나, 읽을 권한이 없거나, 읽을 수 있는 줄이 없으면 <see cref="AppSettings.Default"/>.</summary>
     public static AppSettings Load(IFileSystem fileSystem, string path)
     {
         string text;
@@ -42,8 +42,9 @@ public static class AppSettingsStore
             using var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
             text = reader.ReadToEnd();
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // 설정을 못 읽어도 앱은 기본값으로 시작한다.
             return AppSettings.Default;
         }
 
