@@ -34,6 +34,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failSetTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _deniedDirs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _linkedDirs = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IHandle> _handles = new();
     private int? _crashAtOps;
     private bool _corruptNextWrite;
@@ -89,6 +90,21 @@ public sealed class FakeFileSystem : IFileSystem
             var full = Normalize(path);
             ThrowIfFileInChain(full);
             EnsureDirectory(full);
+        }
+    }
+
+    /// <summary>
+    /// 폴더를 연결 폴더(정션·심볼릭 링크)로 만든다(폴더가 없으면 만든다). <see cref="EnumerateFiles"/>의 하위 폴더로 만나면
+    /// 들어가지 않고 <see cref="LinkedFolderSkippedException"/>으로 알린다(콜백이 없으면 던진다). 열거의 루트로 직접 고르면 열린다.
+    /// </summary>
+    public void AddLinkedDirectory(string path)
+    {
+        lock (_gate)
+        {
+            var full = Normalize(path);
+            ThrowIfFileInChain(full);
+            EnsureDirectory(full);
+            _linkedDirs.Add(full);
         }
     }
 
@@ -276,10 +292,34 @@ public sealed class FakeFileSystem : IFileSystem
                 return [];
             }
 
+            // 연결 폴더는 하위 폴더일 때만 건너뛴다(루트는 사용자가 직접 고른 것). 이미 거부된 폴더 아래에 있거나
+            // 다른 연결 폴더 안에 있는 것은 따로 알리지 않는다.
+            var linked = new List<string>();
+            if (recursive)
+            {
+                linked.AddRange(_linkedDirs
+                    .Where(d => _dirs.ContainsKey(d) && IsUnder(d, dir))
+                    .Where(d => !denied.Any(x => IsUnder(d, x)))
+                    .Where(d => !_linkedDirs.Any(outer => !PathEquals(outer, d) && IsUnder(d, outer) && IsUnder(outer, dir)))
+                    .OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+            }
+
+            foreach (var d in linked)
+            {
+                var skipped = new LinkedFolderSkippedException(_dirs[d]);
+                if (onInaccessible is null)
+                {
+                    throw skipped;
+                }
+
+                onInaccessible(_dirs[d], skipped);
+            }
+
             var prefixLength = storedDisplay.Length;
             var matches = _files
                 .Where(kv => recursive ? IsUnder(kv.Key, dir) : PathEquals(Path.GetDirectoryName(kv.Key), dir))
                 .Where(kv => !denied.Any(d => IsUnder(kv.Key, d)))
+                .Where(kv => !linked.Any(d => IsUnder(kv.Key, d)))
                 .Select(kv => kv.Value.Path)
                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
                 .Select(p => Path.Combine(dir, p[prefixLength..].TrimStart('\\')))

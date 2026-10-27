@@ -62,8 +62,35 @@ public sealed class PhysicalFileSystem : IFileSystem
 
             for (var i = subdirectories.Count - 1; i >= 0; i--)
             {
+                // 연결 폴더(정션·심볼릭 링크)는 따라가지 않는다. 같은 사진을 두 번 세거나 순환에 빠질 수 있다.
+                // 사용자가 직접 고른 루트는 위에서 이미 열었으므로 여기서는 하위 폴더만 본다.
+                if (IsLinkedFolder(subdirectories[i]))
+                {
+                    var skipped = new LinkedFolderSkippedException(subdirectories[i]);
+                    if (onInaccessible is null)
+                    {
+                        throw skipped;
+                    }
+
+                    onInaccessible(subdirectories[i], skipped);
+                    continue;
+                }
+
                 pending.Push(subdirectories[i]);
             }
+        }
+    }
+
+    private static bool IsLinkedFolder(string directory)
+    {
+        try
+        {
+            return new DirectoryInfo(directory).Attributes.HasFlag(FileAttributes.ReparsePoint);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            // 속성을 읽을 수 없으면 연결 폴더가 아닌 것으로 보고 평소처럼 연다. 못 열면 그때 열거 오류로 알린다.
+            return false;
         }
     }
 

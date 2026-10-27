@@ -427,6 +427,39 @@ public class ScannerTests
     }
 
     [Fact]
+    public void Scan_SkipsLinkedFolder_WithScanError()
+    {
+        Add($@"{Root}\TOP.JPG");
+        Add($@"{Root}\link\INSIDE.JPG");
+        _fs.AddLinkedDirectory($@"{Root}\link");
+
+        var result = Scan();
+
+        Assert.Equal("TOP.JPG", Name(Assert.Single(result.Groups).Primary));
+        var error = Assert.Single(result.Errors);
+        Assert.Equal($@"{Root}\link", error.Path);
+        Assert.Equal($@"연결 폴더라 건너뛰었습니다: {Root}\link", error.Message);
+    }
+
+    [Fact]
+    public void Scan_ReportsFilesReadProgress()
+    {
+        Add($@"{Root}\A.JPG");
+        Add($@"{Root}\B.JPG");
+        Add($@"{Root}\sub\C.JPG");
+        var reports = new List<int>();
+
+        CreateScanner().Scan([Root], recursive: true, filesRead: new SyncProgress(reports.Add));
+
+        Assert.Equal([1, 2, 3], reports);
+    }
+
+    private sealed class SyncProgress(Action<int> report) : IProgress<int>
+    {
+        public void Report(int value) => report(value);
+    }
+
+    [Fact]
     public void Scan_CancelledToken_ThrowsOperationCanceled()
     {
         Add($@"{Root}\IMG.JPG");

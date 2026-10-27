@@ -71,7 +71,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
         }
 
         var sources = groups.SelectMany(g => g.Files).Select(f => f.Source).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var hashes = new HashCache();
         Resolution resolution;
         while (true)
         {
@@ -88,11 +88,11 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             vacating.IntersectWith(moved);
         }
 
-        return Assemble(root, resolution);
+        return Assemble(root, resolution, hashes.Unreadable);
     }
 
     private Resolution Resolve(List<GroupPlan> groups, HashSet<string> vacating, HashSet<string> sources,
-        Dictionary<string, string> hashes)
+        HashCache hashes)
     {
         var reserved = new Dictionary<string, FilePlan>(StringComparer.OrdinalIgnoreCase);
         var fileOps = new List<DraftOp>();
@@ -177,7 +177,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
     /// </summary>
     private Slot Evaluate(FilePlan file, string destination, int k,
         Dictionary<string, FilePlan> reserved, Dictionary<string, FilePlan> local,
-        HashSet<string> vacating, HashSet<string> sources, Dictionary<string, string> hashes)
+        HashSet<string> vacating, HashSet<string> sources, HashCache hashes)
     {
         if (k == 0 && SamePath(file.Source, destination))
         {
@@ -212,29 +212,44 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
         return sources.Contains(destination) ? Slot.Different : Slot.Empty;
     }
 
-    /// <summary>크기가 같을 때만 해시를 비교한다.</summary>
-    private bool SameContent(string a, long aLength, string b, long bLength, Dictionary<string, string> hashes)
+    /// <summary>
+    /// 크기가 같을 때만 해시를 비교한다. 읽지 못한 파일(입출력 오류·권한)이 있으면 같은 파일이라고 확신할 수 없으므로
+    /// "다른 파일"로 본다(덮어쓰지 않고 순번을 붙인다).
+    /// </summary>
+    private bool SameContent(string a, long aLength, string b, long bLength, HashCache hashes)
     {
         if (aLength != bLength)
         {
             return false;
         }
 
-        return string.Equals(HashOf(a, hashes), HashOf(b, hashes), StringComparison.Ordinal);
+        var hashA = HashOf(a, hashes);
+        var hashB = HashOf(b, hashes);
+        return hashA is not null && hashB is not null && string.Equals(hashA, hashB, StringComparison.Ordinal);
     }
 
-    private string HashOf(string path, Dictionary<string, string> hashes)
+    /// <summary>해시를 돌려준다. 파일을 읽지 못하면 null(경로는 <see cref="HashCache.Unreadable"/>에 한 번만 남는다).</summary>
+    private string? HashOf(string path, HashCache hashes)
     {
-        if (!hashes.TryGetValue(path, out var hash))
+        if (!hashes.Values.TryGetValue(path, out var hash))
         {
-            hash = hasher.Hash(path);
-            hashes[path] = hash;
+            try
+            {
+                hash = hasher.Hash(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                hash = null;
+                hashes.Unreadable.Add(path);
+            }
+
+            hashes.Values[path] = hash;
         }
 
         return hash;
     }
 
-    private Plan Assemble(string root, Resolution resolution)
+    private Plan Assemble(string root, Resolution resolution, IReadOnlyList<string> unreadable)
     {
         var fileOps = resolution.FileOps;
 
@@ -292,6 +307,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             notes.Add($"다른 드라이브라 복사로 처리: {forced}개");
         }
 
+        notes.AddRange(unreadable.Select(path => "파일을 읽지 못해 다른 파일로 처리했습니다: " + path));
         notes.AddRange(resolution.Notes);
 
         return new Plan(root, operations, resolution.Skipped, notes);
@@ -328,6 +344,14 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
     {
         var prefix = directory.EndsWith(Path.DirectorySeparatorChar) ? directory : directory + Path.DirectorySeparatorChar;
         return path.Length > prefix.Length && path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>계획을 세우는 동안 계산한 해시. 읽지 못한 파일은 null로 기억해 다시 읽지 않는다.</summary>
+    private sealed class HashCache
+    {
+        public Dictionary<string, string?> Values { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+        public List<string> Unreadable { get; } = [];
     }
 
     private enum Slot { Empty, InPlace, SameOnDisk, SameInPlan, Different }

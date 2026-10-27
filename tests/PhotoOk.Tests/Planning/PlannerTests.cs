@@ -152,6 +152,22 @@ public class PlannerTests
     }
 
     [Fact]
+    public void Plan_TreatsUnreadableFileAsDifferent_AndNotes()
+    {
+        _fs.AddFile($@"{Day14}\DSCF1.JPG", [9, 9, 9]); // 같은 이름·같은 크기
+        var jpg = Add(@"E:\DCIM\DSCF1.JPG", [1, 2, 3], Oct14);
+        _fs.FailReadsOf(@"E:\DCIM\DSCF1.JPG");
+
+        var plan = Create(BuiltInPresets.DateOnly, TransferMode.Copy, Group(jpg));
+
+        var op = Assert.Single(FileOps(plan));
+        Assert.Equal(OperationKind.Copy, op.Kind);
+        Assert.Equal($@"{Day14}\DSCF1_1.JPG", op.Destination);
+        Assert.Empty(plan.Skipped);
+        Assert.Equal(1, plan.Notes.Count(n => n == @"파일을 읽지 못해 다른 파일로 처리했습니다: E:\DCIM\DSCF1.JPG"));
+    }
+
+    [Fact]
     public void Plan_SuffixesWholeGroup_OnDifferentContentCollision()
     {
         _fs.AddFile($@"{Day14}\DSC_0001.NEF", [9, 9, 9, 9]); // 같은 크기, 다른 내용

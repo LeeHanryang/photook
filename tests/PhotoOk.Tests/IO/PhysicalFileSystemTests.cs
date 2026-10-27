@@ -6,10 +6,15 @@ namespace PhotoOk.Tests.IO;
 
 public sealed class PhysicalFileSystemTests : IDisposable
 {
+    private readonly Xunit.Abstractions.ITestOutputHelper _output;
     private readonly string _root = Path.Combine(Path.GetTempPath(), "photook-tests", Guid.NewGuid().ToString("N"));
     private readonly PhysicalFileSystem _fs = new();
 
-    public PhysicalFileSystemTests() => Directory.CreateDirectory(_root);
+    public PhysicalFileSystemTests(Xunit.Abstractions.ITestOutputHelper output)
+    {
+        _output = output;
+        Directory.CreateDirectory(_root);
+    }
 
     public void Dispose()
     {
@@ -379,6 +384,93 @@ public sealed class PhysicalFileSystemTests : IDisposable
     private sealed class Restore(Action restore) : IDisposable
     {
         public void Dispose() => restore();
+    }
+
+    /// <summary>폴더 연결(심볼릭 링크, 안 되면 정션)을 만든다. 둘 다 안 되면 false.</summary>
+    private static bool TryCreateFolderLink(string link, string target)
+    {
+        try
+        {
+            Directory.CreateSymbolicLink(link, target);
+            return Directory.Exists(link);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or PlatformNotSupportedException)
+        {
+            // 개발자 모드가 꺼져 있으면 권한이 없다. 정션으로 다시 시도한다.
+        }
+
+        try
+        {
+            var start = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                ArgumentList = { "/c", "mklink", "/J", link, target },
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var process = System.Diagnostics.Process.Start(start);
+            if (process is null)
+            {
+                return false;
+            }
+
+            process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            return process.ExitCode == 0 && Directory.Exists(link);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
+    [Fact]
+    public void Walk_DoesNotFollowJunction_AndReportsIt()
+    {
+        var target = P("target");
+        Directory.CreateDirectory(target);
+        File.WriteAllText(Path.Combine(target, "inside.jpg"), "x");
+        File.WriteAllText(P("top.jpg"), "t");
+        var link = P("link");
+        if (!TryCreateFolderLink(link, target))
+        {
+            // 연결 폴더를 만들 수 없는 환경(개발자 모드 꺼짐, cmd 없음)에서는 이 확인을 건너뛴다.
+            _output.WriteLine("건너뜀: 이 환경에서는 폴더 연결(심볼릭 링크, 정션)을 만들 수 없습니다.");
+            return;
+        }
+
+        try
+        {
+            var skipped = new List<(string Path, Exception Error)>();
+            var files = _fs.EnumerateFiles(_root, recursive: true, (path, ex) => skipped.Add((path, ex))).ToList();
+
+            Assert.Equal(
+                new[] { P("top.jpg"), Path.Combine(target, "inside.jpg") }.Order(StringComparer.OrdinalIgnoreCase),
+                files.Order(StringComparer.OrdinalIgnoreCase));
+            var (path, error) = Assert.Single(skipped);
+            Assert.Equal(link, path);
+            Assert.IsType<LinkedFolderSkippedException>(error);
+
+            // 연결 폴더를 루트로 직접 고르면 그 안을 연다.
+            var viaRoot = _fs.EnumerateFiles(link, recursive: true).ToList();
+            Assert.Equal([Path.Combine(link, "inside.jpg")], viaRoot);
+
+            // 콜백이 없으면 예외로 알린다.
+            Assert.Throws<LinkedFolderSkippedException>(() => _fs.EnumerateFiles(_root, recursive: true).ToList());
+        }
+        finally
+        {
+            // 연결만 떼어 낸다(대상 폴더의 내용은 건드리지 않는다). 대상은 _root 정리에서 지워진다.
+            try
+            {
+                Directory.Delete(link, recursive: false);
+            }
+            catch (IOException)
+            {
+            }
+        }
     }
 
     [Fact]

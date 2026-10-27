@@ -12,8 +12,10 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
     private const string PhotookFolder = ".photook";
     private const string TempMarker = ".photook-tmp";
     internal const string InaccessibleFolderMessage = "폴더를 열 수 없어 건너뛰었습니다: ";
+    internal const string LinkedFolderMessage = "연결 폴더라 건너뛰었습니다: ";
 
-    public ScanResult Scan(IReadOnlyList<string> sourceRoots, bool recursive, CancellationToken ct = default)
+    public ScanResult Scan(IReadOnlyList<string> sourceRoots, bool recursive, CancellationToken ct = default,
+        IProgress<int>? filesRead = null)
     {
         ArgumentNullException.ThrowIfNull(sourceRoots);
 
@@ -22,6 +24,7 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         var infos = new List<PhotoInfo>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var skippedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var filesDone = 0;
 
         foreach (var root in sourceRoots)
         {
@@ -48,6 +51,8 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
                 {
                     errors.Add(new ScanError(path, $"파일을 읽지 못했습니다: {ex.Message}"));
                 }
+
+                filesRead?.Report(++filesDone);
             }
         }
 
@@ -83,11 +88,12 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         var paths = new List<string>();
         try
         {
-            using var enumerator = fileSystem.EnumerateFiles(root, recursive, (folder, _) =>
+            using var enumerator = fileSystem.EnumerateFiles(root, recursive, (folder, error) =>
             {
                 if (skippedFolders.Add(folder))
                 {
-                    errors.Add(new ScanError(folder, InaccessibleFolderMessage + folder));
+                    var message = error is LinkedFolderSkippedException ? LinkedFolderMessage : InaccessibleFolderMessage;
+                    errors.Add(new ScanError(folder, message + folder));
                 }
             }).GetEnumerator();
             while (enumerator.MoveNext())
