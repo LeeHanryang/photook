@@ -2,9 +2,9 @@ using System.Windows.Controls;
 
 namespace PhotoOk.Views;
 
-public partial class RunPlaceholderView : UserControl
+public partial class RunView : UserControl
 {
-    public RunPlaceholderView()
+    public RunView()
     {
         InitializeComponent();
     }

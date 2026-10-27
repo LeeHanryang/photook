@@ -21,8 +21,8 @@
         <DataTemplate DataType="{x:Type vm:PreviewViewModel}">
             <views:PreviewView />
         </DataTemplate>
-        <DataTemplate DataType="{x:Type vm:RunPlaceholderViewModel}">
-            <views:RunPlaceholderView />
+        <DataTemplate DataType="{x:Type vm:RunViewModel}">
+            <views:RunView />
         </DataTemplate>
     </Window.Resources>
 

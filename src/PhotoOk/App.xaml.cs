@@ -1,9 +1,11 @@
 ﻿using System.Windows;
 using System.Windows.Threading;
+using PhotoOk.Core.Execution;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.History;
 using PhotoOk.Core.IO;
 using PhotoOk.Core.Metadata;
+using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Settings;
 using PhotoOk.Core.Workflow;
@@ -111,9 +113,23 @@ public partial class App : Application
     private static PreviewViewModel CreatePreviewScreen(AppServices services, ShellViewModel shell, ImportWorkflow workflow,
         ImportSettings settings, ScanOutcome outcome) =>
         new(shell, workflow, settings, outcome, services.FileSystem, services.Thumbnails, services.Dialogs, services.Log,
-            createRun: (_, _) => new RunPlaceholderViewModel(), // 실행 화면이 생기면 여기서 만든다.
+            createRun: (plan, scanErrorCount) => CreateRunScreen(services, shell, plan, scanErrorCount),
             createBack: () => CreateSourceScreen(services, shell, driveRoot: null),
             replanDelay: ReplanDelay);
+
+    /// <summary>
+    /// 실행 화면. 미리보기에서 "정리 시작"을 눌러 온 것이므로 화면을 만들자마자 실행한다(<see cref="RunViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).
+    /// 작업 기록 화면이 생기기 전에는 "작업 기록"도 시작 화면으로 돌아간다.
+    /// </summary>
+    private static RunViewModel CreateRunScreen(AppServices services, ShellViewModel shell, Plan plan, int scanErrorCount)
+    {
+        var run = RunViewModel.ForPlan(shell, new Executor(services.Execution), services.Log,
+            createHome: () => CreateStartScreen(services, shell),
+            createHistory: () => CreateStartScreen(services, shell),
+            plan, scanErrorCount);
+        run.StartCommand.Execute(null);
+        return run;
+    }
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
