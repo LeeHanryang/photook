@@ -80,6 +80,7 @@ public sealed class PresetLibrary(IFileSystem fileSystem, string userPresetFolde
         }
 
         var preset = PresetSerializer.Deserialize(json);
-        return new PresetEntry(preset.Name, preset, "사용자 프리셋: " + Path.GetFileName(path), path);
+        var name = string.IsNullOrWhiteSpace(preset.Name) ? Path.GetFileNameWithoutExtension(path) : preset.Name;
+        return new PresetEntry(name, preset with { Name = name }, "사용자 프리셋: " + Path.GetFileName(path), path);
     }
 }

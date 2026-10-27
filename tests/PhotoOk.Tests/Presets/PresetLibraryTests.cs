@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using System.Text.Json.Nodes;
 using PhotoOk.Core.Presets;
 using PhotoOk.Tests.Fakes;
 
@@ -110,5 +111,38 @@ public class PresetLibraryTests
         var ex = Assert.Throws<PresetException>(() => new PresetLibrary(fs, Folder).LoadFile(path));
 
         Assert.Equal($"프리셋 파일을 읽을 수 없습니다: {path}", ex.Message);
+    }
+
+    private static byte[] NamelessPresetJson()
+    {
+        var node = JsonNode.Parse(PresetSerializer.Serialize(BuiltInPresets.Monthly))!.AsObject();
+        node.Remove("name");
+        return Encoding.UTF8.GetBytes(node.ToJsonString());
+    }
+
+    [Fact]
+    public void LoadFile_UsesFileName_WhenPresetHasNoName()
+    {
+        var fs = new FakeFileSystem();
+        var path = Path.Combine(Folder, "내 정리법.json");
+        fs.AddFile(path, NamelessPresetJson());
+
+        var entry = new PresetLibrary(fs, Folder).LoadFile(path);
+
+        Assert.Equal("내 정리법", entry.Name);
+        Assert.Equal("내 정리법", entry.Preset.Name);
+    }
+
+    [Fact]
+    public void LoadAll_UsesFileName_WhenPresetHasNoName()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile(Path.Combine(Folder, "이름없음.json"), NamelessPresetJson());
+
+        var (presets, errors) = new PresetLibrary(fs, Folder).LoadAll();
+
+        Assert.Empty(errors);
+        Assert.Equal("이름없음", presets[^1].Name);
+        Assert.Equal("이름없음", presets[^1].Preset.Name);
     }
 }
