@@ -145,4 +145,37 @@ public class PreflightTests
         Assert.Equal(Severity.Warning, issue.Severity);
         Assert.Equal(longDirectory, issue.Path);
     }
+
+    [Fact]
+    public void Preflight_AcceptsSourceProducedByEarlierOperation()
+    {
+        // 자리 바꾸기: 두 번째 다리의 원본(임시 이름)은 앞 작업이 만들어 낸다.
+        _fs.AddDirectory(Archive);
+        _fs.AddFile(@"D:\Archive\15\P.JPG", new byte[] { 1 });
+        _fs.AddFile(@"D:\Archive\14\P.JPG", new byte[] { 2 });
+        const string TempA = @"D:\Archive\15\P.JPG.photook-tmp-op1";
+        const string TempB = @"D:\Archive\14\P.JPG.photook-tmp-op2";
+
+        var issues = Preflight.Check(PlanOf(
+            Move("op1", @"D:\Archive\15\P.JPG", TempA),
+            Move("op2", @"D:\Archive\14\P.JPG", TempB),
+            Move("op3", TempA, @"D:\Archive\14\P.JPG"),
+            Move("op4", TempB, @"D:\Archive\15\P.JPG")), _fs);
+
+        Assert.Empty(issues);
+    }
+
+    [Fact]
+    public void Preflight_StillErrors_WhenSourceIsProducedOnlyByLaterOperation()
+    {
+        _fs.AddDirectory(Archive);
+        _fs.AddFile(@"D:\Inbox\a.jpg", new byte[] { 1 });
+
+        var issues = Preflight.Check(PlanOf(
+            Move("op1", @"D:\Archive\x.jpg", @"D:\Archive\y.jpg"),
+            Move("op2", @"D:\Inbox\a.jpg", @"D:\Archive\x.jpg")), _fs);
+
+        var issue = Assert.Single(issues);
+        Assert.Equal(@"D:\Archive\x.jpg", issue.Path);
+    }
 }

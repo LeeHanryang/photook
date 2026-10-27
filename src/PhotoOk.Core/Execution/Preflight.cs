@@ -45,11 +45,19 @@ public static class Preflight
             }
         }
 
+        // 자리 바꾸기의 두 번째 다리처럼, 앞 작업이 만들어 내는 경로를 원본으로 쓰는 작업은 실행 전에 원본이 없는 것이 정상이다.
+        var produced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var op in plan.Operations)
         {
-            if (op.Kind != OperationKind.CreateDirectory && op.Source is not null && !fileSystem.FileExists(op.Source))
+            if (op.Kind != OperationKind.CreateDirectory && op.Source is not null
+                && !produced.Contains(Path.GetFullPath(op.Source)) && !fileSystem.FileExists(op.Source))
             {
                 issues.Add(new PreflightIssue(Severity.Error, "원본 파일을 찾을 수 없습니다", op.Source));
+            }
+
+            if (op.Kind != OperationKind.CreateDirectory)
+            {
+                produced.Add(Path.GetFullPath(op.Destination));
             }
 
             if (op.Destination.Length > MaxPathLength)

@@ -88,6 +88,12 @@ public sealed class SafeDelete
         }
     }
 
+    /// <summary>
+    /// 되돌리기가 실행이 만든 폴더를 치울 때 쓴다. 동작은 <see cref="RemoveEmptyDirectory"/>와 같다(비어 있을 때만 지운다).
+    /// 폴더 제거를 부르는 코드는 이 파일에만 둔다는 구조 테스트 규칙 때문에 따로 둔 입구다.
+    /// </summary>
+    public bool RemoveCreatedDirectory(string path) => RemoveEmptyDirectory(path);
+
     // 드라이브 루트(D:\)는 끝의 구분자를 남겨야 Path.Combine이 올바르게 동작한다.
     private static string TrimSeparators(string path) =>
         path == Path.GetPathRoot(path)
