@@ -19,6 +19,12 @@ public sealed class Executor(ExecutionContext context)
     internal const string SizeChangedBeforeMoveMessage = "파일 크기가 계획 때와 달라 옮기지 않았습니다";
     internal const string SizeChangedAfterMoveMessage = "옮긴 파일의 크기가 계획과 다릅니다 (파일은 새 위치에 있습니다)";
     internal const string MissingSourceMessage = "원본 경로가 없는 작업입니다";
+    internal const string ArchiveVolumeMissingMessage = "보관 드라이브가 연결되어 있지 않습니다";
+    internal const string CrossVolumeMoveMessage = "다른 드라이브로는 옮기지 않습니다";
+    internal const string FileNotFoundMessage = "원본 파일을 찾을 수 없습니다";
+    internal const string DirectoryNotFoundMessage = "폴더를 찾을 수 없습니다";
+    internal const string AccessDeniedMessage = "권한이 없어 파일에 접근할 수 없습니다";
+    internal const string GenericIoMessage = "파일 작업 중 오류가 발생했습니다";
 
     private const int BufferSize = 1024 * 1024;
 
@@ -36,7 +42,7 @@ public sealed class Executor(ExecutionContext context)
         var runId = JournalPaths.NewRunId(context.UtcNow());
         var journal = new JournalWriter(fs,
             [JournalPaths.InArchive(plan.ArchiveRoot, runId), JournalPaths.InAppData(context.AppDataRoot, runId)]);
-        var run = new Run(runId, journal, new SafeDelete(fs, plan.ArchiveRoot, runId));
+        var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId));
 
         // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다.
         journal.Write(new JournalEntry(runId, JournalEvent.RunStarted, Destination: plan.ArchiveRoot, TimestampUtc: context.UtcNow()));
@@ -102,13 +108,20 @@ public sealed class Executor(ExecutionContext context)
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // 드라이브가 빠졌으면 이후 작업도 모두 실패하므로 멈추고 이어 하기에 맡긴다. 보관 드라이브를 먼저 확인한다.
+            if (!IsVolumePresent(run.ArchiveRoot))
+            {
+                RecordFailure(run, op, ArchiveVolumeMissingMessage);
+                return false;
+            }
+
             if (op.Source is not null && !IsVolumePresent(op.Source))
             {
                 RecordFailure(run, op, SourceVolumeMissingMessage);
                 return false;
             }
 
-            result = StepResult.Failed(ex.Message);
+            result = StepResult.Failed(DescribeFailure(ex));
         }
 
         switch (result.Event)
@@ -225,6 +238,12 @@ public sealed class Executor(ExecutionContext context)
             return StepResult.Failed(MissingSourceMessage);
         }
 
+        // 다른 드라이브로의 이동은 원본을 지우는 것과 같다. 계획기가 막지만, 기록에서 다시 읽은 작업도 있으므로 여기서도 막는다.
+        if (!string.Equals(fs.GetVolumeRoot(op.Source), fs.GetVolumeRoot(op.Destination), StringComparison.OrdinalIgnoreCase))
+        {
+            return StepResult.Failed(CrossVolumeMoveMessage);
+        }
+
         if (fs.GetFile(op.Source).Length != op.Length)
         {
             return StepResult.Failed(SizeChangedBeforeMoveMessage);
@@ -248,6 +267,20 @@ public sealed class Executor(ExecutionContext context)
     // ------------------------------------------------------------------
     // 도우미
     // ------------------------------------------------------------------
+
+    /// <summary>사용자에게 보일 한국어 오류 문구. 런타임 문구는 " — " 뒤에 덧붙인다(영어일 수 있다).</summary>
+    private static string DescribeFailure(Exception ex)
+    {
+        var text = ex switch
+        {
+            FileNotFoundException => FileNotFoundMessage,
+            DirectoryNotFoundException => DirectoryNotFoundMessage,
+            UnauthorizedAccessException => AccessDeniedMessage,
+            _ => GenericIoMessage,
+        };
+
+        return string.IsNullOrWhiteSpace(ex.Message) ? text : $"{text} — {ex.Message}";
+    }
 
     private bool IsVolumePresent(string path)
     {
@@ -290,9 +323,11 @@ public sealed class Executor(ExecutionContext context)
     }
 
     /// <summary>실행 하나의 상태. 격리(SafeDelete)는 실행마다 하나다.</summary>
-    private sealed class Run(string runId, JournalWriter journal, SafeDelete safeDelete)
+    private sealed class Run(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete)
     {
         public string RunId { get; } = runId;
+
+        public string ArchiveRoot { get; } = archiveRoot;
 
         public JournalWriter Journal { get; } = journal;
 

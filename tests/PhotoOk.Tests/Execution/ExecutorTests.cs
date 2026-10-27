@@ -376,6 +376,86 @@ public class ExecutorTests
     }
 
     [Fact]
+    public void Execute_RefusesCrossVolumeMove()
+    {
+        var x = AddSource(@"E:\DCIM\x.jpg", 300, 25);
+
+        var result = NewExecutor().Execute(PlanOf(Move("op1", @"E:\DCIM\x.jpg", @"D:\Archive\x.jpg", x.Length)));
+
+        Assert.Equal(RunOutcome.CompletedWithFailures, result.Outcome);
+        Assert.Equal("다른 드라이브로는 옮기지 않습니다", Assert.Single(result.Failures).Message);
+        Assert.Equal(x, _fs.ReadAllBytes(@"E:\DCIM\x.jpg"));
+        Assert.False(_fs.FileExists(@"D:\Archive\x.jpg"));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public void Execute_UsesKoreanMessage_ForIoFailure()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 26);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.FailReadsOf(@"E:\DCIM\a.jpg");
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
+
+        var message = Assert.Single(result.Failures).Message;
+        Assert.StartsWith("파일 작업 중 오류가 발생했습니다 — ", message);
+        Assert.Equal(message, Entries(result.JournalPath!).Single(e => e.Event == JournalEvent.Failed).Message);
+    }
+
+    [Fact]
+    public void Execute_UsesKoreanMessage_ForMissingParentFolder()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 27);
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
+
+        Assert.StartsWith("폴더를 찾을 수 없습니다", Assert.Single(result.Failures).Message);
+    }
+
+    [Fact]
+    public void Execute_Interrupts_WhenArchiveVolumeRemoved()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 28);
+        var b = AddSource(@"E:\DCIM\b.jpg", 200, 29);
+        var c = AddSource(@"E:\DCIM\c.jpg", 300, 30);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _hooked.AfterMove = (_, destination) =>
+        {
+            if (destination.EndsWith(@"\a.jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                _fs.RemoveVolume(@"D:\");
+            }
+        };
+
+        var result = NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length)));
+
+        Assert.Equal(RunOutcome.Interrupted, result.Outcome);
+        Assert.Equal(1, result.Succeeded);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal("op2", failure.OpId);
+        Assert.Equal("보관 드라이브가 연결되어 있지 않습니다", failure.Message);
+
+        var appDataJournal = JournalPaths.InAppData(AppData, result.RunId);
+        Assert.Equal(appDataJournal, result.JournalPath);
+        var entries = Entries(appDataJournal);
+        Assert.DoesNotContain(entries, e => e.Event == JournalEvent.RunFinished);
+        Assert.Equal("보관 드라이브가 연결되어 있지 않습니다", entries.Single(e => e.Event == JournalEvent.Failed).Message);
+        var state = JournalReader.Load(_fs, appDataJournal);
+        Assert.False(state.Finished);
+        Assert.Equal(OpStatus.Pending, StateOf(state, "op3").Status);
+
+        _fs.RestoreVolume(@"D:\");
+        Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        Assert.False(_fs.FileExists(@"D:\Archive\2026\b.jpg"));
+        Assert.Empty(TempFiles());
+        Assert.Equal(b, _fs.ReadAllBytes(@"E:\DCIM\b.jpg"));
+    }
+
+    [Fact]
     public void Execute_FailsCopy_WhenDestinationAlreadyExists_AndLeavesItAlone()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 18);
