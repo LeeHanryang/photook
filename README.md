@@ -81,6 +81,7 @@ dotnet run --project src/PhotoOk
 | MetadataExtractor | 사진·동영상 메타데이터 읽기 | Apache-2.0 |
 | [XmpCore](https://github.com/drewnoakes/xmp-core-dotnet) | XMP 메타데이터 해석 (MetadataExtractor가 사용) | BSD (Adobe XMP SDK와 같은 라이선스) |
 | System.IO.Hashing | 파일 검증용 xxHash64 | MIT |
+| CommunityToolkit.Mvvm | 화면 로직(MVVM) | MIT |
 
 ## 라이선스
 

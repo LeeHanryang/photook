@@ -159,27 +159,46 @@ public sealed class ForbiddenApiTests
     [Fact]
     public void SourceTree_HasNoForbiddenApis()
     {
-        var srcRoot = FindSourceRoot();
-        var sourceFiles = Directory
-            .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
-            .Where(file => !IsInBuildFolder(srcRoot, file))
-            .ToList();
+        var sourceFiles = SourceFiles();
 
         // 빈 목록이면 검사가 아무것도 하지 않은 것이므로 실패로 본다.
         Assert.NotEmpty(sourceFiles);
 
-        var coreRoot = Path.Combine(srcRoot, "PhotoOk.Core") + Path.DirectorySeparatorChar;
         var violations = new List<string>();
-        foreach (var file in sourceFiles)
+        foreach (var (fullPath, relativePath) in sourceFiles)
         {
-            var relativePath = file.StartsWith(coreRoot, StringComparison.OrdinalIgnoreCase)
-                ? Path.GetRelativePath(coreRoot, file)
-                : Path.GetRelativePath(srcRoot, file);
-
-            violations.AddRange(ForbiddenApiScanner.Find(relativePath, File.ReadAllText(file)));
+            violations.AddRange(ForbiddenApiScanner.Find(relativePath, File.ReadAllText(fullPath)));
         }
 
         Assert.Empty(violations);
+    }
+
+    [Fact]
+    public void ForbiddenApiScan_CoversWpfProject()
+    {
+        var relativePaths = SourceFiles().Select(file => file.RelativePath.Replace('\\', '/')).ToList();
+
+        // 화면 프로젝트(App·ViewModel·서비스)도 같은 규칙으로 검사한다.
+        Assert.Contains("PhotoOk/App.xaml.cs", relativePaths);
+        Assert.Contains("PhotoOk/ViewModels/ShellViewModel.cs", relativePaths);
+        Assert.Contains("IO/PhysicalFileSystem.cs", relativePaths);
+    }
+
+    /// <summary>
+    /// 검사할 src/ 아래 모든 .cs 파일(bin·obj 제외). Core 파일은 <c>src/PhotoOk.Core/</c> 기준,
+    /// 나머지(화면 프로젝트 등)는 <c>src/</c> 기준의 상대 경로를 붙인다(허용 목록이 Core 기준 경로이므로).
+    /// </summary>
+    private static List<(string FullPath, string RelativePath)> SourceFiles()
+    {
+        var srcRoot = FindSourceRoot();
+        var coreRoot = Path.Combine(srcRoot, "PhotoOk.Core") + Path.DirectorySeparatorChar;
+        return Directory
+            .EnumerateFiles(srcRoot, "*.cs", SearchOption.AllDirectories)
+            .Where(file => !IsInBuildFolder(srcRoot, file))
+            .Select(file => (file, file.StartsWith(coreRoot, StringComparison.OrdinalIgnoreCase)
+                ? Path.GetRelativePath(coreRoot, file)
+                : Path.GetRelativePath(srcRoot, file)))
+            .ToList();
     }
 
     private static string FindSourceRoot()

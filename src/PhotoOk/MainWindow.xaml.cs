@@ -1,23 +1,34 @@
-﻿using System.Text;
+﻿using System.ComponentModel;
 using System.Windows;
-using System.Windows.Controls;
-using System.Windows.Data;
-using System.Windows.Documents;
-using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
+using PhotoOk.ViewModels;
 
 namespace PhotoOk;
 
-/// <summary>
-/// Interaction logic for MainWindow.xaml
-/// </summary>
+/// <summary>앱의 유일한 창. 지금 화면을 보여 주고, 작업 중에 닫으려 하면 셸에 확인을 맡긴다.</summary>
 public partial class MainWindow : Window
 {
-    public MainWindow()
+    private readonly ShellViewModel _shell;
+
+    public MainWindow(ShellViewModel shell)
     {
+        _shell = shell;
         InitializeComponent();
+        DataContext = shell;
+        Closing += OnClosing;
+        shell.CloseRequested += OnCloseRequested;
+    }
+
+    private void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (!_shell.ConfirmClose())
+        {
+            e.Cancel = true;
+        }
+    }
+
+    private void OnCloseRequested(object? sender, EventArgs e)
+    {
+        // 작업이 멈춘 뒤 다시 닫는다. Closing 처리 중에 Close를 부를 수 없으므로 한 번 미룬다.
+        Dispatcher.BeginInvoke(new Action(Close));
     }
 }
