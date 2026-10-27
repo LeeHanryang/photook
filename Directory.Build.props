@@ -1,0 +1,12 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <LangVersion>latest</LangVersion>
+    <Version>0.1.0</Version>
+    <Authors>LeeHanryang</Authors>
+    <Company>LeeHanryang</Company>
+    <Product>포텩</Product>
+  </PropertyGroup>
+</Project>
