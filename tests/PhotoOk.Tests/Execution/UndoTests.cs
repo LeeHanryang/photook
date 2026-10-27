@@ -1138,6 +1138,55 @@ public class UndoTests
     }
 
     [Fact]
+    public void Undo_PreScan_StaysFast_With20000Operations()
+    {
+        // 앞쪽의 이동이 비운 자리(X)를 다른 드라이브의 복사가 채웠고, 그 원본 드라이브가 빠졌다. 미리 확인은 나머지 2만 개 복사를
+        // 모두 훑은 뒤 마지막에 이 복사를 만나 멈춘다. 자리 확인이 작업 수의 제곱에 비례하면 여기서 몇 분이 걸린다.
+        const int count = 20_000;
+        var moved = AddFile(@"D:\Archive\Y.jpg", 10, 1);
+        var copied = AddFile(@"D:\Archive\X.jpg", 12, 2);
+        _fs.AddFile(@"E:\DCIM\X.jpg", copied);
+        var hash = Hash(@"D:\Archive\X.jpg");
+        var ops = new List<PlannedOperation>
+        {
+            Move("op00000", @"D:\Archive\X.jpg", @"D:\Archive\Y.jpg", moved.Length),
+            Copy("op00001", @"E:\DCIM\X.jpg", @"D:\Archive\X.jpg", copied.Length),
+        };
+        for (var i = 0; i < count; i++)
+        {
+            ops.Add(Copy($"op{i + 2:D5}", $@"E:\DCIM\F{i:D5}.jpg", $@"D:\Archive\c\F{i:D5}.jpg", 12));
+        }
+
+        var writer = new JournalWriter(_fs, [ArchiveJournal]);
+        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Length: ops.Count, Destination: Archive, TimestampUtc: Now));
+        foreach (var op in ops)
+        {
+            writer.Write(new JournalEntry(RunId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
+                TimestampUtc: Now));
+        }
+
+        foreach (var op in ops)
+        {
+            writer.Write(new JournalEntry(RunId, JournalEvent.Started, op.Id, op.Kind, TimestampUtc: Now));
+            writer.Write(new JournalEntry(RunId, JournalEvent.Completed, op.Id, op.Kind,
+                Hash: op.Kind == OperationKind.Copy ? hash : null, TimestampUtc: Now));
+        }
+
+        writer.Write(new JournalEntry(RunId, JournalEvent.RunFinished, TimestampUtc: Now));
+        _fs.RemoveVolume(@"E:\");
+        var opsBefore = _fs.MutatingOps;
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var result = NewUndoer().Undo(ArchiveJournal);
+        watch.Stop();
+
+        Assert.Equal(0, result.Undone);
+        Assert.Equal([new UndoSkip("op00001", @"D:\Archive\X.jpg", "원본 드라이브가 연결되어 있지 않습니다")], result.Skipped);
+        Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.True(watch.Elapsed < TimeSpan.FromSeconds(5), $"미리 확인이 너무 느립니다: {watch.Elapsed}");
+    }
+
+    [Fact]
     public void Undo_PreScan_BlocksBeforeStart_WhenSourceFailsMidRead()
     {
         var (run, plan, pa, pb) = RunCrossVolumeCopyIntoVacatedSpot();

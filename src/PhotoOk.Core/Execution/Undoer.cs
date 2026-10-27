@@ -551,7 +551,7 @@ public sealed class Undoer(ExecutionContext context)
     {
         if (outcome.Kind is OutcomeKind.Undone or OutcomeKind.Skipped)
         {
-            run.Resolved.Add(op.Id);
+            run.Resolve(op);
         }
 
         switch (outcome.Kind)
@@ -617,8 +617,25 @@ public sealed class Undoer(ExecutionContext context)
     private sealed class UndoRun(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete,
         IReadOnlyList<OpState> operations)
     {
+        /// <summary>
+        /// 아직 되돌리지 않은 작업(Completed·Started·Failed이고 이번에 기록하지 않은)의 원래 자리(정규화한 원본 경로) → 작업 ID.
+        /// 처음 필요할 때 한 번 만들고, 작업을 기록할 때마다 뺀다. 자리 확인을 작업마다 전체를 훑지 않게 하려는 것이다.
+        /// </summary>
+        private Dictionary<string, HashSet<string>>? _openSpots;
+
         /// <summary>이번 되돌리기에서 Undone·UndoSkipped로 기록한 작업.</summary>
         public HashSet<string> Resolved { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>작업을 기록했다(Undone·UndoSkipped). 그 작업의 원래 자리는 더 이상 열린 자리가 아니다.</summary>
+        public void Resolve(PlannedOperation op)
+        {
+            Resolved.Add(op.Id);
+            if (_openSpots is not null && op.Source is not null
+                && _openSpots.TryGetValue(Path.GetFullPath(op.Source), out var holders))
+            {
+                holders.Remove(op.Id);
+            }
+        }
 
         /// <summary>
         /// 복사본 자리가 아직 되돌리지 않은(Completed·Started·Failed이고 이번에 기록하지 않은) 다른 작업의 원래 자리(원본 경로)인지.
@@ -626,12 +643,33 @@ public sealed class Undoer(ExecutionContext context)
         /// </summary>
         public bool HoldsOpenSpot(PlannedOperation copy)
         {
-            var spot = Path.GetFullPath(copy.Destination);
-            return operations.Any(o => o.Operation.Id != copy.Id
-                && o.Operation.Source is not null
-                && o.Status is (OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
-                && !Resolved.Contains(o.Operation.Id)
-                && string.Equals(Path.GetFullPath(o.Operation.Source), spot, StringComparison.OrdinalIgnoreCase));
+            _openSpots ??= BuildOpenSpots();
+            return _openSpots.TryGetValue(Path.GetFullPath(copy.Destination), out var holders)
+                   && holders.Any(id => !string.Equals(id, copy.Id, StringComparison.Ordinal));
+        }
+
+        private Dictionary<string, HashSet<string>> BuildOpenSpots()
+        {
+            var spots = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var o in operations)
+            {
+                if (o.Operation.Source is null
+                    || o.Status is not (OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
+                    || Resolved.Contains(o.Operation.Id))
+                {
+                    continue;
+                }
+
+                var spot = Path.GetFullPath(o.Operation.Source);
+                if (!spots.TryGetValue(spot, out var holders))
+                {
+                    spots[spot] = holders = new HashSet<string>(StringComparer.Ordinal);
+                }
+
+                holders.Add(o.Operation.Id);
+            }
+
+            return spots;
         }
 
         public string RunId { get; } = runId;
