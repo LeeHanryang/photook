@@ -29,6 +29,7 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// 남긴 복사본이 그 작업을 막으므로 멈춘다.
 /// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이 있으면
 /// 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>…)으로 돌려놓고 Undone으로 기록하며, 결과에 그 경로를 알린다.
+/// 이 실행의 자리 바꾸기 임시 경로에 있는 파일은 크기가 달라졌어도 항상 꺼낸다.
 /// 그런 사유가 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다(남긴 복사본 때문에 비어 있지 않을 수 있다).
 /// 보관 드라이브가 없으면 아무것도 쓰지 않고 그 사유 하나만 돌려준다. 받은 기록 파일 자체를 읽을 수 없으면 예외가 그대로 나간다.
 /// 기록을 남길 수 없으면 <see cref="JournalUnavailableException"/>.
@@ -45,6 +46,7 @@ public sealed class Undoer(ExecutionContext context)
     internal const string NotPerformedMessage = "실행되지 않은 작업이라 되돌릴 것이 없습니다";
     internal const string UnknownFolderMessage = "만들었는지 알 수 없는 폴더라 그대로 둡니다";
     internal const string RenamedBackMessage = "원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: ";
+    internal const string SizeChangedRestoredMessage = "크기가 달라졌지만 숨겨지지 않도록 원래 자리로 되돌렸습니다: ";
 
     public UndoResult Undo(string journalPath, CancellationToken ct = default)
     {
@@ -196,7 +198,7 @@ public sealed class Undoer(ExecutionContext context)
 
         if (fs.GetFile(op.Destination).Length != op.Length)
         {
-            return Outcome.Skipped(ModifiedAfterRunMessage);
+            return IsRunTempMove(op) ? MoveBackDespiteSize(op) : Outcome.Skipped(ModifiedAfterRunMessage);
         }
 
         MoveBack(op);
@@ -281,18 +283,21 @@ public sealed class Undoer(ExecutionContext context)
             return Outcome.Skipped(NotPerformedMessage);
         }
 
+        // 이 실행의 임시 이름(원래 이름 + .photook-tmp- + 이 작업의 ID)에 있는 파일은 이 작업이 옮긴 것이다. 크기와 상관없이 꺼낸다.
+        var runTemp = IsRunTempMove(op);
+        var sizeMatches = fs.GetFile(op.Destination).Length == op.Length;
         if (fs.FileExists(op.Source))
         {
-            // 임시 이름(이 작업의 ID가 들어 있다)에 계획한 크기의 파일이 있으면 이 작업이 옮긴 것이다. 임시 이름으로 남기지 않는다.
-            return IsTempName(op.Destination) && fs.GetFile(op.Destination).Length == op.Length
+            // 임시 이름에 계획한 크기의 파일이 있으면 이 작업이 옮긴 것이다. 임시 이름으로 남기지 않는다.
+            return runTemp || (IsTempName(op.Destination) && sizeMatches)
                 ? RestoreBesideOriginal(op)
                 : Outcome.Skipped(NotPerformedMessage);
         }
 
         // 옮긴 뒤 크기가 달라 실패로 기록된 경우. 파일은 새 자리에 있으므로 알린다.
-        if (fs.GetFile(op.Destination).Length != op.Length)
+        if (!sizeMatches)
         {
-            return Outcome.Skipped(ModifiedAfterRunMessage);
+            return runTemp ? MoveBackDespiteSize(op) : Outcome.Skipped(ModifiedAfterRunMessage);
         }
 
         MoveBack(op);
@@ -388,6 +393,21 @@ public sealed class Undoer(ExecutionContext context)
         fs.Move(op.Destination, target);
         return Outcome.Undone(target, RenamedBackMessage + target);
     }
+
+    /// <summary>원래 자리가 비어 있으면 크기가 달라졌어도 임시 이름에 숨겨 두지 않고 원래 자리로 돌려놓고 알린다.</summary>
+    private Outcome MoveBackDespiteSize(PlannedOperation op)
+    {
+        MoveBack(op);
+        return Outcome.Undone(op.Source, SizeChangedRestoredMessage + op.Source);
+    }
+
+    /// <summary>
+    /// 자리 바꾸기의 첫 다리인지: 대상이 정확히 <c>원본 경로 + ".photook-tmp-" + 이 작업의 ID</c>다.
+    /// 그 경로에 있는 파일은 이 실행의 이 작업만 만들 수 있다. 두 번째 다리(임시 이름에서 최종 자리로)는 해당하지 않는다.
+    /// </summary>
+    private static bool IsRunTempMove(PlannedOperation op) =>
+        op.Kind == OperationKind.Move && op.Source is not null
+        && string.Equals(op.Destination, op.Source + Executor.TempSuffix + "-" + op.Id, StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTempName(string path) =>
         Path.GetFileName(path).Contains(Executor.TempSuffix, StringComparison.OrdinalIgnoreCase);

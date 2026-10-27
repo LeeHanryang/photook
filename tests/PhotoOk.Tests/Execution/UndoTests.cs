@@ -858,6 +858,85 @@ public class UndoTests
         Assert.Equal(OpStatus.Undone, StateOf(JournalReader.Load(_fs, journal), "op1").Status);
     }
 
+    private const string SizeChangedRestored = "크기가 달라졌지만 숨겨지지 않도록 원래 자리로 되돌렸습니다: ";
+
+    [Theory]
+    [InlineData(JournalEvent.Completed)] // 임시 이름으로 옮긴 작업이 완료로 기록됨
+    [InlineData(JournalEvent.Failed)]    // 옮겼지만 실패로 기록된 첫 다리
+    public void Undo_RescuesRunTempFile_WithChangedSize_ToFreeOriginalSpot(JournalEvent result)
+    {
+        const string Spot = @"D:\Archive\2026\14\P.JPG";
+        const string Temp = Spot + ".photook-tmp-op1";
+        var changed = Bytes(120, 47); // 계획 때는 100바이트였다
+        _fs.AddFile(Temp, changed);
+        var ops = new[]
+        {
+            Move("op1", Spot, Temp, 100),
+            Move("op2", Temp, @"D:\Archive\2026\15\P.JPG", 100),
+        };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op1", result, null));
+
+        var undo = NewUndoer().Undo(journal);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(changed, _fs.ReadAllBytes(Spot));
+        Assert.Equal(1, undo.Undone);
+        Assert.Equal([new UndoSkip("op1", Temp, SizeChangedRestored + Spot)], undo.Skipped);
+        var undone = Entries(journal).Single(e => e.Event == JournalEvent.Undone);
+        Assert.Equal("op1", undone.OpId);
+        Assert.Equal(Spot, undone.Destination);
+    }
+
+    [Fact]
+    public void Undo_RescuesUnrecordedRunTempFile_WithChangedSize_BesideTakenSpot()
+    {
+        const string Spot = @"D:\Archive\2026\14\P.JPG";
+        const string Temp = Spot + ".photook-tmp-op1";
+        var changed = Bytes(120, 48);
+        var other = Bytes(50, 49);
+        _fs.AddFile(Temp, changed);
+        _fs.AddFile(Spot, other); // 원래 자리에는 다른 파일
+        var ops = new[] { Move("op1", Spot, Temp, 100) };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null));
+
+        var undo = NewUndoer().Undo(journal);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(changed, _fs.ReadAllBytes(@"D:\Archive\2026\14\P_1.JPG"));
+        Assert.Equal(other, _fs.ReadAllBytes(Spot));
+        Assert.Equal(
+            [new UndoSkip("op1", Temp, @"원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: D:\Archive\2026\14\P_1.JPG")],
+            undo.Skipped);
+    }
+
+    [Fact]
+    public void Undo_SecondLegWithChangedSize_IsNotRescued()
+    {
+        // 두 번째 다리(임시 이름 → 최종 자리)는 최종 자리가 보이는 이름이므로 기존 규칙대로 남긴다.
+        const string Temp = @"D:\Archive\2026\14\P.JPG.photook-tmp-op1";
+        const string Final = @"D:\Archive\2026\15\P.JPG";
+        var changed = Bytes(120, 50);
+        _fs.AddFile(Final, changed);
+        var ops = new[]
+        {
+            Move("op1", @"D:\Archive\2026\14\P.JPG", Temp, 100),
+            Move("op2", Temp, Final, 100),
+        };
+        var journal = WriteJournal(ops,
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, null));
+
+        var undo = NewUndoer().Undo(journal);
+
+        Assert.Equal(changed, _fs.ReadAllBytes(Final));
+        Assert.Equal(
+            [
+                new UndoSkip("op2", Final, KeptModified),
+                new UndoSkip("op1", Temp, MovedMissing),
+            ],
+            undo.Skipped);
+    }
+
     [Fact]
     public void Undo_WritesUndoStarted_OnceBeforeFirstAction()
     {
