@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.IO.Hashing;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.Planning;
@@ -262,16 +263,17 @@ public sealed class Executor(ExecutionContext context)
 
         var sourceTime = fs.GetFile(op.Source).LastWriteTimeUtc;
         var createdTemp = false;
+        // 1 MiB 버퍼는 큰 객체 힙에 놓이므로 작업마다 만들지 않고 빌려 쓴다.
+        var buffer = ArrayPool<byte>.Shared.Rent(BufferSize);
         try
         {
             var hash = new XxHash64();
-            var buffer = new byte[BufferSize];
             using (var input = fs.OpenRead(op.Source))
             using (var output = fs.CreateNew(temp))
             {
                 createdTemp = true;
                 int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                while ((read = input.Read(buffer, 0, BufferSize)) > 0)
                 {
                     var chunk = new ReadOnlySpan<byte>(buffer, 0, read);
                     hash.Append(chunk);
@@ -314,6 +316,10 @@ public sealed class Executor(ExecutionContext context)
         {
             TryQuarantine(run, temp);
             throw;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

@@ -337,6 +337,29 @@ public class ExecutorTests
     }
 
     [Fact]
+    public void Execute_DoesNotAllocateACopyBufferPerOperation()
+    {
+        // 1 MiB 버퍼를 작업마다 새로 만들면 작업 수만큼 큰 객체 힙에 쌓인다. 빌려 쓰고 돌려줘야 한다.
+        const int files = 30;
+        var warmup = AddSource(@"E:\DCIM\warmup.jpg", 100, 25);
+        NewExecutor().Execute(PlanOf(Copy("w1", @"E:\DCIM\warmup.jpg", @"D:\Archive\warmup.jpg", warmup.Length)));
+        var ops = new List<PlannedOperation>();
+        for (var i = 0; i < files; i++)
+        {
+            var data = AddSource($@"E:\DCIM\{i}.jpg", 100, 100 + i);
+            ops.Add(Copy($"op{i}", $@"E:\DCIM\{i}.jpg", $@"D:\Archive\{i}.jpg", data.Length));
+        }
+
+        var executor = NewExecutor();
+        var before = GC.GetAllocatedBytesForCurrentThread();
+        var result = executor.Execute(PlanOf([.. ops]));
+        var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.True(allocated < files * 1024L * 1024 / 2, $"복사 {files}개에 {allocated:N0} 바이트를 할당했습니다");
+    }
+
+    [Fact]
     public void Execute_WritesJournal_ToBothLocations()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 13);
