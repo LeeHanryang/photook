@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using PhotoOk.Core.Execution;
 using PhotoOk.Core.History;
 using PhotoOk.Core.IO;
+using PhotoOk.Core.Planning;
 using PhotoOk.Tests.Fakes;
 using PhotoOk.ViewModels;
 
@@ -22,11 +23,27 @@ public class StartViewModelTests
 
     private sealed class SourceStub : ObservableObject;
 
-    private StartViewModel Create() => new(_shell, _drives, new RunHistory(_fs, AppData), root =>
-    {
-        _requestedRoots.Add(root);
-        return _sourceScreen;
-    });
+    private readonly ObservableObject _historyScreen = new SourceStub();
+    private readonly ObservableObject _resumeScreen = new SourceStub();
+    private readonly List<string?> _requestedHistorySelections = [];
+    private readonly List<string> _requestedResumes = [];
+
+    private StartViewModel Create() => new(_shell, _drives, new RunHistory(_fs, AppData),
+        createSource: root =>
+        {
+            _requestedRoots.Add(root);
+            return _sourceScreen;
+        },
+        createHistory: runId =>
+        {
+            _requestedHistorySelections.Add(runId);
+            return _historyScreen;
+        },
+        createResume: journalPath =>
+        {
+            _requestedResumes.Add(journalPath);
+            return _resumeScreen;
+        });
 
     private void WriteJournal(string runId, bool finished)
     {
@@ -125,5 +142,60 @@ public class StartViewModelTests
 
         Assert.Same(_sourceScreen, _shell.Current);
         Assert.Equal([@"E:\"], _requestedRoots);
+    }
+
+    [Fact]
+    public void OpenHistory_NavigatesToHistoryScreen_WithoutSelection()
+    {
+        var start = Create();
+
+        start.OpenHistoryCommand.Execute(null);
+
+        Assert.Same(_historyScreen, _shell.Current);
+        Assert.Equal([(string?)null], _requestedHistorySelections);
+    }
+
+    [Fact]
+    public void UnfinishedBanner_ResumeGoesToRun_UndoGoesToHistoryWithThatRunSelected()
+    {
+        WriteJournal("20261027-090000-bbbb", finished: false);
+        var start = Create();
+        Assert.True(start.ResumeUnfinishedCommand.CanExecute(null));
+        Assert.True(start.UndoUnfinishedCommand.CanExecute(null));
+
+        start.UndoUnfinishedCommand.Execute(null);
+        Assert.Same(_historyScreen, _shell.Current);
+        Assert.Equal(["20261027-090000-bbbb"], _requestedHistorySelections);
+
+        start.ResumeUnfinishedCommand.Execute(null);
+        Assert.Same(_resumeScreen, _shell.Current);
+        Assert.Equal([start.UnfinishedRun!.JournalPath], _requestedResumes);
+    }
+
+    [Fact]
+    public void UnfinishedBanner_Commands_AreDisabledWithoutUnfinishedRun()
+    {
+        var start = Create();
+
+        Assert.False(start.ResumeUnfinishedCommand.CanExecute(null));
+        Assert.False(start.UndoUnfinishedCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void UnfinishedBanner_ResumeOnlyForUnfinished_NotForUndoInProgress()
+    {
+        var runId = "20261027-090000-cccc";
+        var writer = new JournalWriter(_fs, [JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: 1, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op1", OperationKind.Copy, @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", 5,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Completed, "op1", TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.UndoStarted, TimestampUtc: Now));
+
+        var start = Create();
+
+        Assert.Equal(RunStatus.UndoInProgress, start.UnfinishedRun!.Status);
+        Assert.False(start.ResumeUnfinishedCommand.CanExecute(null));
+        Assert.True(start.UndoUnfinishedCommand.CanExecute(null));
     }
 }

@@ -83,9 +83,12 @@ public partial class App : Application
             Log: _log);
     }
 
-    /// <summary>시작 화면. 가져오기를 시작하면 가져오기 화면 팩토리로 화면을 만든다.</summary>
+    /// <summary>시작 화면. 가져오기·작업 기록·이어 하기는 각 화면 팩토리로 화면을 만든다.</summary>
     private static StartViewModel CreateStartScreen(AppServices services, ShellViewModel shell) =>
-        new(shell, services.Drives, services.History, driveRoot => CreateSourceScreen(services, shell, driveRoot));
+        new(shell, services.Drives, services.History,
+            createSource: driveRoot => CreateSourceScreen(services, shell, driveRoot),
+            createHistory: runId => CreateHistoryScreen(services, shell, runId),
+            createResume: journalPath => CreateResumeScreen(services, shell, journalPath));
 
     /// <summary>가져오기 화면. 마지막 선택은 화면을 만들 때마다 다시 읽는다(앞서 저장한 값이 보이도록).</summary>
     private static SourceViewModel CreateSourceScreen(AppServices services, ShellViewModel shell, string? driveRoot) =>
@@ -119,17 +122,37 @@ public partial class App : Application
 
     /// <summary>
     /// 실행 화면. 미리보기에서 "정리 시작"을 눌러 온 것이므로 화면을 만들자마자 실행한다(<see cref="RunViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).
-    /// 작업 기록 화면이 생기기 전에는 "작업 기록"도 시작 화면으로 돌아간다.
+    /// "작업 기록"은 작업 기록 화면으로 간다.
     /// </summary>
     private static RunViewModel CreateRunScreen(AppServices services, ShellViewModel shell, Plan plan, int scanErrorCount)
     {
         var run = RunViewModel.ForPlan(shell, new Executor(services.Execution), services.FileSystem, services.Log,
             createHome: () => CreateStartScreen(services, shell),
-            createHistory: () => CreateStartScreen(services, shell),
+            createHistory: () => CreateHistoryScreen(services, shell, selectRunId: null),
             plan, scanErrorCount);
         run.StartCommand.Execute(null);
         return run;
     }
+
+    /// <summary>
+    /// 작업 기록에서 끝나지 않은 실행을 이어 하는 실행 화면. 화면을 만들자마자 이어 한다(<see cref="RunViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).
+    /// </summary>
+    private static RunViewModel CreateResumeScreen(AppServices services, ShellViewModel shell, string journalPath)
+    {
+        var run = RunViewModel.ForResume(shell, new Executor(services.Execution), services.FileSystem, services.Log,
+            createHome: () => CreateStartScreen(services, shell),
+            createHistory: () => CreateHistoryScreen(services, shell, selectRunId: null),
+            journalPath);
+        run.StartCommand.Execute(null);
+        return run;
+    }
+
+    /// <summary>작업 기록 화면. <paramref name="selectRunId"/>가 있으면 그 실행을 고른 채로 연다(시작 화면의 "되돌리기").</summary>
+    private static HistoryViewModel CreateHistoryScreen(AppServices services, ShellViewModel shell, string? selectRunId) =>
+        new(shell, services.History, new Undoer(services.Execution), services.Dialogs, services.Log,
+            createResume: journalPath => CreateResumeScreen(services, shell, journalPath),
+            createHome: () => CreateStartScreen(services, shell),
+            selectRunId);
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {

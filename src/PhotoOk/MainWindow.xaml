@@ -24,6 +24,9 @@
         <DataTemplate DataType="{x:Type vm:RunViewModel}">
             <views:RunView />
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:HistoryViewModel}">
+            <views:HistoryView />
+        </DataTemplate>
     </Window.Resources>
 
     <ContentControl Content="{Binding Current}" Focusable="False" />
