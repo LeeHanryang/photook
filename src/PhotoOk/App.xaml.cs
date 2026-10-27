@@ -40,7 +40,7 @@ public partial class App : Application
         {
             Services = Compose();
             var shell = new ShellViewModel(Services.Dialogs);
-            shell.Navigate(CreateStartScreen());
+            shell.Navigate(CreateStartScreen(Services, shell));
 
             var window = new MainWindow(shell);
             MainWindow = window;
@@ -70,7 +70,6 @@ public partial class App : Application
             Presets: new PresetLibrary(fileSystem, paths.PresetFolder),
             History: new RunHistory(fileSystem, paths.AppDataRoot),
             Drives: new SystemRemovableDrives(),
-            Settings: AppSettingsStore.Load(fileSystem, paths.SettingsPath),
             FolderPicker: new WpfFolderPicker(),
             FilePicker: new WpfFileOpenPicker(),
             Dialogs: _dialogs,
@@ -78,8 +77,17 @@ public partial class App : Application
             Log: _log);
     }
 
-    /// <summary>시작 화면. 지금은 자리표시이고, 시작 화면이 생기면 여기서 팩토리와 함께 만든다.</summary>
-    private static StartPlaceholderViewModel CreateStartScreen() => new();
+    /// <summary>시작 화면. 가져오기를 시작하면 가져오기 화면 팩토리로 화면을 만든다.</summary>
+    private static StartViewModel CreateStartScreen(AppServices services, ShellViewModel shell) =>
+        new(shell, services.Drives, services.History, driveRoot => CreateSourceScreen(services, shell, driveRoot));
+
+    /// <summary>가져오기 화면. 마지막 선택은 화면을 만들 때마다 다시 읽는다(앞서 저장한 값이 보이도록).</summary>
+    private static SourceViewModel CreateSourceScreen(AppServices services, ShellViewModel shell, string? driveRoot) =>
+        new(shell, services.FileSystem, services.Presets, services.Paths.SettingsPath,
+            AppSettingsStore.Load(services.FileSystem, services.Paths.SettingsPath), driveRoot,
+            services.FolderPicker, services.FilePicker, services.Dialogs,
+            createScan: _ => new ScanPlaceholderViewModel(), // 스캔 화면이 생기면 여기서 만든다.
+            createStart: () => CreateStartScreen(services, shell));
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {

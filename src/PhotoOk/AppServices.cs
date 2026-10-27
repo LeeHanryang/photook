@@ -3,7 +3,6 @@ using PhotoOk.Core.History;
 using PhotoOk.Core.IO;
 using PhotoOk.Core.Metadata;
 using PhotoOk.Core.Presets;
-using PhotoOk.Core.Settings;
 using PhotoOk.Services;
 using CoreExecutionContext = PhotoOk.Core.Execution.ExecutionContext;
 
@@ -22,7 +21,6 @@ internal sealed record AppServices(
     PresetLibrary Presets,
     RunHistory History,
     IRemovableDrives Drives,
-    AppSettings Settings,
     IFolderPicker FolderPicker,
     IFileOpenPicker FilePicker,
     IDialogService Dialogs,

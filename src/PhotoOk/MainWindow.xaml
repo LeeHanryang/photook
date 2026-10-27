@@ -9,8 +9,14 @@
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
         <!-- 화면 ViewModel 타입마다 뷰를 하나씩 등록한다. -->
-        <DataTemplate DataType="{x:Type vm:StartPlaceholderViewModel}">
-            <views:StartPlaceholderView />
+        <DataTemplate DataType="{x:Type vm:StartViewModel}">
+            <views:StartView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SourceViewModel}">
+            <views:SourceView />
+        </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:ScanPlaceholderViewModel}">
+            <views:ScanPlaceholderView />
         </DataTemplate>
     </Window.Resources>
 

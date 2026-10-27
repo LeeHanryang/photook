@@ -1,4 +1,4 @@
-<UserControl x:Class="PhotoOk.Views.StartPlaceholderView"
+<UserControl x:Class="PhotoOk.Views.ScanPlaceholderView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
     <Grid>
