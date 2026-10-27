@@ -198,7 +198,7 @@ public sealed class Executor(ExecutionContext context)
         {
             result = step();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsFileOperationFailure(ex))
         {
             // 드라이브가 빠졌으면 이후 작업도 모두 실패하므로 멈추고 이어 하기에 맡긴다.
             if (RecordMissingVolume(run, op))
@@ -312,7 +312,7 @@ public sealed class Executor(ExecutionContext context)
 
             return StepResult.Completed(sourceHash);
         }
-        catch (Exception ex) when (createdTemp && (ex is IOException or UnauthorizedAccessException))
+        catch (Exception ex) when (createdTemp && IsFileOperationFailure(ex))
         {
             TryQuarantine(run, temp);
             throw;
@@ -454,6 +454,13 @@ public sealed class Executor(ExecutionContext context)
         return false;
     }
 
+    /// <summary>
+    /// 작업 하나의 실패로 기록하고 다음 작업으로 넘어갈 예외. 입출력·권한 오류와, 잘못된 경로(사용자 프리셋에서 올 수 있다)에서 나는
+    /// <see cref="NotSupportedException"/>·<see cref="ArgumentException"/>. 모의 크래시나 기록 실패는 해당하지 않는다.
+    /// </summary>
+    internal static bool IsFileOperationFailure(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or NotSupportedException or ArgumentException;
+
     /// <summary>사용자에게 보일 한국어 오류 문구. 런타임 문구는 " — " 뒤에 덧붙인다(영어일 수 있다).</summary>
     internal static string DescribeFailure(Exception ex)
     {
@@ -468,10 +475,18 @@ public sealed class Executor(ExecutionContext context)
         return string.IsNullOrWhiteSpace(ex.Message) ? text : $"{text} — {ex.Message}";
     }
 
+    /// <summary>경로의 드라이브가 연결되어 있는지. 잘못된 경로라 드라이브를 알 수 없으면 true(드라이브 문제가 아니므로 그 작업만 실패한다).</summary>
     private bool IsVolumePresent(string path)
     {
         var fs = context.FileSystem;
-        return fs.DirectoryExists(fs.GetVolumeRoot(path));
+        try
+        {
+            return fs.DirectoryExists(fs.GetVolumeRoot(path));
+        }
+        catch (Exception ex) when (ex is NotSupportedException or ArgumentException)
+        {
+            return true;
+        }
     }
 
     /// <summary>실패한 복사가 남긴 임시 파일을 격리한다. 그마저 안 되면 경고로 남기고 이어 하기·되돌리기에 맡긴다.</summary>
@@ -484,7 +499,7 @@ public sealed class Executor(ExecutionContext context)
                 run.SafeDelete.Quarantine(temp);
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (IsFileOperationFailure(ex))
         {
             run.Warnings.Add($"임시 파일을 치우지 못함: {temp}");
         }

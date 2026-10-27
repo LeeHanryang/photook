@@ -360,6 +360,42 @@ public class ExecutorTests
     }
 
     [Fact]
+    public void Execute_RecordsFailure_ForNotSupportedAndArgumentExceptions_AndFinishesRun()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 26);
+        var b = AddSource(@"E:\DCIM\b.jpg", 200, 27);
+        var c = AddSource(@"E:\DCIM\c.jpg", 300, 28);
+        _hooked.BeforeMove = (_, destination) =>
+        {
+            // 검증을 마친 임시 파일에 진짜 이름을 붙이는 이동에서만 던진다(격리 이동은 그대로 된다).
+            if (string.Equals(destination, @"D:\Archive\a.jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new NotSupportedException("지원하지 않는 경로 형식");
+            }
+        };
+
+        var result = NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"relative\b.jpg", b.Length), // 잘못된 경로(예: 사용자 프리셋에서 온 것)
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\c.jpg", c.Length)));
+
+        Assert.Equal(RunOutcome.CompletedWithFailures, result.Outcome);
+        Assert.Equal(["op1", "op2"], result.Failures.Select(f => f.OpId));
+        Assert.All(result.Failures, f => Assert.StartsWith("파일 작업 중 오류가 발생했습니다", f.Message));
+        Assert.Equal(1, result.Succeeded);
+        Assert.False(_fs.FileExists(@"D:\Archive\a.jpg"));
+        Assert.Empty(TempFiles()); // 이름을 붙이지 못한 임시 파일은 격리했다
+        Assert.Equal(c, _fs.ReadAllBytes(@"D:\Archive\c.jpg"));
+        Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
+        Assert.Equal(b, _fs.ReadAllBytes(@"E:\DCIM\b.jpg"));
+        var state = JournalReader.Load(_fs, result.JournalPath!);
+        Assert.True(state.Finished);
+        Assert.Equal(OpStatus.Failed, StateOf(state, "op1").Status);
+        Assert.Equal(OpStatus.Failed, StateOf(state, "op2").Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op3").Status);
+    }
+
+    [Fact]
     public void Execute_WritesJournal_ToBothLocations()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 13);
