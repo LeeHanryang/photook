@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\PhotoOk\PhotoOk.csproj" />
+    <ProjectReference Include="..\..\src\PhotoOk.Core\PhotoOk.Core.csproj" />
   </ItemGroup>
 
 </Project>

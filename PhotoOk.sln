@@ -11,6 +11,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{0AB3BF05
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoOk.Tests", "tests\PhotoOk.Tests\PhotoOk.Tests.csproj", "{8934740A-0458-4D96-8BE0-8010DC6F91D2}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhotoOk.Core", "src\PhotoOk.Core\PhotoOk.Core.csproj", "{5E7E691A-3256-4142-AF88-EF2A288CE609}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -45,6 +47,18 @@ Global
 		{8934740A-0458-4D96-8BE0-8010DC6F91D2}.Release|x64.Build.0 = Release|Any CPU
 		{8934740A-0458-4D96-8BE0-8010DC6F91D2}.Release|x86.ActiveCfg = Release|Any CPU
 		{8934740A-0458-4D96-8BE0-8010DC6F91D2}.Release|x86.Build.0 = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|x64.Build.0 = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Debug|x86.Build.0 = Debug|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|x64.ActiveCfg = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|x64.Build.0 = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|x86.ActiveCfg = Release|Any CPU
+		{5E7E691A-3256-4142-AF88-EF2A288CE609}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -52,5 +66,6 @@ Global
 	GlobalSection(NestedProjects) = preSolution
 		{69418724-F6BF-42D6-8253-E437A752A60F} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{8934740A-0458-4D96-8BE0-8010DC6F91D2} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
+		{5E7E691A-3256-4142-AF88-EF2A288CE609} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal
