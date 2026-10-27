@@ -11,7 +11,8 @@ public static class JournalReader
     /// 기록 파일 하나를 읽어 실행 상태를 복원한다. 닫는 중괄호 없이 끝나 읽을 수 없는 줄(쓰다 만 줄)은 무시하고,
     /// 중괄호로 끝나는데 읽을 수 없는 줄은 손상이므로 <see cref="InvalidDataException"/>을 던진다.
     /// 파일이 줄바꿈 문자로 끝나지 않으면 마지막 비지 않은 줄은 줄바꿈까지 쓰기 전에 끊긴 것이므로, 내용과 상관없이(중괄호로 끝나거나
-    /// 읽을 수 있는 줄이어도) 기록되지 않은 것으로 보고 무시한다.
+    /// 읽을 수 있는 줄이어도) 기록되지 않은 것으로 보고 무시한다. 기록하는 쪽이 그런 줄을 닫으면 바로 뒤에 TornLineClosed 표시를
+    /// 남기므로, 표시가 뒤따르는 읽을 수 없는 줄은 중괄호로 끝나도 무시한다. 표시 자체는 상태와 항목 수에 영향이 없다.
     /// </summary>
     public static RunState Load(IFileSystem fileSystem, string path)
     {
@@ -52,14 +53,21 @@ public static class JournalReader
             var entry = TryParse(lines[i]);
             if (entry is null)
             {
-                // 쓰다 만 줄은 닫는 중괄호로 끝나지 않는다. 그런 줄은 어디에 있든 무시하고,
-                // 중괄호로 끝나는데 읽을 수 없으면 진짜 손상이므로 예외를 던진다.
-                if (!lines[i].TrimEnd().EndsWith('}'))
+                // 쓰다 만 줄은 대개 닫는 중괄호로 끝나지 않는다. 그런 줄은 어디에 있든 무시한다.
+                // 중괄호로 끝나도 기록하는 쪽이 닫은 조각(다음 항목이 TornLineClosed 표시)이면 무시하고,
+                // 그 밖에 중괄호로 끝나는데 읽을 수 없으면 진짜 손상이므로 예외를 던진다.
+                if (!lines[i].TrimEnd().EndsWith('}') || IsClosedTornLine(lines, i, lastNonEmpty))
                 {
                     continue;
                 }
 
                 throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄을 읽을 수 없습니다: {path}");
+            }
+
+            // 잘린 줄을 닫았다는 표시일 뿐 사건이 아니다. 상태도 바꾸지 않고 항목 수에도 넣지 않는다.
+            if (entry.Event == JournalEvent.TornLineClosed)
+            {
+                continue;
             }
 
             entryCount++;
@@ -133,6 +141,36 @@ public static class JournalReader
 
     private static string RequireOpId(JournalEntry entry, int lineNumber) =>
         entry.OpId ?? throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄: 작업 ID가 없습니다.");
+
+    /// <summary>
+    /// <paramref name="index"/>의 읽을 수 없는 줄 다음의 첫 항목이 TornLineClosed 표시인지. 빈 줄과, 닫는 중괄호로 끝나지 않는
+    /// 읽을 수 없는 줄(표시를 쓰다가 다시 끊긴 조각)은 건너뛴다. 그 밖의 줄을 만나면 거기서 판단한다.
+    /// </summary>
+    private static bool IsClosedTornLine(List<string> lines, int index, int lastIndex)
+    {
+        for (var j = index + 1; j <= lastIndex; j++)
+        {
+            if (lines[j].Trim().Length == 0)
+            {
+                continue;
+            }
+
+            var next = TryParse(lines[j]);
+            if (next is null)
+            {
+                if (!lines[j].TrimEnd().EndsWith('}'))
+                {
+                    continue;
+                }
+
+                return false;
+            }
+
+            return next.Event == JournalEvent.TornLineClosed;
+        }
+
+        return false;
+    }
 
     private static JournalEntry? TryParse(string line)
     {

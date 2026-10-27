@@ -1383,4 +1383,49 @@ public class UndoTests
         Assert.Equal(appDataBefore, _fs.ReadAllBytes(AppDataJournal));
         Assert.Equal(2, Entries(ArchiveJournal).Count(e => e.Event == JournalEvent.Undone));
     }
+
+    // ------------------------------------------------------------------
+    // 잘린 마지막 줄
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Undo_Works_AfterResumeOnTornJournal()
+    {
+        // 두 사본 모두 마지막 줄이 줄바꿈 없이, 우연히 중괄호로 끝나는 조각으로 끊겼다.
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 90);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 91);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.AddFile(@"D:\Archive\2026\a.jpg", a);
+        var ops = new[]
+        {
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
+        };
+        WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, Hash(@"E:\DCIM\a.jpg")));
+        var torn = Encoding.UTF8.GetBytes($"{{\"runId\":\"{RunId}\",\"event\":\"Completed\",\"opId\":\"op2\",\"destination\":\"a}}");
+        foreach (var journal in new[] { ArchiveJournal, AppDataJournal })
+        {
+            _fs.AddFile(journal, _fs.ReadAllBytes(journal).Concat(torn).ToArray());
+        }
+
+        var resumed = NewExecutor().Resume(ArchiveJournal);
+
+        Assert.Equal(RunOutcome.Completed, resumed.Outcome);
+        Assert.Equal(b, _fs.ReadAllBytes(@"D:\Archive\2026\b.jpg"));
+        Assert.Contains("\"event\":\"TornLineClosed\"", Encoding.UTF8.GetString(_fs.ReadAllBytes(ArchiveJournal)));
+
+        var undo = NewUndoer().Undo(ArchiveJournal);
+
+        Assert.Equal(2, undo.Undone);
+        Assert.Empty(undo.Skipped);
+        Assert.Empty(ArchiveFiles());
+        Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg")); // I1: 원본은 원래 바이트 그대로
+        Assert.Equal(b, _fs.ReadAllBytes(@"E:\DCIM\b.jpg"));
+        Assert.Equal(a, _fs.ReadAllBytes(Quarantined(RunId, @"2026\a.jpg")));
+        Assert.Equal(b, _fs.ReadAllBytes(Quarantined(RunId, @"2026\b.jpg")));
+
+        var state = JournalReader.Load(_fs, ArchiveJournal);
+        Assert.True(state.UndoStarted);
+        Assert.All(state.Operations, o => Assert.Equal(OpStatus.Undone, o.Status));
+    }
 }

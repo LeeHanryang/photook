@@ -12,7 +12,8 @@ public sealed record OpState(PlannedOperation Operation, OpStatus Status, string
 
 /// <summary>
 /// 기록 파일 하나에서 복원한 실행 상태. <paramref name="ExpectedOperations"/>는 RunStarted에 적힌 계획 작업 수로,
-/// <see cref="Operations"/>의 수와 다르면 계획을 기록하다 끊긴 것이다. <paramref name="EntryCount"/>는 읽어 낸 항목(줄) 수다.
+/// <see cref="Operations"/>의 수와 다르면 계획을 기록하다 끊긴 것이다. <paramref name="EntryCount"/>는 읽어 낸 항목(줄) 수다
+/// (잘린 줄을 닫았다는 표시인 TornLineClosed는 사건이 아니므로 세지 않는다: 사본 중 더 긴 기록을 고를 때 표시 때문에 길어 보이지 않게).
 /// <paramref name="UndoStarted"/>는 UndoStarted 항목이 있으면 true다.
 /// </summary>
 public sealed record RunState(string RunId, string ArchiveRoot, IReadOnlyList<OpState> Operations, bool Finished,

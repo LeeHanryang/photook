@@ -36,7 +36,7 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
     {
         ArgumentNullException.ThrowIfNull(entry);
         var line = JsonSerializer.Serialize(entry, JsonOptions);
-        AppendToAll(path => fileSystem.AppendLine(path, line));
+        AppendToAll(entry, path => fileSystem.AppendLine(path, line));
     }
 
     /// <summary>
@@ -46,16 +46,18 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
     public void WriteMany(IEnumerable<JournalEntry> entries)
     {
         ArgumentNullException.ThrowIfNull(entries);
-        var lines = entries.Select(entry => JsonSerializer.Serialize(entry, JsonOptions)).ToList();
+        var list = entries.ToList();
+        var lines = list.Select(entry => JsonSerializer.Serialize(entry, JsonOptions)).ToList();
         if (lines.Count == 0)
         {
             return;
         }
 
-        AppendToAll(path => fileSystem.AppendLines(path, lines));
+        AppendToAll(list[0], path => fileSystem.AppendLines(path, lines));
     }
 
-    private void AppendToAll(Action<string> append)
+    /// <param name="next">이번에 쓸 (첫) 항목. 잘린 줄을 닫는 표시에 같은 실행ID와 시각을 쓴다.</param>
+    private void AppendToAll(JournalEntry next, Action<string> append)
     {
         var succeeded = false;
 
@@ -77,7 +79,7 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
                         fileSystem.CreateDirectory(parent);
                     }
 
-                    CloseTornLine(path);
+                    CloseTornLine(path, next);
                     _prepared.Add(path);
                 }
 
@@ -102,10 +104,11 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
     }
 
     /// <summary>
-    /// 이전 실행이 강제 종료되어 마지막 줄이 줄바꿈 없이 끝났다면, 줄바꿈만 먼저 덧붙여 조각을 닫는다.
-    /// 그렇지 않으면 다음 항목이 조각에 붙어 읽을 수 없는 줄이 된다.
+    /// 이전 실행이 강제 종료되어 마지막 줄이 줄바꿈 없이 끝났다면, 줄바꿈과 <see cref="JournalEvent.TornLineClosed"/> 표시를
+    /// 한 번에 덧붙여 조각을 닫는다. 줄바꿈이 없으면 다음 항목이 조각에 붙어 읽을 수 없는 줄이 되고, 표시가 없으면 닫힌 조각이
+    /// (우연히 중괄호로 끝날 때) 손상된 줄과 구별되지 않아 이후 읽기가 막힌다.
     /// </summary>
-    private void CloseTornLine(string path)
+    private void CloseTornLine(string path, JournalEntry next)
     {
         if (!fileSystem.FileExists(path))
         {
@@ -135,7 +138,8 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
 
         if (last >= 0 && last != '\n')
         {
-            fileSystem.AppendLine(path, string.Empty);
+            var marker = new JournalEntry(next.RunId, JournalEvent.TornLineClosed, TimestampUtc: next.TimestampUtc);
+            fileSystem.AppendLines(path, [string.Empty, JsonSerializer.Serialize(marker, JsonOptions)]);
         }
     }
 }

@@ -394,6 +394,115 @@ public class JournalTests
         Assert.Contains("4번째 줄", ex.Message);
     }
 
+    private string[] RawLines(string path) =>
+        System.Text.Encoding.UTF8.GetString(_fs.ReadAllBytes(path)).Split("\r\n");
+
+    [Fact]
+    public void Write_ClosesTornLine_WithTerminatorAndMarker()
+    {
+        WriteRunWithRawTail(TornCompletedWithBrace);
+        var opsBefore = _fs.MutatingOps;
+        var next = Entry(JournalEvent.Completed, "op-000001", hash: "0123456789abcdef");
+
+        new JournalWriter(_fs, new[] { _archivePath }).Write(next);
+
+        var lines = RawLines(_archivePath);
+        Assert.Equal(7, lines.Length); // RunStarted, Planned, Started, 조각, 표시, 새 항목, 끝의 빈 문자열
+        Assert.Equal(TornCompletedWithBrace, lines[3]);
+        var marker = System.Text.Json.JsonSerializer.Deserialize<JournalEntry>(lines[4], JournalWriter.JsonOptions)!;
+        Assert.Equal(new JournalEntry(RunId, JournalEvent.TornLineClosed, TimestampUtc: next.TimestampUtc), marker);
+        Assert.DoesNotContain("opId", lines[4]);
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(next, JournalWriter.JsonOptions), lines[5]);
+        Assert.Equal(string.Empty, lines[6]);
+        Assert.Equal(opsBefore + 3, _fs.MutatingOps); // 폴더 준비, 줄바꿈+표시(한 번에), 새 항목
+    }
+
+    [Fact]
+    public void WriteMany_ClosesTornLine_WithMarkerOfFirstEntry()
+    {
+        WriteRunWithRawTail("{\"runId\":\"x\",\"ev");
+        var first = Entry(JournalEvent.Started, "op-000001") with { RunId = "20261027-110000-cd34" };
+
+        new JournalWriter(_fs, new[] { _archivePath }).WriteMany([first, Entry(JournalEvent.Completed, "op-000001")]);
+
+        var marker = System.Text.Json.JsonSerializer.Deserialize<JournalEntry>(RawLines(_archivePath)[4], JournalWriter.JsonOptions)!;
+        Assert.Equal(JournalEvent.TornLineClosed, marker.Event);
+        Assert.Equal("20261027-110000-cd34", marker.RunId);
+    }
+
+    [Fact]
+    public void Load_AfterResumeClosedTornBraceLine_StillLoads()
+    {
+        WriteRunWithRawTail(TornCompletedWithBrace);
+        new JournalWriter(_fs, new[] { _archivePath }).Write(Entry(JournalEvent.Completed, "op-000001", hash: "0123456789abcdef"));
+        Assert.Contains(RawLines(_archivePath), l => l.Contains("\"event\":\"TornLineClosed\"", StringComparison.Ordinal));
+
+        var first = JournalReader.Load(_fs, _archivePath);
+
+        var op = Assert.Single(first.Operations);
+        Assert.Equal(OpStatus.Completed, op.Status);
+        Assert.Equal("0123456789abcdef", op.Hash);
+        Assert.Equal(4, first.EntryCount); // 조각과 표시는 세지 않는다
+        Assert.Equal(0, first.ExpectedOperations); // 시드의 RunStarted 값 그대로(표시가 계획 수를 바꾸지 않는다)
+
+        // 다음 이어 하기·되돌리기도 그대로 읽고 이어 쓴다(이미 줄바꿈으로 끝나므로 표시를 또 쓰지 않는다).
+        new JournalWriter(_fs, new[] { _archivePath }).Write(Entry(JournalEvent.UndoStarted));
+        var second = JournalReader.Load(_fs, _archivePath);
+
+        Assert.True(second.UndoStarted);
+        Assert.Equal(OpStatus.Completed, Assert.Single(second.Operations).Status);
+        Assert.Equal(5, second.EntryCount);
+        Assert.Single(RawLines(_archivePath), l => l.Contains("TornLineClosed", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Load_IgnoresClosedTornLine_WhenEarlierClosingWasAlsoCut()
+    {
+        // 조각을 닫는 중에 다시 끊겨 표시가 반쯤만 쓰였고, 다음 실행이 그 조각을 또 닫았다.
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n{\"runId\":\"" + RunId + "\",\"event\":\"TornLi");
+        new JournalWriter(_fs, new[] { _archivePath }).Write(Entry(JournalEvent.Completed, "op-000001"));
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Completed, Assert.Single(state.Operations).Status);
+        Assert.Equal(4, state.EntryCount);
+    }
+
+    [Fact]
+    public void Load_StillThrows_OnBraceLineFollowedByOtherEntry()
+    {
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n");
+        new JournalWriter(_fs, new[] { _archivePath }).Write(Entry(JournalEvent.Completed, "op-000001"));
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("4번째 줄", ex.Message);
+    }
+
+    [Fact]
+    public void Load_StillThrows_WhenMarkerIsNotTheNextEntry()
+    {
+        var marker = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.TornLineClosed), JournalWriter.JsonOptions);
+        var completed = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n" + completed + "\r\n" + marker + "\r\n");
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("4번째 줄", ex.Message);
+    }
+
+    [Fact]
+    public void Load_TreatsMarkerAsNoOp()
+    {
+        var marker = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.TornLineClosed), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(marker + "\r\n");
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Started, Assert.Single(state.Operations).Status);
+        Assert.Equal(3, state.EntryCount);
+        Assert.False(state.Finished);
+        Assert.False(state.UndoStarted);
+    }
+
     [Fact]
     public void Load_ReadsTerminatedLastLine_AsBefore()
     {
