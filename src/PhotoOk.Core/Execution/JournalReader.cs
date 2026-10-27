@@ -8,8 +8,8 @@ namespace PhotoOk.Core.Execution;
 public static class JournalReader
 {
     /// <summary>
-    /// 기록 파일 하나를 읽어 실행 상태를 복원한다. 마지막 비어 있지 않은 줄이 잘려 읽을 수 없으면 그 줄만 무시하고,
-    /// 중간 줄이 손상됐으면 <see cref="InvalidDataException"/>을 던진다.
+    /// 기록 파일 하나를 읽어 실행 상태를 복원한다. 닫는 중괄호 없이 끝나 읽을 수 없는 줄(쓰다 만 줄)은 무시하고,
+    /// 중괄호로 끝나는데 읽을 수 없는 줄은 손상이므로 <see cref="InvalidDataException"/>을 던진다.
     /// </summary>
     public static RunState Load(IFileSystem fileSystem, string path)
     {
@@ -42,9 +42,11 @@ public static class JournalReader
             var entry = TryParse(lines[i]);
             if (entry is null)
             {
-                if (i == lastNonEmpty)
+                // 쓰다 만 줄은 닫는 중괄호로 끝나지 않는다. 그런 줄은 어디에 있든 무시하고,
+                // 중괄호로 끝나는데 읽을 수 없으면 진짜 손상이므로 예외를 던진다.
+                if (!lines[i].TrimEnd().EndsWith('}'))
                 {
-                    break;
+                    continue;
                 }
 
                 throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄을 읽을 수 없습니다: {path}");

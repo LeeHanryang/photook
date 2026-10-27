@@ -205,11 +205,86 @@ public class JournalTests
     {
         var writer = NewWriter();
         writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
-        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"ev");
+        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"event\":}");
         writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
 
         var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
-        Assert.Contains("2", ex.Message);
+        Assert.Contains("2번째 줄", ex.Message);
+    }
+
+    [Fact]
+    public void Load_Throws_OnUnparseableLineEndingWithBrace()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"event\":}");
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("2번째 줄", ex.Message);
+    }
+
+    [Fact]
+    public void Load_IgnoresTornFragment_EvenWhenFollowedByMoreLines()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"ev");
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Single(state.Operations);
+    }
+
+    [Fact]
+    public void Write_StopsWritingToPath_AfterItFails()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+
+        _fs.RemoveVolume(@"D:\");
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+        _fs.RestoreVolume(@"D:\");
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+
+        Assert.Single(Lines(_archivePath));
+        Assert.Equal(3, Lines(_appDataPath).Length);
+        Assert.Equal(new[] { $"기록을 남기지 못함: {_archivePath}" }, writer.Warnings);
+    }
+
+    [Fact]
+    public void Write_StartsNewLine_AfterTornLastLine()
+    {
+        var valid = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.RunStarted, destination: Archive),
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() },
+            });
+        var seeded = System.Text.Encoding.UTF8.GetBytes(valid + "\n" + "{\"runId\":\"x\",\"ev");
+        _fs.AddFile(_archivePath, seeded);
+        var writer = new JournalWriter(_fs, new[] { _archivePath });
+
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+
+        var state = JournalReader.Load(_fs, _archivePath);
+        Assert.Single(state.Operations);
+        Assert.Equal("op1", state.Operations[0].Operation.Id);
+        Assert.Equal(OpStatus.Started, state.Operations[0].Status);
+    }
+
+    [Fact]
+    public void Write_DoesNotAddBlankLine_WhenFileEndsWithNewline()
+    {
+        var first = NewWriter();
+        first.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        var second = NewWriter();
+        second.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+
+        Assert.Equal(2, System.Text.Encoding.UTF8.GetString(_fs.ReadAllBytes(_archivePath))
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
+        Assert.DoesNotContain("\n\n", System.Text.Encoding.UTF8.GetString(_fs.ReadAllBytes(_archivePath)).Replace("\r\n", "\n"));
     }
 
     [Fact]
