@@ -31,10 +31,32 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
     /// <summary>지금까지 한 번도 실패하지 않은 경로(빠진 줄 없이 모든 항목이 들어 있는 파일), 처음 받은 순서대로.</summary>
     public IReadOnlyList<string> HealthyPaths => paths.Where(p => !_failed.Contains(p)).ToList();
 
+    /// <summary>항목 하나를 경로마다 한 줄씩 덧붙이고 flush한다(작업마다의 선기록).</summary>
     public void Write(JournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
         var line = JsonSerializer.Serialize(entry, JsonOptions);
+        AppendToAll(path => fileSystem.AppendLine(path, line));
+    }
+
+    /// <summary>
+    /// 여러 항목을 경로마다 한 번에 덧붙이고 한 번만 flush한다(실행 시작 때의 계획 기록). 경로별 실패 처리는 <see cref="Write"/>와 같다.
+    /// 묶음 중간에 끊기면 그 파일에는 앞의 몇 줄만 남을 수 있다. 계획 기록이 모자라면 기록을 읽는 쪽이 RunStarted의 계획 수로 가려낸다.
+    /// </summary>
+    public void WriteMany(IEnumerable<JournalEntry> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        var lines = entries.Select(entry => JsonSerializer.Serialize(entry, JsonOptions)).ToList();
+        if (lines.Count == 0)
+        {
+            return;
+        }
+
+        AppendToAll(path => fileSystem.AppendLines(path, lines));
+    }
+
+    private void AppendToAll(Action<string> append)
+    {
         var succeeded = false;
 
         foreach (var path in paths)
@@ -59,7 +81,7 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
                     _prepared.Add(path);
                 }
 
-                fileSystem.AppendLine(path, line);
+                append(path);
                 succeeded = true;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)

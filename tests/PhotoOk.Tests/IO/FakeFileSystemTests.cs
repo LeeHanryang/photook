@@ -554,6 +554,43 @@ public sealed class FakeFileSystemTests
     }
 
     [Fact]
+    public void AppendLines_CreatesFile_AppendsAll_AndCountsOneMutatingOp()
+    {
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory(@"D:\j");
+        fs.AppendLine(@"D:\j\log.jsonl", "a");
+        var before = fs.MutatingOps;
+
+        fs.AppendLines(@"D:\j\log.jsonl", ["b", "c", "d"]);
+        fs.AppendLines(@"D:\j\new.jsonl", ["x"]);
+
+        Assert.Equal(2, fs.MutatingOps - before);
+        var n = Environment.NewLine;
+        Assert.Equal(B($"a{n}b{n}c{n}d{n}"), fs.ReadAllBytes(@"D:\j\log.jsonl"));
+        Assert.Equal(B($"x{n}"), fs.ReadAllBytes(@"D:\j\new.jsonl"));
+    }
+
+    [Fact]
+    public void AppendLines_IsAtomic_WhenCrashing()
+    {
+        var fs = new FakeFileSystem();
+        fs.CreateDirectory(@"D:\j");
+        fs.CrashAfter(0);
+
+        Assert.Throws<SimulatedCrashException>(() => fs.AppendLines(@"D:\j\log.jsonl", ["a", "b"]));
+
+        Assert.False(fs.FileExists(@"D:\j\log.jsonl"));
+    }
+
+    [Fact]
+    public void AppendLines_Throws_WhenParentDirectoryMissing()
+    {
+        var fs = new FakeFileSystem();
+
+        Assert.Throws<DirectoryNotFoundException>(() => fs.AppendLines(@"D:\nope\log.jsonl", ["a"]));
+    }
+
+    [Fact]
     public void AppendLine_Throws_WhenParentDirectoryMissing()
     {
         var fs = new FakeFileSystem();

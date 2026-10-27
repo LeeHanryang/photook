@@ -119,6 +119,19 @@ public sealed class PhysicalFileSystemTests : IDisposable
     }
 
     [Fact]
+    public void AppendLines_CreatesFile_AndAppendsAllLinesInOrder()
+    {
+        var path = P("batch.jsonl");
+        _fs.AppendLine(path, "a");
+
+        _fs.AppendLines(path, ["가", "b", "c"]);
+
+        var n = Environment.NewLine;
+        Assert.Equal(Encoding.UTF8.GetBytes($"a{n}가{n}b{n}c{n}"), File.ReadAllBytes(path));
+        Assert.Throws<DirectoryNotFoundException>(() => _fs.AppendLines(Path.Combine(P("nodir"), "log"), ["a"]));
+    }
+
+    [Fact]
     public void AppendLine_WritesUtf8WithoutBom()
     {
         var path = P("log.jsonl");

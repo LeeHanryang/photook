@@ -114,9 +114,9 @@ public class ResumeTests
             Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
             Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length));
 
-        // 폴더 준비 2 + 기록 2×(RunStarted, Planned×3, Started) = 12, op1: CreateNew·Write·Move·Completed×2 = 5,
-        // op2: Started×2·CreateNew·Write 1번 = 4 → b의 두 번째 조각을 쓰다 죽는다.
-        _fs.CrashAfter(21);
+        // 폴더 준비 2 + 계획 묶음(RunStarted, Planned×3) 2 = 4, op1: Started×2·CreateNew·Write·Move·Completed×2 = 7,
+        // op2: Started×2·CreateNew·Write 1번 = 4 → 15. b의 두 번째 조각을 쓰다 죽는다.
+        _fs.CrashAfter(15);
         Assert.Throws<SimulatedCrashException>(() => NewExecutor().Execute(plan));
         _fs.ClearFault();
 
@@ -610,20 +610,35 @@ public class ResumeTests
     // ------------------------------------------------------------------
 
     [Theory]
-    [InlineData(4, 0)] // 폴더 준비·RunStarted를 두 곳에 쓴 직후 죽음 → 계획 0개
-    [InlineData(6, 1)] // 첫 Planned를 두 곳에 쓴 직후 죽음 → 계획 1개
-    public void Resume_RefusesPlanIncomplete_WhenCrashedWhileWritingPlannedLines(int crashAfter, int plannedWritten)
+    [InlineData(0, false)] // RunStarted만 디스크에 닿고 끊김 → 계획 0개
+    [InlineData(1, false)] // 첫 Planned까지 닿고 끊김 → 계획 1개
+    [InlineData(1, true)]  // 둘째 Planned를 쓰다 끊겨 마지막 줄이 잘림 → 계획 1개
+    public void Resume_RefusesPlanIncomplete_WhenPlanBatchWasTorn(int plannedWritten, bool tornLastLine)
     {
+        // 실제 디스크에서는 계획 묶음(한 번에 덧붙이고 한 번 flush)을 쓰다 끊기면 앞의 몇 줄만 남을 수 있다.
+        // 가짜 디스크의 묶음 쓰기는 원자적이라, 그렇게 남은 기록을 직접 만든다.
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 29);
         var b = AddFile(@"E:\DCIM\b.jpg", 200, 30);
         var c = AddFile(@"E:\DCIM\c.jpg", 300, 31);
         _fs.AddDirectory(@"D:\Archive\2026");
-        _fs.CrashAfter(crashAfter);
-        Assert.Throws<SimulatedCrashException>(() => NewExecutor().Execute(PlanOf(
+        PlannedOperation[] ops =
+        [
             Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
             Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
-            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length))));
-        _fs.ClearFault();
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length),
+        ];
+        var writer = new JournalWriter(_fs, [ArchiveJournal, AppDataJournal]);
+        writer.WriteMany(ops.Take(plannedWritten)
+            .Select(op => new JournalEntry(RunId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
+                TimestampUtc: Now))
+            .Prepend(new JournalEntry(RunId, JournalEvent.RunStarted, Length: ops.Length, Destination: Archive, TimestampUtc: Now)));
+        if (tornLastLine)
+        {
+            foreach (var path in new[] { ArchiveJournal, AppDataJournal })
+            {
+                _fs.AddFile(path, [.. _fs.ReadAllBytes(path), .. Encoding.UTF8.GetBytes("{\"runId\":\"" + RunId + "\",\"event\":\"Plan")]);
+            }
+        }
 
         var journals = _fs.AllFiles().Where(p => p.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)).ToList();
         Assert.Equal(2, journals.Count);

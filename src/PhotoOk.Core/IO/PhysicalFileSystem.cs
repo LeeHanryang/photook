@@ -121,6 +121,19 @@ public sealed class PhysicalFileSystem : IFileSystem
         stream.Flush(flushToDisk: true);
     }
 
+    public void AppendLines(string path, IEnumerable<string> lines)
+    {
+        ArgumentNullException.ThrowIfNull(lines);
+        using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read, 64 * 1024);
+        foreach (var line in lines)
+        {
+            var bytes = Utf8NoBom.GetBytes(line + Environment.NewLine);
+            stream.Write(bytes, 0, bytes.Length);
+        }
+
+        stream.Flush(flushToDisk: true);
+    }
+
     public string GetVolumeRoot(string path)
     {
         var root = Path.GetPathRoot(Path.GetFullPath(path));

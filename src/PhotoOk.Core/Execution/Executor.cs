@@ -49,15 +49,13 @@ public sealed class Executor(ExecutionContext context)
             [JournalPaths.InArchive(plan.ArchiveRoot, runId), JournalPaths.InAppData(context.AppDataRoot, runId)]);
         var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId));
 
-        // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다.
-        // RunStarted의 Length에는 계획한 작업 수를 적는다. 이어 하기는 이 수만큼 Planned가 있어야 계획이 다 기록된 것으로 본다.
-        journal.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: plan.Operations.Count, Destination: plan.ArchiveRoot,
-            TimestampUtc: context.UtcNow()));
-        foreach (var op in plan.Operations)
-        {
-            journal.Write(new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
-                TimestampUtc: context.UtcNow()));
-        }
+        // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다. 작업이 수만 개여도 사본마다 한 번에 쓰고 한 번만 flush한다.
+        // RunStarted의 Length에는 계획한 작업 수를 적는다. 이어 하기는 이 수만큼 Planned가 있어야 계획이 다 기록된 것으로 본다
+        // (묶음 중간에 끊긴 기록도 그래서 가려낸다).
+        var planned = plan.Operations.Select(op => new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source,
+            op.Destination, op.Length, TimestampUtc: context.UtcNow()));
+        journal.WriteMany(planned.Prepend(new JournalEntry(runId, JournalEvent.RunStarted, Length: plan.Operations.Count,
+            Destination: plan.ArchiveRoot, TimestampUtc: context.UtcNow())));
 
         var outcome = RunOperations(run, plan.Operations, ct);
         return run.ToResult(outcome, issues);

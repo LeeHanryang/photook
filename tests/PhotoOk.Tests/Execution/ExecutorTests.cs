@@ -281,6 +281,31 @@ public class ExecutorTests
     }
 
     [Fact]
+    public void Execute_WritesRunStartedAndAllPlanned_InOneBatchPerJournalCopy()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 21);
+        var b = AddSource(@"E:\DCIM\b.jpg", 200, 22);
+
+        var result = NewExecutor().Execute(PlanOf(
+            Mkdir("op1", @"D:\Archive\2026"),
+            Copy("op2", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op3", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length)));
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        var archiveJournal = JournalPaths.InArchive(Archive, result.RunId);
+        var appDataJournal = JournalPaths.InAppData(AppData, result.RunId);
+        // 계획 단계: 사본마다 한 번에 4줄(RunStarted + Planned 3개). 그 뒤의 작업 기록은 한 줄씩(선기록 계약).
+        Assert.Equal([(archiveJournal, 4), (appDataJournal, 4)], _hooked.Appends.Take(2));
+        Assert.All(_hooked.Appends.Skip(2), x => Assert.Equal(1, x.Lines));
+        Assert.Equal(2 + (3 * 2 * 2) + 2, _hooked.Appends.Count);
+        var entries = Entries(archiveJournal);
+        Assert.Equal(JournalEvent.RunStarted, entries[0].Event);
+        Assert.Equal(3, entries[0].Length);
+        Assert.Equal(["op1", "op2", "op3"], entries.Skip(1).Take(3).Select(e => e.OpId));
+        Assert.All(entries.Skip(1).Take(3), e => Assert.Equal(JournalEvent.Planned, e.Event));
+    }
+
+    [Fact]
     public void Execute_WritesJournal_ToBothLocations()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 13);

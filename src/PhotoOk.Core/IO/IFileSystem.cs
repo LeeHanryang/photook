@@ -40,6 +40,12 @@ public interface IFileSystem
     /// <summary>파일이 없으면 만들고, 한 줄을 덧붙인 뒤 디스크까지 flush한다.</summary>
     void AppendLine(string path, string line);
 
+    /// <summary>
+    /// 파일이 없으면 만들고, 여러 줄을 한 번 열어 덧붙인 뒤 디스크까지 한 번 flush한다.
+    /// 도중에 끊기면 앞의 몇 줄만 들어가고 마지막 줄이 잘릴 수 있다(기록을 읽는 쪽이 잘린 줄과 모자란 계획을 가려낸다).
+    /// </summary>
+    void AppendLines(string path, IEnumerable<string> lines);
+
     /// <summary>경로가 속한 볼륨의 루트. 예: <c>D:\</c>.</summary>
     string GetVolumeRoot(string path);
 

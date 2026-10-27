@@ -494,6 +494,8 @@ public class ScannerTests
 
         public void AppendLine(string path, string line) => inner.AppendLine(path, line);
 
+        public void AppendLines(string path, IEnumerable<string> lines) => inner.AppendLines(path, lines);
+
         public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);
 
         public long GetAvailableFreeSpace(string path) => inner.GetAvailableFreeSpace(path);

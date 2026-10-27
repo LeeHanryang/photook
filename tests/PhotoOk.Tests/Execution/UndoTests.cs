@@ -530,9 +530,9 @@ public class UndoTests
     public void Undo_QuarantinesLeftoverTempFile_FromCrashedCopy()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 1024 * 1024 + 500, 41); // 버퍼 두 번에 걸쳐 쓰인다
-        // 폴더 준비 2 + 기록 2×(RunStarted, Planned×2) = 8, op1: Started×2·CreateDirectory·Completed×2 = 5,
-        // op2: Started×2·CreateNew·Write 1번 = 4 → 17. 두 번째 조각을 쓰다 죽는다.
-        _fs.CrashAfter(17);
+        // 폴더 준비 2 + 계획 묶음(RunStarted, Planned×2) 2 = 4, op1: Started×2·CreateDirectory·Completed×2 = 5,
+        // op2: Started×2·CreateNew·Write 1번 = 4 → 13. 두 번째 조각을 쓰다 죽는다.
+        _fs.CrashAfter(13);
         Assert.Throws<SimulatedCrashException>(() => NewExecutor().Execute(PlanOf(
             Mkdir("op1", @"D:\Archive\2026"),
             Copy("op2", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length))));
@@ -1131,6 +1131,8 @@ public class UndoTests
         public void RemoveEmptyDirectory(string path) => inner.RemoveEmptyDirectory(path);
 
         public void AppendLine(string path, string line) => inner.AppendLine(path, line);
+
+        public void AppendLines(string path, IEnumerable<string> lines) => inner.AppendLines(path, lines);
 
         public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);
 

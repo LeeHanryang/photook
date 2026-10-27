@@ -78,6 +78,71 @@ public class JournalTests
     }
 
     [Fact]
+    public void WriteMany_AppendsAllEntriesToBothPaths_InOneCallEach()
+    {
+        var hooked = new HookedFileSystem(_fs);
+        var writer = new JournalWriter(hooked, new[] { _archivePath, _appDataPath });
+
+        writer.WriteMany([
+            Entry(JournalEvent.RunStarted, destination: Archive),
+            Entry(JournalEvent.Planned, "op1", OperationKind.CreateDirectory, null, @"D:\사진 아카이브\2026", 0),
+            Entry(JournalEvent.Planned, "op2", OperationKind.Copy, @"E:\DCIM\a.jpg", @"D:\사진 아카이브\2026\a.jpg", 1234),
+        ]);
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+
+        Assert.Equal([(_archivePath, 3), (_appDataPath, 3), (_archivePath, 1), (_appDataPath, 1)], hooked.Appends);
+        var a = Lines(_archivePath);
+        Assert.Equal(4, a.Length);
+        Assert.Equal(a, Lines(_appDataPath));
+        var state = JournalReader.Load(_fs, _archivePath);
+        Assert.Equal(2, state.Operations.Count);
+        Assert.Equal(OpStatus.Started, state.Operations[0].Status);
+    }
+
+    [Fact]
+    public void WriteMany_ContinuesWithWarning_WhenOnePathFails_AndStopsUsingIt()
+    {
+        _fs.RemoveVolume(@"C:\");
+        var writer = NewWriter();
+
+        writer.WriteMany([Entry(JournalEvent.RunStarted, destination: Archive),
+            Entry(JournalEvent.Planned, "op1", OperationKind.CreateDirectory, null, Archive, 0)]);
+        _fs.RestoreVolume(@"C:\");
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+
+        Assert.Equal(3, Lines(_archivePath).Length);
+        Assert.False(_fs.FileExists(_appDataPath));
+        Assert.Equal(new[] { $"기록을 남기지 못함: {_appDataPath}" }, writer.Warnings);
+        Assert.Equal(new[] { _archivePath }, writer.HealthyPaths);
+    }
+
+    [Fact]
+    public void WriteMany_Throws_WhenAllPathsFail()
+    {
+        _fs.RemoveVolume(@"C:\");
+        _fs.RemoveVolume(@"D:\");
+        var writer = NewWriter();
+
+        Assert.Throws<JournalUnavailableException>(() => writer.WriteMany([Entry(JournalEvent.RunStarted, destination: Archive)]));
+        Assert.Equal(2, writer.Warnings.Count);
+    }
+
+    [Fact]
+    public void WriteMany_StartsNewLine_AfterTornLastLine()
+    {
+        var first = new JournalWriter(_fs, new[] { _archivePath });
+        first.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        _fs.AddFile(_archivePath, [.. _fs.ReadAllBytes(_archivePath), .. System.Text.Encoding.UTF8.GetBytes("{\"runId\":\"x\",\"ev")]);
+        var writer = new JournalWriter(_fs, new[] { _archivePath });
+
+        writer.WriteMany([Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5),
+            Entry(JournalEvent.Started, "op1")]);
+
+        var state = JournalReader.Load(_fs, _archivePath);
+        Assert.Equal(OpStatus.Started, Assert.Single(state.Operations).Status);
+    }
+
+    [Fact]
     public void Write_ContinuesWithWarning_WhenOnePathFails()
     {
         _fs.AddDirectory(@"C:\");
