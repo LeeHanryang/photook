@@ -22,8 +22,11 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// 첫 파일 작업 전에 UndoStarted를 한 번 쓴다(이미 있으면 쓰지 않는다). 이 표시가 있는 기록은 이어 하기가 거부한다.
 /// 결과는 작업마다 Undone 또는 UndoSkipped(Message=사유)로 같은 기록 사본에 쓴다. 기록 사본은 이어 하기와 같은 방식으로 고르고
 /// (같은 실행ID에서 항목이 가장 많은 것) 그 사본에만 쓴다. 이미 Undone·UndoSkipped인 작업은 건너뛰므로 다시 실행해도 안전하다.
-/// UndoSkipped는 최종이다. 다만 드라이브가 빠졌거나 입출력 오류처럼 다시 연결·재시도하면 풀리는 사유는 기록하지 않고 결과로만 알려,
-/// 나중에 되돌리기를 다시 하면 이어서 처리된다. 그런 사유가 하나라도 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다.
+/// UndoSkipped는 최종이다. 다만 다시 연결·재시도하면 풀리는 사유는 기록하지 않고 결과로만 알려, 나중에 되돌리기를 다시 하면 이어서 처리된다.
+/// 그중 디스크 상태를 그대로 남겨 앞 작업들의 판단을 틀리게 할 수 있는 것(작업 중 입출력 오류, 원래 드라이브가 없어 못 돌려놓은 이동)은
+/// 그 자리에서 이번 되돌리기를 멈춘다. 뒤의 작업은 그 작업이 풀린 뒤의 디스크를 봐야 하기 때문이다.
+/// 원본을 확인할 수 없어 복사본을 남기는 경우는 멈추지 않는다: 복사본을 남겨도 다른 작업이 기대는 디스크 상태는 바뀌지 않는다.
+/// 그런 사유가 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다(남긴 복사본 때문에 비어 있지 않을 수 있다).
 /// 보관 드라이브가 없으면 아무것도 쓰지 않고 그 사유 하나만 돌려준다. 받은 기록 파일 자체를 읽을 수 없으면 예외가 그대로 나간다.
 /// 기록을 남길 수 없으면 <see cref="JournalUnavailableException"/>.
 /// </summary>
@@ -93,10 +96,14 @@ public sealed class Undoer(ExecutionContext context)
                     break;
                 }
 
-                outcome = Outcome.Transient(Executor.DescribeFailure(ex));
+                outcome = Outcome.Blocked(Executor.DescribeFailure(ex));
             }
 
             Apply(run, opState.Operation, outcome);
+            if (outcome.Kind == OutcomeKind.Blocked)
+            {
+                break;
+            }
         }
 
         return new UndoResult(run.Undone, run.Skipped.ToList());
@@ -158,7 +165,7 @@ public sealed class Undoer(ExecutionContext context)
 
         if (!IsVolumePresent(op.Source))
         {
-            return Outcome.Transient(SourceVolumeMissingMessage);
+            return Outcome.Blocked(SourceVolumeMissingMessage);
         }
 
         var sourceExists = fs.FileExists(op.Source);
@@ -259,7 +266,7 @@ public sealed class Undoer(ExecutionContext context)
 
         if (!IsVolumePresent(op.Source))
         {
-            return Outcome.Transient(SourceVolumeMissingMessage);
+            return Outcome.Blocked(SourceVolumeMissingMessage);
         }
 
         if (fs.FileExists(op.Source) || !SameVolume(op.Source, op.Destination))
@@ -343,6 +350,7 @@ public sealed class Undoer(ExecutionContext context)
                 break;
 
             case OutcomeKind.Transient:
+            case OutcomeKind.Blocked:
                 run.HadTransient = true;
                 run.Skipped.Add(new UndoSkip(op.Id, op.Destination, outcome.Reason!));
                 break;
@@ -361,12 +369,13 @@ public sealed class Undoer(ExecutionContext context)
         return string.Equals(fs.GetVolumeRoot(a), fs.GetVolumeRoot(b), StringComparison.OrdinalIgnoreCase);
     }
 
-    private enum OutcomeKind { Undone, Skipped, Transient }
+    private enum OutcomeKind { Undone, Skipped, Transient, Blocked }
 
     private enum SourceState { Matches, Differs, Missing, Unavailable }
 
     /// <summary>
-    /// 작업 하나의 되돌리기 결과. Undone·Skipped는 기록하고, Transient는 결과로만 알린다(다음 되돌리기에서 다시 본다).
+    /// 작업 하나의 되돌리기 결과. Undone·Skipped는 기록하고, Transient·Blocked는 결과로만 알린다(다음 되돌리기에서 다시 본다).
+    /// Blocked는 이번 되돌리기를 그 자리에서 멈춘다. Transient는 디스크 상태를 바꾸지 않고 남기는 경우(복사본 유지)라 계속한다.
     /// <see cref="Location"/>은 Undone일 때 파일이 지금 있는 곳(격리 경로나 원래 자리).
     /// </summary>
     private readonly record struct Outcome(OutcomeKind Kind, string? Reason, string? Location)
@@ -376,6 +385,8 @@ public sealed class Undoer(ExecutionContext context)
         public static Outcome Skipped(string reason) => new(OutcomeKind.Skipped, reason, null);
 
         public static Outcome Transient(string reason) => new(OutcomeKind.Transient, reason, null);
+
+        public static Outcome Blocked(string reason) => new(OutcomeKind.Blocked, reason, null);
     }
 
     private sealed class UndoRun(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete)

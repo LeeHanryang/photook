@@ -645,6 +645,89 @@ public class UndoTests
             Entries(journal).Where(e => e.Event == JournalEvent.Undone).Select(e => e.OpId).ToList());
     }
 
+    [Theory]
+    [InlineData(JournalEvent.Failed)]     // 옮겼지만 Failed로 기록된 두 번째 다리
+    [InlineData(JournalEvent.Completed)]
+    public void Undo_StopsAtFirstTransient_AndCompletesSafelyOnRerun(JournalEvent op3Result)
+    {
+        // 같은 크기의 자리 바꾸기. op3(임시 이름 → 14일)는 실제로 옮겼다: A는 14일 자리에, 임시 이름 A는 비어 있다.
+        const string Day14 = @"D:\Archive\2026\14\P.JPG";
+        const string Day15 = @"D:\Archive\2026\15\P.JPG";
+        const string TempA = Day15 + ".photook-tmp-op1";
+        const string TempB = Day14 + ".photook-tmp-op2";
+        var pa = Bytes(100, 38);
+        var pb = Bytes(100, 39);
+        _fs.AddFile(Day14, pa);
+        _fs.AddFile(TempB, pb);
+        _fs.AddDirectory(@"D:\Archive\2026\15");
+        var ops = new[]
+        {
+            Move("op1", Day15, TempA, pa.Length),
+            Move("op2", Day14, TempB, pb.Length),
+            Move("op3", TempA, Day14, pa.Length),
+            Move("op4", TempB, Day15, pb.Length),
+        };
+        var journal = WriteJournal(ops,
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, null),
+            ("op3", JournalEvent.Started, null), ("op3", op3Result, null));
+        var countBefore = Entries(journal).Count;
+
+        // 사진이 뷰어에 열려 있어 op3를 돌려놓는 이동이 공유 위반으로 실패한다.
+        _hooked.BeforeMove = (source, _) =>
+        {
+            if (string.Equals(source, Day14, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("다른 프로세스가 파일을 사용 중입니다");
+            }
+        };
+
+        var first = NewUndoer().Undo(journal);
+
+        Assert.Equal(0, first.Undone);
+        var skip = Assert.Single(first.Skipped);
+        Assert.Equal("op3", skip.OpId);
+        Assert.StartsWith("파일 작업 중 오류가 발생했습니다", skip.Reason);
+        Assert.Equal([JournalEvent.UndoStarted], Entries(journal).Skip(countBefore).Select(e => e.Event).ToList());
+        Assert.Equal(pa, _fs.ReadAllBytes(Day14)); // op2·op1은 건드리지 않았다
+        Assert.Equal(pb, _fs.ReadAllBytes(TempB));
+        var state = JournalReader.Load(_fs, journal);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op1").Status);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op2").Status);
+
+        _hooked.BeforeMove = null; // 뷰어를 닫았다
+        var second = NewUndoer().Undo(journal);
+
+        Assert.Equal(3, second.Undone);
+        Assert.Empty(second.Skipped);
+        Assert.Equal(pa, _fs.ReadAllBytes(Day15));
+        Assert.Equal(pb, _fs.ReadAllBytes(Day14));
+        Assert.DoesNotContain(_fs.AllFiles(), p => p.Contains(".photook-tmp", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Undo_KeepsFolderOfUnfinishedCreateDirectory_WhenItExists()
+    {
+        // 폴더 만들기가 Started에서 끊겼다. 원래 있던 폴더인지(Skipped를 쓰기 전) 이번에 만든 폴더인지(Completed를 쓰기 전) 알 수 없다.
+        _fs.AddDirectory(@"D:\Archive\2026");
+        var ops = new[] { Mkdir("op1", @"D:\Archive\2026"), Mkdir("op2", @"D:\Archive\2027") };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op2", JournalEvent.Started, null));
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal(0, result.Undone);
+        Assert.Equal(
+            [
+                new UndoSkip("op2", @"D:\Archive\2027", NotPerformed),
+                new UndoSkip("op1", @"D:\Archive\2026", "만들었는지 알 수 없는 폴더라 그대로 둡니다"),
+            ],
+            result.Skipped);
+        Assert.True(_fs.DirectoryExists(@"D:\Archive\2026"));
+        var state = JournalReader.Load(_fs, journal);
+        Assert.Equal(OpStatus.UndoSkipped, StateOf(state, "op1").Status);
+        Assert.Equal(OpStatus.UndoSkipped, StateOf(state, "op2").Status);
+    }
+
     [Fact]
     public void Undo_WritesUndoStarted_OnceBeforeFirstAction()
     {
