@@ -1105,7 +1105,8 @@ public class UndoTests
     /// <summary>OpenRead로 연 경로를 남긴다.</summary>
     private sealed class CountingReads(PhotoOk.Core.IO.IFileSystem inner, List<string> reads) : PhotoOk.Core.IO.IFileSystem
     {
-        public IEnumerable<string> EnumerateFiles(string directory, bool recursive) => inner.EnumerateFiles(directory, recursive);
+        public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
+            inner.EnumerateFiles(directory, recursive, onInaccessible);
 
         public bool FileExists(string path) => inner.FileExists(path);
 

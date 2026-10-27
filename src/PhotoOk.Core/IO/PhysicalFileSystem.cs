@@ -7,7 +7,15 @@ public sealed class PhysicalFileSystem : IFileSystem
 {
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
-    public IEnumerable<string> EnumerateFiles(string directory, bool recursive)
+    // 한 폴더씩 연다. 숨김·시스템 파일과 폴더도 사진일 수 있으므로 속성으로 거르지 않는다.
+    private static readonly EnumerationOptions OneLevel = new()
+    {
+        IgnoreInaccessible = false,
+        RecurseSubdirectories = false,
+        AttributesToSkip = FileAttributes.None,
+    };
+
+    public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null)
     {
         // 존재 확인은 즉시 하고(지연 열거 때문에 오류가 늦게 나지 않도록), 열거 자체는 지연시킨다.
         if (!Directory.Exists(directory))
@@ -15,14 +23,48 @@ public sealed class PhysicalFileSystem : IFileSystem
             throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {directory}");
         }
 
-        // 드라이브 루트의 System Volume Information처럼 열 수 없는 폴더는 건너뛰고 나머지를 끝까지 나열한다.
-        // 숨김·시스템 파일도 사진일 수 있으므로 속성으로 거르지 않는다.
-        return Directory.EnumerateFiles(directory, "*", new EnumerationOptions
+        return Walk(directory, recursive, onInaccessible);
+    }
+
+    /// <summary>
+    /// 폴더를 하나씩 열어 파일을 나열한다. 드라이브 루트의 System Volume Information처럼 열 수 없는 폴더는
+    /// 알린 뒤 건너뛰고 나머지를 끝까지 나열한다. 한 폴더의 목록은 다 읽은 뒤에 돌려주므로 폴더 중간에서 끊기지 않는다.
+    /// </summary>
+    private static IEnumerable<string> Walk(string root, bool recursive, Action<string, Exception>? onInaccessible)
+    {
+        var pending = new Stack<string>();
+        pending.Push(root);
+        while (pending.Count > 0)
         {
-            IgnoreInaccessible = true,
-            RecurseSubdirectories = recursive,
-            AttributesToSkip = FileAttributes.None,
-        });
+            var directory = pending.Pop();
+            List<string> files;
+            List<string> subdirectories;
+            try
+            {
+                files = Directory.EnumerateFiles(directory, "*", OneLevel).ToList();
+                subdirectories = recursive ? Directory.EnumerateDirectories(directory, "*", OneLevel).ToList() : [];
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+            {
+                if (onInaccessible is null)
+                {
+                    throw;
+                }
+
+                onInaccessible(directory, ex);
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                yield return file;
+            }
+
+            for (var i = subdirectories.Count - 1; i >= 0; i--)
+            {
+                pending.Push(subdirectories[i]);
+            }
+        }
     }
 
     public bool FileExists(string path) => File.Exists(path);

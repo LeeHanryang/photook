@@ -177,6 +177,43 @@ public sealed class FakeFileSystemTests
     }
 
     [Fact]
+    public void EnumerateFiles_DeniedDirectory_IsSkippedAndReported_OutermostOnly()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile(@"D:\in\a.jpg", [1]);
+        fs.AddFile(@"D:\in\Locked\b.jpg", [2]);
+        fs.AddFile(@"D:\in\Locked\Deeper\c.jpg", [3]);
+        fs.AddDirectory(@"D:\in\EmptyLocked");
+        fs.DenyDirectory(@"D:\in\Locked");
+        fs.DenyDirectory(@"D:\in\Locked\Deeper");
+        fs.DenyDirectory(@"D:\in\EmptyLocked");
+
+        var skipped = new List<string>();
+        var files = fs.EnumerateFiles(@"D:\in", recursive: true, (path, ex) =>
+        {
+            Assert.IsType<UnauthorizedAccessException>(ex);
+            skipped.Add(path);
+        }).ToList();
+
+        Assert.Equal([@"D:\in\a.jpg"], files);
+        Assert.Equal([@"D:\in\EmptyLocked", @"D:\in\Locked"], skipped);
+        Assert.True(fs.DirectoryExists(@"D:\in\Locked"));
+    }
+
+    [Fact]
+    public void EnumerateFiles_DeniedRoot_IsReported_AndWithoutCallbackThrows()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddFile(@"D:\in\a.jpg", [1]);
+        fs.DenyDirectory(@"D:\in");
+
+        var skipped = new List<string>();
+        Assert.Empty(fs.EnumerateFiles(@"D:\in", recursive: false, (path, _) => skipped.Add(path)));
+        Assert.Equal([@"D:\in"], skipped);
+        Assert.Throws<UnauthorizedAccessException>(() => fs.EnumerateFiles(@"D:\in", recursive: true).ToList());
+    }
+
+    [Fact]
     public void EnumerateFiles_Throws_WhenDirectoryMissing()
     {
         var fs = new FakeFileSystem();

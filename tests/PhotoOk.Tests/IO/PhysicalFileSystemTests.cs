@@ -317,10 +317,45 @@ public sealed class PhysicalFileSystemTests : IDisposable
         }
     }
 
-    [Fact]
-    public void EnumerateFiles_SkipsInaccessibleFolder_AndKeepsTheRest()
+    /// <summary>현재 사용자에게 이 폴더의 목록 보기를 거부한다. Dispose하면 거부 규칙을 뗀다.</summary>
+    internal static IDisposable DenyListing(string directory)
     {
-        // SD 카드 루트의 System Volume Information처럼 열 수 없는 폴더가 있어도 나머지 파일은 모두 나와야 한다.
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var deny = new System.Security.AccessControl.FileSystemAccessRule(user,
+            System.Security.AccessControl.FileSystemRights.ListDirectory, System.Security.AccessControl.AccessControlType.Deny);
+        var info = new DirectoryInfo(directory);
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(deny);
+        info.SetAccessControl(acl);
+        var restore = new Restore(() =>
+        {
+            var current = info.GetAccessControl();
+            current.RemoveAccessRule(deny);
+            info.SetAccessControl(current);
+        });
+
+        try
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFiles(directory)); // 정말 열 수 없는 폴더인지 확인
+        }
+        catch
+        {
+            restore.Dispose();
+            throw;
+        }
+
+        return restore;
+    }
+
+    private sealed class Restore(Action restore) : IDisposable
+    {
+        public void Dispose() => restore();
+    }
+
+    [Fact]
+    public void EnumerateFiles_SkipsInaccessibleFolder_ReportsIt_AndKeepsTheRest()
+    {
+        // SD 카드 루트의 System Volume Information처럼 열 수 없는 폴더가 있어도 나머지 파일은 모두 나와야 하고, 건너뛴 폴더는 알려야 한다.
         var locked = P("a-locked");
         Directory.CreateDirectory(locked);
         File.WriteAllText(Path.Combine(locked, "secret.jpg"), "x");
@@ -328,28 +363,49 @@ public sealed class PhysicalFileSystemTests : IDisposable
         File.WriteAllText(P("top.jpg"), "t");
         File.WriteAllText(Path.Combine(P("z-open"), "deep.jpg"), "d");
 
-        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
-        var deny = new System.Security.AccessControl.FileSystemAccessRule(user,
-            System.Security.AccessControl.FileSystemRights.ListDirectory, System.Security.AccessControl.AccessControlType.Deny);
-        var info = new DirectoryInfo(locked);
-        var acl = info.GetAccessControl();
-        acl.AddAccessRule(deny);
-        info.SetAccessControl(acl);
-
-        try
+        using (DenyListing(locked))
         {
-            Assert.Throws<UnauthorizedAccessException>(() => Directory.GetFiles(locked)); // 정말 열 수 없는 폴더인지 확인
+            var skipped = new List<(string Path, Exception Error)>();
+            var files = _fs.EnumerateFiles(_root, recursive: true, (path, ex) => skipped.Add((path, ex))).ToList();
 
-            var files = _fs.EnumerateFiles(_root, recursive: true).ToList();
-
-            Assert.Contains(P("top.jpg"), files);
-            Assert.Contains(Path.Combine(P("z-open"), "deep.jpg"), files);
+            Assert.Equal(
+                new[] { P("top.jpg"), Path.Combine(P("z-open"), "deep.jpg") }.Order(StringComparer.OrdinalIgnoreCase),
+                files.Order(StringComparer.OrdinalIgnoreCase));
+            var (path, error) = Assert.Single(skipped);
+            Assert.Equal(locked, path);
+            Assert.IsType<UnauthorizedAccessException>(error);
         }
-        finally
+    }
+
+    [Fact]
+    public void EnumerateFiles_InaccessibleRoot_IsReported_NotEmpty()
+    {
+        var locked = P("locked-root");
+        Directory.CreateDirectory(locked);
+        File.WriteAllText(Path.Combine(locked, "a.jpg"), "x");
+
+        using (DenyListing(locked))
         {
-            acl = info.GetAccessControl();
-            acl.RemoveAccessRule(deny);
-            info.SetAccessControl(acl);
+            Assert.True(Directory.Exists(locked)); // 존재 확인은 통과하는 폴더다
+
+            var skipped = new List<string>();
+            var files = _fs.EnumerateFiles(locked, recursive: true, (path, _) => skipped.Add(path)).ToList();
+
+            Assert.Empty(files);
+            Assert.Equal([locked], skipped);
+        }
+    }
+
+    [Fact]
+    public void EnumerateFiles_WithoutCallback_ThrowsForInaccessibleFolder_InsteadOfSkippingSilently()
+    {
+        var locked = P("a-locked");
+        Directory.CreateDirectory(locked);
+        File.WriteAllText(P("top.jpg"), "t");
+
+        using (DenyListing(locked))
+        {
+            Assert.Throws<UnauthorizedAccessException>(() => _fs.EnumerateFiles(_root, recursive: true).ToList());
         }
     }
 

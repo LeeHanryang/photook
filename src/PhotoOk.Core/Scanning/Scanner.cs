@@ -11,6 +11,7 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
 {
     private const string PhotookFolder = ".photook";
     private const string TempMarker = ".photook-tmp";
+    internal const string InaccessibleFolderMessage = "폴더를 열 수 없어 건너뛰었습니다: ";
 
     public ScanResult Scan(IReadOnlyList<string> sourceRoots, bool recursive, CancellationToken ct = default)
     {
@@ -20,10 +21,11 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         var ignored = new List<string>();
         var infos = new List<PhotoInfo>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var skippedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var root in sourceRoots)
         {
-            foreach (var path in Enumerate(root, recursive, errors, ct))
+            foreach (var path in Enumerate(root, recursive, errors, skippedFolders, ct))
             {
                 ct.ThrowIfCancellationRequested();
 
@@ -71,16 +73,23 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
     }
 
     /// <summary>
-    /// 소스 폴더 하나의 파일 목록을 모은다. 도중에 예외(예: 드라이브 루트의 접근 거부 폴더)가 나면
-    /// 그때까지 모은 파일은 살리고 폴더 오류로 기록한다. IFileSystem이 폴더 단위 열거를 주지 않아
-    /// 열거가 중단된 지점 뒤의 파일은 이번 스캔에서 빠진다.
+    /// 소스 폴더 하나의 파일 목록을 모은다. 열 수 없는 폴더(드라이브 루트의 System Volume Information, 권한이 없는 폴더,
+    /// 소스 폴더 자체 포함)는 건너뛰고 폴더마다 오류로 기록한다(여러 소스에서 같은 폴더를 만나도 한 번만). 그래서 열 수 없는
+    /// 소스 폴더는 "파일 0개"가 아니라 오류로 보인다. 그 밖의 예외로 열거가 끊기면 그때까지 모은 파일은 살리고 소스 폴더 오류로 기록한다.
     /// </summary>
-    private List<string> Enumerate(string root, bool recursive, List<ScanError> errors, CancellationToken ct)
+    private List<string> Enumerate(string root, bool recursive, List<ScanError> errors, HashSet<string> skippedFolders,
+        CancellationToken ct)
     {
         var paths = new List<string>();
         try
         {
-            using var enumerator = fileSystem.EnumerateFiles(root, recursive).GetEnumerator();
+            using var enumerator = fileSystem.EnumerateFiles(root, recursive, (folder, _) =>
+            {
+                if (skippedFolders.Add(folder))
+                {
+                    errors.Add(new ScanError(folder, InaccessibleFolderMessage + folder));
+                }
+            }).GetEnumerator();
             while (enumerator.MoveNext())
             {
                 ct.ThrowIfCancellationRequested();

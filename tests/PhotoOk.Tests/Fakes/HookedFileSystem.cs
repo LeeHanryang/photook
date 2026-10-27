@@ -13,7 +13,8 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     /// <summary><see cref="CreateNew"/>로 만들려고 한 경로, 시도한 순서대로.</summary>
     public List<string> Created { get; } = [];
 
-    public IEnumerable<string> EnumerateFiles(string directory, bool recursive) => inner.EnumerateFiles(directory, recursive);
+    public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
+        inner.EnumerateFiles(directory, recursive, onInaccessible);
 
     public bool FileExists(string path) => inner.FileExists(path);
 

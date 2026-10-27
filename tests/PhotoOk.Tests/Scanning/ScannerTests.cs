@@ -3,6 +3,7 @@ using PhotoOk.Core.IO;
 using PhotoOk.Core.Metadata;
 using PhotoOk.Core.Scanning;
 using PhotoOk.Tests.Fakes;
+using PhotoOk.Tests.IO;
 
 namespace PhotoOk.Tests.Scanning;
 
@@ -331,6 +332,101 @@ public class ScannerTests
     }
 
     [Fact]
+    public void Scan_DeniedSubfolder_IsScanError_AndOtherFilesAreKept()
+    {
+        Add($@"{Root}\TOP.JPG");
+        Add($@"{Root}\Locked\SECRET.JPG");
+        Add($@"{Root}\Locked\Inner\DEEP.JPG");
+        Add($@"{Root}\Open\OK.JPG");
+        _fs.DenyDirectory($@"{Root}\Locked");
+
+        var result = Scan();
+
+        Assert.Equal(["OK.JPG", "TOP.JPG"], result.Groups.Select(g => Name(g.Primary)).Order());
+        var error = Assert.Single(result.Errors);
+        Assert.Equal($@"{Root}\Locked", error.Path);
+        Assert.Equal($@"폴더를 열 수 없어 건너뛰었습니다: {Root}\Locked", error.Message);
+    }
+
+    [Fact]
+    public void Scan_DeniedRoot_IsScanError_NotAnEmptyResult()
+    {
+        Add($@"{Root}\IMG.JPG");
+        _fs.DenyDirectory(Root);
+
+        var result = Scan();
+
+        Assert.Empty(result.Groups);
+        var error = Assert.Single(result.Errors);
+        Assert.Equal(Root, error.Path);
+        Assert.Equal($"폴더를 열 수 없어 건너뛰었습니다: {Root}", error.Message);
+    }
+
+    [Fact]
+    public void Scan_DeniedRoot_NonRecursive_IsScanError()
+    {
+        Add($@"{Root}\IMG.JPG");
+        _fs.DenyDirectory(Root);
+
+        var result = Scan(recursive: false);
+
+        Assert.Empty(result.Groups);
+        Assert.Equal(Root, Assert.Single(result.Errors).Path);
+    }
+
+    [Fact]
+    public void Scan_DeniedFolderUnderOverlappingRoots_IsReportedOnce()
+    {
+        Add($@"{Root}\sub\Locked\A.JPG");
+        Add($@"{Root}\sub\B.JPG");
+        _fs.DenyDirectory($@"{Root}\sub\Locked");
+
+        var result = CreateScanner().Scan([Root, $@"{Root}\sub"], recursive: true);
+
+        Assert.Equal($@"{Root}\sub\Locked", Assert.Single(result.Errors).Path);
+        Assert.Equal("B.JPG", Name(Assert.Single(result.Groups).Primary));
+    }
+
+    [Fact]
+    public void Scan_RealDisk_DeniedSubfolderAndDeniedRoot_AreScanErrors()
+    {
+        var temp = Path.Combine(Path.GetTempPath(), "photook-tests", Guid.NewGuid().ToString("N"));
+        var root = Path.Combine(temp, "card");
+        var locked = Path.Combine(root, "Locked");
+        var other = Path.Combine(temp, "other");
+        Directory.CreateDirectory(locked);
+        Directory.CreateDirectory(other);
+        File.WriteAllBytes(Path.Combine(root, "TOP.JPG"), [1, 2, 3]);
+        File.WriteAllBytes(Path.Combine(locked, "SECRET.JPG"), [4, 5, 6]);
+        File.WriteAllBytes(Path.Combine(other, "HIDDEN.JPG"), [7, 8, 9]);
+        var scanner = new Scanner(new PhysicalFileSystem(), _reader, FileKinds.Default);
+
+        try
+        {
+            using (PhysicalFileSystemTests.DenyListing(locked))
+            using (PhysicalFileSystemTests.DenyListing(other))
+            {
+                var result = scanner.Scan([root, other], recursive: true);
+
+                Assert.Equal("TOP.JPG", Name(Assert.Single(result.Groups).Primary));
+                Assert.Equal([locked, other], result.Errors.Select(e => e.Path).Order(StringComparer.OrdinalIgnoreCase));
+                Assert.All(result.Errors, e => Assert.Equal($"폴더를 열 수 없어 건너뛰었습니다: {e.Path}", e.Message));
+            }
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(temp, recursive: true);
+            }
+            catch (IOException)
+            {
+                // 임시 폴더 정리 실패는 테스트 결과에 영향을 주지 않는다.
+            }
+        }
+    }
+
+    [Fact]
     public void Scan_CancelledToken_ThrowsOperationCanceled()
     {
         Add($@"{Root}\IMG.JPG");
@@ -362,9 +458,9 @@ public class ScannerTests
     /// <summary>열거 도중 접근 거부 폴더를 만난 것처럼, 지정한 개수만큼 돌려준 뒤 예외를 던진다.</summary>
     private sealed class FailingEnumerationFileSystem(FakeFileSystem inner, int filesBeforeFailure) : DelegatingFileSystem(inner)
     {
-        public override IEnumerable<string> EnumerateFiles(string directory, bool recursive)
+        public override IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null)
         {
-            foreach (var path in base.EnumerateFiles(directory, recursive).Take(filesBeforeFailure))
+            foreach (var path in base.EnumerateFiles(directory, recursive, onInaccessible).Take(filesBeforeFailure))
             {
                 yield return path;
             }
@@ -375,7 +471,8 @@ public class ScannerTests
 
     private abstract class DelegatingFileSystem(IFileSystem inner) : IFileSystem
     {
-        public virtual IEnumerable<string> EnumerateFiles(string directory, bool recursive) => inner.EnumerateFiles(directory, recursive);
+        public virtual IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
+            inner.EnumerateFiles(directory, recursive, onInaccessible);
 
         public bool FileExists(string path) => inner.FileExists(path);
 

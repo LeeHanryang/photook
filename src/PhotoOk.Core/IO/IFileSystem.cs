@@ -5,8 +5,13 @@ namespace PhotoOk.Core.IO;
 /// </summary>
 public interface IFileSystem
 {
-    /// <summary>디렉터리 아래 파일의 전체 경로를 나열한다. 디렉터리가 없으면 <see cref="DirectoryNotFoundException"/>.</summary>
-    IEnumerable<string> EnumerateFiles(string directory, bool recursive);
+    /// <summary>
+    /// 디렉터리 아래 파일의 전체 경로를 나열한다. 디렉터리가 없으면 <see cref="DirectoryNotFoundException"/>.
+    /// 열 수 없는 폴더(시작 폴더 포함)는 건너뛰고 나머지를 끝까지 나열하되, 건너뛴 폴더마다
+    /// <paramref name="onInaccessible"/>(폴더 경로, 예외)를 부른다. <paramref name="onInaccessible"/>이 null이면
+    /// 조용히 빠뜨리지 않도록 그 예외를 그대로 던진다.
+    /// </summary>
+    IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null);
 
     bool FileExists(string path);
 

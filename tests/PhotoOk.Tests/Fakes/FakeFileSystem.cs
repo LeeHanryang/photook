@@ -30,6 +30,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly Dictionary<string, long> _freeSpace = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReads = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _deniedDirs = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IHandle> _handles = new();
     private int? _crashAtOps;
     private bool _corruptNextWrite;
@@ -180,6 +181,19 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
+    /// <summary>
+    /// 이 폴더를 목록을 볼 수 없는 폴더로 만든다(목록 보기 거부 권한, System Volume Information).
+    /// <see cref="EnumerateFiles"/>만 영향을 받는다: 이 폴더와 그 아래 파일은 나오지 않고, 건너뛴 폴더로 알린다.
+    /// 존재 확인은 실제 디스크처럼 true다. <see cref="ClearFault"/>로 풀리지 않는다.
+    /// </summary>
+    public void DenyDirectory(string path)
+    {
+        lock (_gate)
+        {
+            _deniedDirs.Add(Normalize(path));
+        }
+    }
+
     /// <summary>드라이브를 뽑은 것처럼 만든다. 접근하면 <see cref="DirectoryNotFoundException"/>, 존재 확인은 false.</summary>
     public void RemoveVolume(string volumeRoot)
     {
@@ -202,7 +216,11 @@ public sealed class FakeFileSystem : IFileSystem
     // IFileSystem
     // ------------------------------------------------------------------
 
-    public IEnumerable<string> EnumerateFiles(string directory, bool recursive)
+    /// <summary>
+    /// 스냅샷을 돌려준다(목록을 정하는 동안 <paramref name="onInaccessible"/>을 부른다). 열 수 없는 폴더(<see cref="DenyDirectory"/>)는
+    /// 그 아래로 내려가지 않으므로, 재귀 나열에서는 가장 바깥의 거부 폴더만 알린다.
+    /// </summary>
+    public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null)
     {
         lock (_gate)
         {
@@ -213,9 +231,39 @@ public sealed class FakeFileSystem : IFileSystem
                 throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {directory}");
             }
 
+            var denied = new List<string>();
+            if (_deniedDirs.Contains(dir))
+            {
+                denied.Add(dir);
+            }
+            else if (recursive)
+            {
+                denied.AddRange(_deniedDirs
+                    .Where(d => _dirs.ContainsKey(d) && IsUnder(d, dir))
+                    .Where(d => !_deniedDirs.Any(outer => !PathEquals(outer, d) && IsUnder(d, outer) && IsUnder(outer, dir)))
+                    .OrderBy(d => d, StringComparer.OrdinalIgnoreCase));
+            }
+
+            foreach (var d in denied)
+            {
+                var error = new UnauthorizedAccessException($"폴더를 열 수 없습니다: {_dirs[d]}");
+                if (onInaccessible is null)
+                {
+                    throw error;
+                }
+
+                onInaccessible(_dirs[d], error);
+            }
+
+            if (_deniedDirs.Contains(dir))
+            {
+                return [];
+            }
+
             var prefixLength = storedDisplay.Length;
             var matches = _files
                 .Where(kv => recursive ? IsUnder(kv.Key, dir) : PathEquals(Path.GetDirectoryName(kv.Key), dir))
+                .Where(kv => !denied.Any(d => IsUnder(kv.Key, d)))
                 .Select(kv => kv.Value.Path)
                 .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
                 .Select(p => Path.Combine(dir, p[prefixLength..].TrimStart('\\')))
