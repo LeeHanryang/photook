@@ -169,6 +169,28 @@ public class JournalTests
     }
 
     [Fact]
+    public void Load_TracksLastSeq_AndUndoStarted()
+    {
+        var writer = NewWriter();
+        WriteStandardRun(writer, complete: false);   // 줄 1~6: op1은 5번째 줄(Completed), op2는 6번째 줄(Started)이 마지막
+        var before = JournalReader.Load(_fs, _archivePath);
+        Assert.Equal(5, before.Operations[0].LastSeq);
+        Assert.Equal(6, before.Operations[1].LastSeq);
+        Assert.False(before.UndoStarted);
+
+        writer.Write(Entry(JournalEvent.Failed, "op2"));       // 7
+        writer.Write(Entry(JournalEvent.UndoStarted));         // 8: 작업 ID가 없다
+        writer.Write(Entry(JournalEvent.Undone, "op1"));       // 9
+        var after = JournalReader.Load(_fs, _archivePath);
+
+        Assert.True(after.UndoStarted);
+        Assert.Equal(9, after.Operations[0].LastSeq);
+        Assert.Equal(5, after.Operations[0].CompletedSeq);
+        Assert.Equal(7, after.Operations[1].LastSeq);
+        Assert.Equal(9, after.EntryCount);
+    }
+
+    [Fact]
     public void Load_ReportsStartedAndFinished()
     {
         var writer = NewWriter();

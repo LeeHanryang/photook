@@ -27,6 +27,7 @@ public class UndoTests
     private const string MovedMissing = "옮긴 파일을 찾을 수 없습니다";
     private const string FolderNotEmpty = "폴더가 비어 있지 않습니다";
     private const string ArchiveMissing = "보관 드라이브가 연결되어 있지 않습니다";
+    private const string NotPerformed = "실행되지 않은 작업이라 되돌릴 것이 없습니다";
 
     private readonly FakeFileSystem _fs = new();
     private readonly HookedFileSystem _hooked;
@@ -433,7 +434,7 @@ public class UndoTests
         const string TempA = Day15 + ".photook-tmp-op1";
         const string TempB = Day14 + ".photook-tmp-op2";
         var pa = Bytes(100, 30);
-        var pb = Bytes(120, 31);
+        var pb = Bytes(100, 31); // 같은 크기: 크기만으로는 두 파일을 구별할 수 없다
         _fs.AddFile(Day14, pa);  // op3가 옮겨 놓은 A
         _fs.AddFile(TempB, pb);  // op2가 임시 이름으로 옮겨 둔 B
         _fs.AddDirectory(@"D:\Archive\2026\15");
@@ -471,7 +472,7 @@ public class UndoTests
         const string TempA = Day15 + ".photook-tmp-op1";
         const string TempB = Day14 + ".photook-tmp-op2";
         var pa = Bytes(100, 32);
-        var pb = Bytes(120, 33);
+        var pb = Bytes(100, 33); // 같은 크기
         _fs.AddFile(TempA, pa);
         _fs.AddFile(TempB, pb);
         var ops = new[]
@@ -489,10 +490,10 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(2, result.Undone);
-        Assert.Empty(result.Skipped);
+        Assert.Equal([new UndoSkip("op3", Day14, NotPerformed)], result.Skipped);
         Assert.Equal(pa, _fs.ReadAllBytes(Day15));
         Assert.Equal(pb, _fs.ReadAllBytes(Day14));
-        Assert.Equal(OpStatus.Failed, StateOf(JournalReader.Load(_fs, journal), "op3").Status);
+        Assert.Equal(OpStatus.UndoSkipped, StateOf(JournalReader.Load(_fs, journal), "op3").Status);
     }
 
     [Fact]
@@ -543,7 +544,7 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(1, result.Undone); // 폴더. 임시 파일은 작업이 아니므로 세지 않는다
-        Assert.Empty(result.Skipped);
+        Assert.Equal([new UndoSkip("op2", @"D:\Archive\2026\a.jpg", NotPerformed)], result.Skipped);
         Assert.Empty(ArchiveFiles());
         Assert.False(_fs.DirectoryExists(@"D:\Archive\2026"));
         Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
@@ -561,8 +562,103 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(0, result.Undone);
-        Assert.Empty(result.Skipped);
+        Assert.Equal([new UndoSkip("op1", @"D:\Archive\2026\a.jpg", NotPerformed)], result.Skipped);
         Assert.Equal(other, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+    }
+
+    [Fact]
+    public void Undo_SecondRun_DoesNothing_ForSameSizeSwapWithFailedLeg()
+    {
+        // 같은 크기의 자리 바꾸기에서 두 번째 다리(op3)가 실패했다. 첫 되돌리기가 원래 배치로 돌려놓은 뒤,
+        // 두 번째 되돌리기가 op3를 "옮긴 뒤 기록하지 못한 작업"으로 착각해 사진을 임시 이름으로 옮기면 안 된다.
+        const string Day14 = @"D:\Archive\2026\14\P.JPG";
+        const string Day15 = @"D:\Archive\2026\15\P.JPG";
+        const string TempA = Day15 + ".photook-tmp-op1";
+        const string TempB = Day14 + ".photook-tmp-op2";
+        var pa = Bytes(100, 34);
+        var pb = Bytes(100, 35);
+        _fs.AddFile(TempA, pa);
+        _fs.AddFile(TempB, pb);
+        var ops = new[]
+        {
+            Move("op1", Day15, TempA, pa.Length),
+            Move("op2", Day14, TempB, pb.Length),
+            Move("op3", TempA, Day14, pa.Length),
+            Move("op4", TempB, Day15, pb.Length),
+        };
+        var journal = WriteJournal(ops,
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, null),
+            ("op3", JournalEvent.Started, null), ("op3", JournalEvent.Failed, null));
+
+        var first = NewUndoer().Undo(journal);
+        Assert.Equal(2, first.Undone);
+        Assert.Equal(pa, _fs.ReadAllBytes(Day15));
+        Assert.Equal(pb, _fs.ReadAllBytes(Day14));
+        var filesAfterFirst = ArchiveFiles();
+        var entriesAfterFirst = Entries(journal).Count;
+
+        var second = NewUndoer().Undo(journal);
+
+        Assert.Equal(0, second.Undone);
+        Assert.Empty(second.Skipped);
+        Assert.Equal(filesAfterFirst, ArchiveFiles());
+        Assert.Equal(pa, _fs.ReadAllBytes(Day15));
+        Assert.Equal(pb, _fs.ReadAllBytes(Day14));
+        Assert.Equal(entriesAfterFirst, Entries(journal).Count);
+        var skipped = Entries(journal).Single(e => e.Event == JournalEvent.UndoSkipped);
+        Assert.Equal("op3", skipped.OpId);
+        Assert.Equal(NotPerformed, skipped.Message);
+    }
+
+    [Fact]
+    public void Undo_RevertsEarlyFailedButPerformedMove_WhenLaterOpConsumedItsDestination()
+    {
+        // op1은 실제로 옮겼지만 Failed로 기록됐고, 뒤의 op2가 op1의 대상(임시 이름)을 원본으로 써서 완료했다.
+        // 기록 순서의 역순(op2 → op1)으로 처리해야 파일이 원래 자리로 돌아간다.
+        // 지금의 Executor·Resume로는 만들 수 없는 기록이라 손으로 쓴다(Resume은 Failed 이동을 계획 순서대로 먼저 맞춰 본다).
+        const string Original = @"D:\Archive\2026\14\P.JPG";
+        const string Temp = Original + ".photook-tmp-op1";
+        const string Final = @"D:\Archive\2026\15\P.JPG";
+        var p = Bytes(100, 36);
+        _fs.AddFile(Final, p);
+        _fs.AddDirectory(@"D:\Archive\2026\14");
+        var ops = new[]
+        {
+            Move("op1", Original, Temp, p.Length),
+            Move("op2", Temp, Final, p.Length),
+        };
+        var journal = WriteJournal(ops,
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Failed, null),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, null));
+        var state = JournalReader.Load(_fs, journal);
+        Assert.True(StateOf(state, "op2").LastSeq > StateOf(state, "op1").LastSeq);
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal(2, result.Undone);
+        Assert.Empty(result.Skipped);
+        Assert.Equal(p, _fs.ReadAllBytes(Original));
+        Assert.False(_fs.FileExists(Temp));
+        Assert.False(_fs.FileExists(Final));
+        Assert.Equal(["op2", "op1"],
+            Entries(journal).Where(e => e.Event == JournalEvent.Undone).Select(e => e.OpId).ToList());
+    }
+
+    [Fact]
+    public void Undo_WritesUndoStarted_OnceBeforeFirstAction()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 37);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        var run = Run(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
+        var countBefore = Entries(run.JournalPath!).Count;
+
+        NewUndoer().Undo(run.JournalPath!);
+        NewUndoer().Undo(run.JournalPath!);
+
+        var entries = Entries(run.JournalPath!);
+        Assert.Equal([JournalEvent.UndoStarted, JournalEvent.Undone], entries.Skip(countBefore).Select(e => e.Event).ToList());
+        Assert.Null(entries[countBefore].OpId);
     }
 
     // ------------------------------------------------------------------

@@ -28,6 +28,7 @@ public static class JournalReader
         string? runId = null;
         string? archiveRoot = null;
         var finished = false;
+        var undoStarted = false;
         var expectedOperations = 0;
         var entryCount = 0;
         var order = new List<string>();
@@ -81,11 +82,15 @@ public static class JournalReader
                         ?? throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄: 대상 경로가 없습니다.");
                     var op = new PlannedOperation(id, kind, entry.Source, destination, entry.Length, []);
                     order.Add(id);
-                    operations[id] = new OpState(op, OpStatus.Pending, null, 0);
+                    operations[id] = new OpState(op, OpStatus.Pending, null, 0, lineNumber);
                     break;
 
                 case JournalEvent.RunFinished:
                     finished = true;
+                    break;
+
+                case JournalEvent.UndoStarted:
+                    undoStarted = true;
                     break;
 
                 default:
@@ -95,7 +100,7 @@ public static class JournalReader
                         throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄: 계획에 없는 작업입니다 ({opId}).");
                     }
 
-                    operations[opId] = entry.Event switch
+                    var updated = entry.Event switch
                     {
                         JournalEvent.Started => current with { Status = OpStatus.Started },
                         JournalEvent.Completed => current with { Status = OpStatus.Completed, Hash = entry.Hash, CompletedSeq = lineNumber },
@@ -105,6 +110,7 @@ public static class JournalReader
                         JournalEvent.UndoSkipped => current with { Status = OpStatus.UndoSkipped },
                         _ => current,
                     };
+                    operations[opId] = updated with { LastSeq = lineNumber };
                     break;
             }
         }
@@ -115,7 +121,7 @@ public static class JournalReader
         }
 
         return new RunState(runId, archiveRoot, order.Select(id => operations[id]).ToList(), finished,
-            expectedOperations, entryCount);
+            expectedOperations, entryCount, undoStarted);
     }
 
     private static string RequireOpId(JournalEntry entry, int lineNumber) =>

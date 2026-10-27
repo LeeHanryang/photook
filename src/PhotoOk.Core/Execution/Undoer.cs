@@ -15,8 +15,11 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// <item>옮긴 파일은 원래 자리가 비어 있을 때만 돌려놓는다. 실행 후 바뀐 파일은 그대로 둔다.</item>
 /// <item>이번 실행이 만든 폴더는 비어 있을 때만 지운다. 원래 있던 폴더(Skipped)는 건드리지 않는다.</item>
 /// </list>
-/// 처리 순서: 먼저 기록이 Started/Failed에서 끝난 작업(실제로는 끝났을 수 있다)을 계획의 역순으로 맞춰 보고, 그다음 Completed 작업을
-/// 완료 순서의 역순(<see cref="OpState.CompletedSeq"/> 내림차순)으로 되돌린다.
+/// 처리 순서: Completed·Started·Failed 작업을 한 번에, 기록에 마지막으로 나온 순서의 역순(<see cref="OpState.LastSeq"/> 내림차순)으로
+/// 처리한다. Completed는 기록대로 되돌리고, Started·Failed(실제로는 끝났을 수 있다)는 디스크를 보고 실제로 한 일만 되돌린다.
+/// 실행되지 않았다고 판단한 Started·Failed 작업은 "실행되지 않은 작업이라 되돌릴 것이 없습니다"로 기록해 끝낸다. 그래야 다음 되돌리기가
+/// 이미 돌려놓은 파일을 그 작업의 결과로 착각하지 않는다.
+/// 첫 파일 작업 전에 UndoStarted를 한 번 쓴다(이미 있으면 쓰지 않는다). 이 표시가 있는 기록은 이어 하기가 거부한다.
 /// 결과는 작업마다 Undone 또는 UndoSkipped(Message=사유)로 같은 기록 사본에 쓴다. 기록 사본은 이어 하기와 같은 방식으로 고르고
 /// (같은 실행ID에서 항목이 가장 많은 것) 그 사본에만 쓴다. 이미 Undone·UndoSkipped인 작업은 건너뛰므로 다시 실행해도 안전하다.
 /// UndoSkipped는 최종이다. 다만 드라이브가 빠졌거나 입출력 오류처럼 다시 연결·재시도하면 풀리는 사유는 기록하지 않고 결과로만 알려,
@@ -33,6 +36,8 @@ public sealed class Undoer(ExecutionContext context)
     internal const string MovedFileMissingMessage = "옮긴 파일을 찾을 수 없습니다";
     internal const string FolderNotEmptyMessage = "폴더가 비어 있지 않습니다";
     internal const string SourceVolumeMissingMessage = "원래 드라이브가 연결되어 있지 않아 옮기지 않았습니다";
+    internal const string NotPerformedMessage = "실행되지 않은 작업이라 되돌릴 것이 없습니다";
+    internal const string UnknownFolderMessage = "만들었는지 알 수 없는 폴더라 그대로 둡니다";
 
     public UndoResult Undo(string journalPath, CancellationToken ct = default)
     {
@@ -49,17 +54,18 @@ public sealed class Undoer(ExecutionContext context)
         var run = new UndoRun(state.RunId, state.ArchiveRoot, new JournalWriter(fs, [path]),
             new SafeDelete(fs, state.ArchiveRoot, state.RunId));
 
-        // 끝났는지 모르는 작업은 가장 나중에 일어난 일이므로 먼저 맞춰 본다. 계획의 역순으로.
-        var unrecorded = state.Operations
-            .Where(o => o.Status is OpStatus.Started or OpStatus.Failed)
-            .Reverse()
-            .Select(o => (State: o, Recorded: false));
-        var completed = state.Operations
-            .Where(o => o.Status == OpStatus.Completed)
-            .OrderByDescending(o => o.CompletedSeq)
-            .Select(o => (State: o, Recorded: true));
+        // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
+        if (!state.UndoStarted)
+        {
+            run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.UndoStarted, TimestampUtc: context.UtcNow()));
+        }
 
-        foreach (var (opState, recorded) in unrecorded.Concat(completed))
+        // 기록에 나중에 나온 작업부터. 앞 작업의 대상을 뒤 작업이 원본으로 쓴 경우(자리 바꾸기)에도 역순이면 맞게 풀린다.
+        var pending = state.Operations
+            .Where(o => o.Status is OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
+            .OrderByDescending(o => o.LastSeq);
+
+        foreach (var opState in pending)
         {
             if (ct.IsCancellationRequested)
             {
@@ -75,7 +81,9 @@ public sealed class Undoer(ExecutionContext context)
             Outcome outcome;
             try
             {
-                outcome = recorded ? UndoCompleted(run, opState) : UndoUnrecorded(run, opState.Operation);
+                outcome = opState.Status == OpStatus.Completed
+                    ? UndoCompleted(run, opState)
+                    : UndoUnrecorded(run, opState.Operation);
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
@@ -201,7 +209,9 @@ public sealed class Undoer(ExecutionContext context)
         OperationKind.Copy => UndoUnrecordedCopy(run, op),
         OperationKind.Move => UndoUnrecordedMove(op),
         // 끊긴 폴더 만들기는 원래 있던 폴더인지 알 수 없으므로 남긴다(빈 폴더는 파일을 잃게 하지 않는다).
-        _ => Outcome.None,
+        _ => context.FileSystem.DirectoryExists(op.Destination)
+            ? Outcome.Skipped(UnknownFolderMessage)
+            : Outcome.Skipped(NotPerformedMessage),
     };
 
     /// <summary>
@@ -219,7 +229,7 @@ public sealed class Undoer(ExecutionContext context)
 
         if (op.Source is null || !fs.FileExists(op.Destination))
         {
-            return Outcome.None;
+            return Outcome.Skipped(NotPerformedMessage);
         }
 
         switch (CheckSource(op, context.Hasher.Hash(op.Destination)))
@@ -232,7 +242,7 @@ public sealed class Undoer(ExecutionContext context)
                 return Outcome.Skipped(SourceGoneMessage);
             default:
                 // 원본과 내용이 다르면 이 파일이 이번 실행의 복사본이라고 볼 근거가 없다.
-                return Outcome.None;
+                return Outcome.Skipped(NotPerformedMessage);
         }
 
         return Outcome.Undone(run.SafeDelete.Quarantine(op.Destination));
@@ -244,7 +254,7 @@ public sealed class Undoer(ExecutionContext context)
         var fs = context.FileSystem;
         if (op.Source is null || !fs.FileExists(op.Destination))
         {
-            return Outcome.None;
+            return Outcome.Skipped(NotPerformedMessage);
         }
 
         if (!IsVolumePresent(op.Source))
@@ -254,7 +264,7 @@ public sealed class Undoer(ExecutionContext context)
 
         if (fs.FileExists(op.Source) || !SameVolume(op.Source, op.Destination))
         {
-            return Outcome.None;
+            return Outcome.Skipped(NotPerformedMessage);
         }
 
         // 옮긴 뒤 크기가 달라 실패로 기록된 경우. 파일은 새 자리에 있으므로 알린다.
@@ -351,7 +361,7 @@ public sealed class Undoer(ExecutionContext context)
         return string.Equals(fs.GetVolumeRoot(a), fs.GetVolumeRoot(b), StringComparison.OrdinalIgnoreCase);
     }
 
-    private enum OutcomeKind { None, Undone, Skipped, Transient }
+    private enum OutcomeKind { Undone, Skipped, Transient }
 
     private enum SourceState { Matches, Differs, Missing, Unavailable }
 
@@ -361,8 +371,6 @@ public sealed class Undoer(ExecutionContext context)
     /// </summary>
     private readonly record struct Outcome(OutcomeKind Kind, string? Reason, string? Location)
     {
-        public static Outcome None => new(OutcomeKind.None, null, null);
-
         public static Outcome Undone(string? location) => new(OutcomeKind.Undone, null, location);
 
         public static Outcome Skipped(string reason) => new(OutcomeKind.Skipped, reason, null);

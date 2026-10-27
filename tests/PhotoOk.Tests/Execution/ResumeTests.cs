@@ -504,6 +504,46 @@ public class ResumeTests
     }
 
     [Fact]
+    public void Resume_Refuses_AfterUndoThatWroteOnlyUndoStarted()
+    {
+        // 첫 복사를 마친 뒤 취소된 실행. 원본 드라이브를 뺀 채 되돌리기를 하면 모든 사유가 일시적이라 작업 기록은 남지 않는다.
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 28);
+        var b = AddFile(@"E:\DCIM\b.jpg", 100, 29);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        using var cts = new CancellationTokenSource();
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (source.EndsWith(".photook-tmp", StringComparison.OrdinalIgnoreCase))
+            {
+                cts.Cancel();
+            }
+        };
+        var run = NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length)), cts.Token);
+        _hooked.AfterMove = null;
+        Assert.Equal(RunOutcome.Cancelled, run.Outcome);
+        var countBefore = Entries(run.JournalPath!).Count;
+
+        _fs.RemoveVolume(@"E:\");
+        var undo = new Undoer(new ExecutionContext(_hooked, new XxHasher(_hooked), AppData, () => Now)).Undo(run.JournalPath!);
+        _fs.RestoreVolume(@"E:\");
+
+        Assert.Equal(0, undo.Undone);
+        var entries = Entries(run.JournalPath!);
+        Assert.Equal(countBefore + 1, entries.Count);
+        Assert.Equal(JournalEvent.UndoStarted, entries[^1].Event);
+        Assert.True(JournalReader.Load(_fs, run.JournalPath!).UndoStarted);
+        var opsBefore = _fs.MutatingOps;
+
+        var ex = Assert.Throws<InvalidOperationException>(() => NewExecutor().Resume(run.JournalPath!));
+
+        Assert.Equal("되돌리기를 시작한 기록은 이어 할 수 없습니다", ex.Message);
+        Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.False(_fs.FileExists(@"D:\Archive\2026\b.jpg"));
+    }
+
+    [Fact]
     public void Resume_Refuses_RunThatWasBeingUndone()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 26);

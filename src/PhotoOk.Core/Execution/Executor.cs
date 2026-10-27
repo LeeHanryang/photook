@@ -91,7 +91,8 @@ public sealed class Executor(ExecutionContext context)
         }
 
         // 되돌리기가 손댄 기록을 다시 실행하면 되돌린 작업을 또 하게 된다.
-        if (state.Operations.Any(o => o.Status is OpStatus.Undone or OpStatus.UndoSkipped))
+        // 되돌리기가 아무 작업 결과도 남기지 못했더라도(일시적인 사유뿐) UndoStarted가 있으면 거부한다.
+        if (state.UndoStarted || state.Operations.Any(o => o.Status is OpStatus.Undone or OpStatus.UndoSkipped))
         {
             throw new InvalidOperationException(UndoStartedMessage);
         }
