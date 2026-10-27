@@ -46,10 +46,10 @@ public class RunViewModelTests
     private FileLog Log => new(_fs, LogFolder);
 
     private RunViewModel ForPlan(Plan plan, int scanErrors = 0, Executor? executor = null) =>
-        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), Log, () => _home, () => _history, plan, scanErrors);
+        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), _fs, Log, () => _home, () => _history, plan, scanErrors);
 
     private RunViewModel ForResume(string journalPath) =>
-        RunViewModel.ForResume(_shell, NewExecutor(), Log, () => _home, () => _history, journalPath);
+        RunViewModel.ForResume(_shell, NewExecutor(), _fs, Log, () => _home, () => _history, journalPath);
 
     private static PlannedOperation Copy(string id, string source, string destination, long length) =>
         new(id, OperationKind.Copy, source, destination, length, Array.Empty<ReviewReason>());
@@ -486,5 +486,96 @@ public class RunViewModelTests
         _shell.Navigate(vm);
         vm.HomeCommand.Execute(null);
         Assert.Same(_home, _shell.Current);
+    }
+
+    // ------------------------------------------------------------------
+    // 실패 원문, 점검 경고, 처리한 파일 수
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public async Task FailureLine_ShowsSummaryOnly_AndLogsFullMessage()
+    {
+        var plan = CopyPlan(2);
+        _hooked.BeforeMove = (source, _) =>
+        {
+            if (source.EndsWith("p1.jpg.photook-tmp", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("SECRET-OS-TEXT");
+            }
+        };
+        var vm = ForPlan(plan);
+
+        await vm.StartAsync();
+
+        Assert.Equal("일부 파일을 처리하지 못했습니다", vm.ResultTitle);
+        var line = Assert.Single(vm.FailureLines);
+        Assert.Equal(@"E:\DCIM\p1.jpg → D:\Archive\2026\p1.jpg: 파일 작업 중 오류가 발생했습니다", line);
+        Assert.DoesNotContain("SECRET", line);
+        Assert.All(vm.WarningLines, l => Assert.DoesNotContain("SECRET", l));
+        Assert.Contains("SECRET-OS-TEXT", LogText());
+        Assert.Contains(@"E:\DCIM\p1.jpg → D:\Archive\2026\p1.jpg", LogText());
+    }
+
+    [Fact]
+    public async Task PreflightWarning_GoesToWarnings_NotToFailures_AndSafeMessageStays()
+    {
+        var longName = new string('a', 250) + ".jpg";
+        var destination = $@"D:\Archive\2026\{longName}";
+        Assert.True(destination.Length > 259);
+        var data = AddSource(@"E:\DCIM\long.jpg", 100, 77);
+        var vm = ForPlan(PlanOf(Copy("op1", @"E:\DCIM\long.jpg", destination, data.Length)));
+
+        await vm.StartAsync();
+
+        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
+        Assert.Equal(SafeMessage, vm.SafeToCleanMessage);
+        Assert.Empty(vm.FailureLines);
+        var warning = Assert.Single(vm.WarningLines);
+        Assert.Contains("경로가 길어 일부 프로그램에서 열리지 않을 수 있습니다", warning);
+    }
+
+    [Fact]
+    public async Task BlockingPreflightError_StaysInFailureLines()
+    {
+        var vm = ForPlan(PlanOf(Copy("op1", @"E:\DCIM\missing.jpg", @"D:\Archive\2026\missing.jpg", 10)));
+
+        await vm.StartAsync();
+
+        Assert.Contains(vm.FailureLines, l => l.Contains("원본 파일을 찾을 수 없습니다"));
+        Assert.Null(vm.SucceededFilesText); // 기록을 만들지 않은 실행
+    }
+
+    [Fact]
+    public async Task SucceededFilesText_CountsFilesOnly_NotFolders()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 1);
+        var b = AddSource(@"E:\DCIM\b.jpg", 120, 2);
+        var vm = ForPlan(PlanOf(
+            Mkdir("op1", @"D:\Archive\2027"),
+            Copy("op2", @"E:\DCIM\a.jpg", @"D:\Archive\2027\a.jpg", a.Length),
+            Copy("op3", @"E:\DCIM\b.jpg", @"D:\Archive\2027\b.jpg", b.Length)));
+        Assert.Null(vm.SucceededFilesText);
+
+        await vm.StartAsync();
+
+        Assert.Equal(3, vm.Done); // 진행률은 폴더 만들기도 센다
+        Assert.Equal("처리한 파일 2개", vm.SucceededFilesText);
+    }
+
+    [Fact]
+    public async Task SucceededFilesText_ExcludesFailedFiles_AndCountsResumedOnes()
+    {
+        var plan = CopyPlan(3);
+        _fs.FailReadsOf(@"E:\DCIM\p2.jpg");
+        var vm = ForPlan(plan);
+
+        await vm.StartAsync();
+
+        Assert.Equal("처리한 파일 2개", vm.SucceededFilesText);
+
+        // 기록에서 이어 하는 화면도 같은 기록으로 센다.
+        var resumed = ForResume(ArchiveJournals().Single());
+        await resumed.StartAsync();
+        Assert.NotNull(resumed.SucceededFilesText);
     }
 }

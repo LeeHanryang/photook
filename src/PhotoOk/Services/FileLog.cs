@@ -12,13 +12,18 @@ public sealed class FileLog(IFileSystem fileSystem, string logFolder)
 {
     private readonly object _gate = new();
 
-    public void Error(string message, Exception ex)
+    public void Error(string message, Exception ex) => Write("오류", $"{message}{Environment.NewLine}{ex}");
+
+    /// <summary>예외는 없지만 나중에 확인할 수 있게 남겨 둘 일(예: 화면에는 요약만 보이는 파일별 실패 원문).</summary>
+    public void Warning(string message) => Write("경고", message);
+
+    private void Write(string level, string text)
     {
         try
         {
             var now = DateTime.Now;
             var path = Path.Combine(logFolder, now.ToString("yyyyMMdd", CultureInfo.InvariantCulture) + ".log");
-            var line = $"{now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} [오류] {message}{Environment.NewLine}{ex}";
+            var line = $"{now.ToString("yyyy-MM-dd HH:mm:ss.fff", CultureInfo.InvariantCulture)} [{level}] {text}";
             lock (_gate)
             {
                 fileSystem.CreateDirectory(logFolder);

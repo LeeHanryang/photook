@@ -69,7 +69,8 @@
                     </Style>
                 </StackPanel.Style>
                 <TextBlock Text="{Binding ResultTitle}" FontSize="24" FontWeight="Bold" TextWrapping="Wrap" />
-                <TextBlock Text="{Binding ProgressText}" Opacity="0.7" Margin="0,6,0,0" />
+                <TextBlock Text="{Binding SucceededFilesText}" Style="{StaticResource OptionalText}"
+                           Margin="0,6,0,0" Opacity="0.8" />
                 <TextBlock Text="{Binding SafeToCleanMessage}" Style="{StaticResource OptionalText}"
                            FontSize="16" FontWeight="SemiBold" Foreground="#FF1B7F3B" />
                 <TextBlock Text="{Binding CautionMessage}" Style="{StaticResource OptionalText}"

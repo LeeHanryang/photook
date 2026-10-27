@@ -123,7 +123,7 @@ public partial class App : Application
     /// </summary>
     private static RunViewModel CreateRunScreen(AppServices services, ShellViewModel shell, Plan plan, int scanErrorCount)
     {
-        var run = RunViewModel.ForPlan(shell, new Executor(services.Execution), services.Log,
+        var run = RunViewModel.ForPlan(shell, new Executor(services.Execution), services.FileSystem, services.Log,
             createHome: () => CreateStartScreen(services, shell),
             createHistory: () => CreateStartScreen(services, shell),
             plan, scanErrorCount);

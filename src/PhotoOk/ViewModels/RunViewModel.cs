@@ -3,6 +3,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PhotoOk.Core.Execution;
+using PhotoOk.Core.IO;
 using PhotoOk.Core.Planning;
 using PhotoOk.Services;
 
@@ -21,9 +22,11 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     private const string JournalUnavailableTitle = "기록을 남길 수 없어 실행을 멈췄습니다";
     private const string UnexpectedErrorTitle = "예기치 못한 오류로 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다";
     private const int LineLimit = 50;
+    private const string FailureDetailSeparator = " — ";
 
     private readonly ShellViewModel _shell;
     private readonly Executor _executor;
+    private readonly IFileSystem _fileSystem;
     private readonly FileLog _log;
     private readonly Func<ObservableObject> _createHome;
     private readonly Func<ObservableObject> _createHistory;
@@ -39,6 +42,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     private string? _faultTitle;
     private IReadOnlyList<string> _failureLines = [];
     private IReadOnlyList<string> _warningLines = [];
+    private int? _succeededFiles;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ProgressText))]
@@ -65,11 +69,12 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     private bool isCancelling;
 
-    private RunViewModel(ShellViewModel shell, Executor executor, FileLog log, Func<ObservableObject> createHome,
+    private RunViewModel(ShellViewModel shell, Executor executor, IFileSystem fileSystem, FileLog log, Func<ObservableObject> createHome,
         Func<ObservableObject> createHistory, Plan? plan, string? journalPath, int? scanErrorCount)
     {
         _shell = shell;
         _executor = executor;
+        _fileSystem = fileSystem;
         _log = log;
         _createHome = createHome;
         _createHistory = createHistory;
@@ -85,19 +90,19 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     }
 
     /// <summary>미리보기에서 만든 계획을 실행하는 화면. <paramref name="scanErrorCount"/>는 스캔 때 읽지 못한 파일 수.</summary>
-    public static RunViewModel ForPlan(ShellViewModel shell, Executor executor, FileLog log, Func<ObservableObject> createHome,
+    public static RunViewModel ForPlan(ShellViewModel shell, Executor executor, IFileSystem fileSystem, FileLog log, Func<ObservableObject> createHome,
         Func<ObservableObject> createHistory, Plan plan, int scanErrorCount)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return new RunViewModel(shell, executor, log, createHome, createHistory, plan, journalPath: null, scanErrorCount);
+        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan, journalPath: null, scanErrorCount);
     }
 
     /// <summary>끝나지 않은 실행을 작업 기록으로 이어 하는 화면. 스캔 때 읽지 못한 파일 수를 모르므로 "안전" 문구는 보이지 않는다.</summary>
-    public static RunViewModel ForResume(ShellViewModel shell, Executor executor, FileLog log, Func<ObservableObject> createHome,
+    public static RunViewModel ForResume(ShellViewModel shell, Executor executor, IFileSystem fileSystem, FileLog log, Func<ObservableObject> createHome,
         Func<ObservableObject> createHistory, string journalPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(journalPath);
-        return new RunViewModel(shell, executor, log, createHome, createHistory, plan: null, journalPath, scanErrorCount: null);
+        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan: null, journalPath, scanErrorCount: null);
     }
 
     public event EventHandler? BusyEnded;
@@ -135,10 +140,18 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             : "이 기록은 스캔할 때 읽지 못한 파일이 있었는지 알 수 없습니다. 원본을 직접 정리하기 전에 확인해 주세요"
         : null;
 
-    /// <summary>"원본 → 대상: 까닭". 실행 전 점검에서 막힌 까닭도 여기에 담는다. 최대 50줄 뒤에 "외 N건".</summary>
+    /// <summary>"처리한 파일 N개". 폴더 만들기는 세지 않는다. 기록을 읽지 못했거나 기록이 없으면 null.</summary>
+    public string? SucceededFilesText => _succeededFiles is { } count
+        ? string.Create(CultureInfo.InvariantCulture, $"처리한 파일 {count}개")
+        : null;
+
+    /// <summary>
+    /// "원본 → 대상: 까닭"(까닭은 요약만; 원문은 로그). 실행 전 점검에서 막힌 까닭(오류)도 여기에 담는다.
+    /// 최대 50줄 뒤에 "외 N건".
+    /// </summary>
     public IReadOnlyList<string> FailureLines => _failureLines;
 
-    /// <summary>최대 50줄 뒤에 "외 N건".</summary>
+    /// <summary>실행기의 알림과 실행 전 점검 경고. 최대 50줄 뒤에 "외 N건".</summary>
     public IReadOnlyList<string> WarningLines => _warningLines;
 
     /// <summary>취소되었거나 드라이브가 빠져 멈춘 실행을 기록으로 이어 할 수 있는지.</summary>
@@ -208,7 +221,11 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         var progress = new ProgressRelay(ApplyProgress);
         try
         {
-            var result = await Task.Run(() => work(cts.Token, progress));
+            var (result, succeededFiles) = await Task.Run(() =>
+            {
+                var finished = work(cts.Token, progress);
+                return (finished, CountSucceededFiles(finished));
+            });
 
             // 늦게 도착하는 진행률 알림이 있어도 마지막 보고로 맞춰 둔다.
             if (progress.Latest is { } latest)
@@ -216,7 +233,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
                 ApplyProgress(latest);
             }
 
-            ShowResult(result);
+            ShowResult(result, succeededFiles);
         }
         catch (JournalUnavailableException ex)
         {
@@ -256,18 +273,63 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         _faultTitle = null;
         _failureLines = [];
         _warningLines = [];
+        _succeededFiles = null;
         NotifyResultChanged();
     }
 
-    private void ShowResult(ExecutionResult result)
+    private void ShowResult(ExecutionResult result, int? succeededFiles)
     {
         _result = result;
-        _failureLines = Cap(result.Failures
-            .Select(f => f.Source is null ? $"{f.Destination}: {f.Message}" : $"{f.Source} → {f.Destination}: {f.Message}")
-            .Concat(result.PreflightIssues.Select(i => i.Path is null ? i.Message : $"{i.Path}: {i.Message}"))
-            .ToList());
-        _warningLines = Cap(result.Warnings);
+        _succeededFiles = succeededFiles;
+
+        // 화면에는 까닭의 요약(" — " 앞)만 보인다. 운영체제 예외 원문은 뒤에 붙어 있으므로 로그에만 남긴다.
+        var failures = result.Failures.Select(f => (Full: FormatFailure(f, f.Message), Shown: FormatFailure(f, Summary(f.Message)))).ToList();
+        if (failures.Count > 0)
+        {
+            _log.Warning("처리하지 못한 파일" + Environment.NewLine + string.Join(Environment.NewLine, failures.Select(f => f.Full)));
+        }
+
+        // 실행 전 점검은 막는 오류만 "처리하지 못한 항목"이다. 경고(긴 경로 등)는 실행을 막지 않으므로 알림으로 보인다.
+        var blockers = result.PreflightIssues.Where(i => i.Severity == Severity.Error).Select(i => FormatIssue(i));
+        var issueWarnings = result.PreflightIssues.Where(i => i.Severity == Severity.Warning).Select(i => FormatIssue(i));
+        _failureLines = Cap(failures.Select(f => f.Shown).Concat(blockers).ToList());
+        _warningLines = Cap(issueWarnings.Concat(result.Warnings).ToList());
         NotifyResultChanged();
+    }
+
+    private static string FormatFailure(OperationFailure failure, string message) =>
+        failure.Source is null ? $"{failure.Destination}: {message}" : $"{failure.Source} → {failure.Destination}: {message}";
+
+    private static string FormatIssue(PreflightIssue issue) => issue.Path is null ? issue.Message : $"{issue.Path}: {issue.Message}";
+
+    /// <summary>실행기의 실패 메시지는 "한국어 요약 — 운영체제 메시지"다. 요약만 돌려준다.</summary>
+    private static string Summary(string message)
+    {
+        var cut = message.IndexOf(FailureDetailSeparator, StringComparison.Ordinal);
+        return cut < 0 ? message : message[..cut];
+    }
+
+    /// <summary>
+    /// 기록에서 폴더 만들기를 뺀 작업 중 끝난(완료·이미 있어 건너뜀) 수. 기록을 읽지 못하면 null(그 줄은 보이지 않는다).
+    /// 이어 하기는 이전 실행에서 끝낸 파일도 센다. 실행기가 일하는 스레드에서 부른다.
+    /// </summary>
+    private int? CountSucceededFiles(ExecutionResult result)
+    {
+        if (result.JournalPath is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return JournalReader.Load(_fileSystem, result.JournalPath).Operations
+                .Count(o => o.Operation.Kind != OperationKind.CreateDirectory && o.Status is OpStatus.Completed or OpStatus.Skipped);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            _log.Error("처리한 파일 수를 기록에서 읽지 못했습니다", ex);
+            return null;
+        }
     }
 
     private void Fault(string title)
@@ -281,6 +343,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         OnPropertyChanged(nameof(ResultTitle));
         OnPropertyChanged(nameof(SafeToCleanMessage));
         OnPropertyChanged(nameof(CautionMessage));
+        OnPropertyChanged(nameof(SucceededFilesText));
         OnPropertyChanged(nameof(FailureLines));
         OnPropertyChanged(nameof(WarningLines));
         OnPropertyChanged(nameof(CanResume));
