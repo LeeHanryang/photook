@@ -60,18 +60,19 @@ public class MetadataExtractorReaderTests
     public void Read_DoesNotOpen_SidecarOrOther()
     {
         var (fs, reader) = Create();
-        // 읽으면 실패하도록 해 두고, 열지 않으면 예외도 없다는 것을 확인한다.
-        fs.AddFile(@"D:\in\a.xmp", TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0)));
-        fs.AddFile(@"D:\in\Thumbs.db", TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0)));
-        fs.FailReadsOf(@"D:\in\a.xmp");
-        fs.FailReadsOf(@"D:\in\Thumbs.db");
+        // 촬영 시각·카메라가 든 유효한 JPEG 바이트를 넣어 둔다. 잘못 열어서 읽으면 값이 채워지므로 테스트가 실패한다.
+        var dated = TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0), "FUJIFILM", "X100VI");
+        fs.AddFile(@"D:\in\a.xmp", dated);
+        fs.AddFile(@"D:\in\Thumbs.db", dated);
 
         var xmp = reader.Read(fs.GetFile(@"D:\in\a.xmp"));
         var other = reader.Read(fs.GetFile(@"D:\in\Thumbs.db"));
 
         Assert.Null(xmp.CaptureTime);
+        Assert.Null(xmp.CameraModel);
         Assert.Equal(MediaKind.Sidecar, xmp.Kind);
         Assert.Null(other.CaptureTime);
+        Assert.Null(other.CameraModel);
         Assert.Equal(MediaKind.Other, other.Kind);
     }
 
