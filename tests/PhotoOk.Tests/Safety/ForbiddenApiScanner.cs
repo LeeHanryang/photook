@@ -9,22 +9,32 @@ namespace PhotoOk.Tests.Safety;
 /// </summary>
 internal static class ForbiddenApiScanner
 {
+    private const string PhysicalFileSystem = "IO/PhysicalFileSystem.cs";
+
     private sealed record Rule(string Pattern, string[] AllowedFiles);
 
+    // 괄호를 요구하지 않는 패턴을 쓰는 이유: 메서드 그룹(paths.ForEach(File.Delete))으로 넘기는 것도 막기 위해서다.
     private static readonly Rule[] Rules =
     [
-        new(@"\bFile\.Delete\s*\(", []),
+        new(@"\bFile\.(Delete|Copy|Replace|Create|OpenWrite|CreateText)\b", []),
+        new(@"\bFile\.WriteAll\w*", []),
+        new(@"\bFile\.Move\b", [PhysicalFileSystem]),
+        new(@"\bFile\.Move\s*\([^;]*,\s*true\s*\)", []),
+        new(@"overwrite\s*:\s*true", []),
+        new(@"recursive\s*:\s*true", []),
         new(@"\.Delete\s*\(\s*\)", []),
+        new(@"\.Delete\s*\(", [PhysicalFileSystem]),
+        new(@"\bDirectory\.Delete\b", [PhysicalFileSystem]),
+        new(@"\.(CopyTo|MoveTo)\s*\(", []),
         new("DeleteFile", []),
         new("DeleteDirectory", []),
         new("RecycleOption", []),
-        new(@"\bDirectory\.Delete\s*\(", ["IO/PhysicalFileSystem.cs"]),
-        new(@"\bFile\.Move\s*\(", ["IO/PhysicalFileSystem.cs"]),
-        new(@"\bFile\.(Copy|Replace|WriteAll\w*)\s*\(", []),
         new(@"FileMode\.(Create\b|Truncate|OpenOrCreate)", []),
-        new(@"overwrite\s*:\s*true", []),
         new(@"\.RemoveEmptyDirectory\s*\(", ["Execution/SafeDelete.cs"]),
     ];
+
+    /// <summary>규칙의 패턴 목록. 테스트가 규칙마다 양성 샘플이 있는지 확인할 때 쓴다.</summary>
+    internal static IReadOnlyList<string> Patterns { get; } = Rules.Select(rule => rule.Pattern).ToList();
 
     /// <summary>
     /// <paramref name="sourceText"/>에서 금지 패턴을 찾는다.
