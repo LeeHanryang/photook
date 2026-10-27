@@ -105,6 +105,18 @@ public class JournalTests
     }
 
     [Fact]
+    public void HealthyPaths_ExcludePathsThatFailed_InOrder()
+    {
+        var writer = NewWriter();
+        Assert.Equal(new[] { _archivePath, _appDataPath }, writer.HealthyPaths);
+
+        _fs.RemoveVolume(@"D:\");
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+
+        Assert.Equal(new[] { _appDataPath }, writer.HealthyPaths);
+    }
+
+    [Fact]
     public void Write_Throws_WhenAllPathsFail()
     {
         _fs.RemoveVolume(@"C:\");

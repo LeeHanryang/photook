@@ -28,6 +28,9 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
 
     public IReadOnlyList<string> Warnings => _warnings;
 
+    /// <summary>지금까지 한 번도 실패하지 않은 경로(빠진 줄 없이 모든 항목이 들어 있는 파일), 처음 받은 순서대로.</summary>
+    public IReadOnlyList<string> HealthyPaths => paths.Where(p => !_failed.Contains(p)).ToList();
+
     public void Write(JournalEntry entry)
     {
         ArgumentNullException.ThrowIfNull(entry);
