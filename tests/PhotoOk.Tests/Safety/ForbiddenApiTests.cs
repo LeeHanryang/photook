@@ -30,7 +30,9 @@ public sealed class ForbiddenApiTests
         ("Write(a, overwrite: true);", @"overwrite\s*:\s*true"),
         ("Scan(p, recursive: true);", @"recursive\s*:\s*true"),
         ("info.Delete();", @"\.Delete\s*\(\s*\)"),
-        ("info.Delete(true);", @"\.Delete\s*\("),
+        ("info.Delete(true);", @"\.Delete\b"),
+        ("Action a = fi.Delete;", @"\.Delete\b"),
+        ("Directory.Delete(p, true);", @"\bDirectory\.Delete\s*\([^;]*,\s*true\s*\)"),
         ("Action<string> d = Directory.Delete;", @"\bDirectory\.Delete\b"),
         ("info.CopyTo(x, true);", @"\.(CopyTo|MoveTo)\s*\("),
         ("info.MoveTo(x);", @"\.(CopyTo|MoveTo)\s*\("),
@@ -58,6 +60,7 @@ public sealed class ForbiddenApiTests
         (PhysicalFileSystem, "File.Move(source, destination, true);", @"\bFile\.Move\s*\([^;]*,\s*true\s*\)"),
         (PhysicalFileSystem, "Directory.Delete(path, recursive: true);", @"recursive\s*:\s*true"),
         (PhysicalFileSystem, "File.Delete(path);", @"\bFile\.(Delete|Copy|Replace|Create|OpenWrite|CreateText)\b"),
+        (PhysicalFileSystem, "Directory.Delete(p, true);", @"\bDirectory\.Delete\s*\([^;]*,\s*true\s*\)"),
     ];
 
     public static IEnumerable<object[]> PositiveRows() =>
@@ -113,6 +116,13 @@ public sealed class ForbiddenApiTests
         var found = ForbiddenApiScanner.Find(OutsideAllowlist, "File.Delete(p);");
 
         Assert.Contains($"{OutsideAllowlist}: {PositiveSamples[0].Pattern}", found);
+    }
+
+    [Fact]
+    public void Scanner_Ignores_Deleted_Property()
+    {
+        // `\.Delete\b`는 .Deleted 같은 식별자에 걸리지 않아야 한다.
+        Assert.Empty(ForbiddenApiScanner.Find(OutsideAllowlist, "var gone = entry.Deleted;"));
     }
 
     [Fact]
