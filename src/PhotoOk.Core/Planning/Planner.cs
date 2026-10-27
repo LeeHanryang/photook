@@ -34,7 +34,8 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             foreach (var group in session.Groups)
             {
                 var reasons = ReviewDetector.Detect(group, request.Preset, aliases).Distinct().Order().ToList();
-                var relative = renderer.RenderDirectory(new LayoutInput(session, group, reasons, request.Zone));
+                var relative = renderer.RenderDirectory(new LayoutInput(session, group, reasons, request.Zone,
+                    request.EventNames?.GetValueOrDefault(session.Id)));
                 var directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(root, relative)));
                 if (!SamePath(directory, root) && !IsUnder(directory, root))
                 {

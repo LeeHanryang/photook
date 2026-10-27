@@ -56,10 +56,10 @@ public class PathTemplateTests
     }
 
     [Fact]
-    public void KnownTokens_ContainsAllTwelve()
+    public void KnownTokens_ContainsAllThirteen()
     {
         Assert.Equal(
-            new[] { "연도", "월", "일", "날짜", "기간", "기기", "제조사", "모델", "포맷", "확장자", "원래폴더", "사유" }.Order(),
+            new[] { "연도", "월", "일", "날짜", "기간", "기기", "제조사", "모델", "포맷", "확장자", "원래폴더", "사유", "이벤트" }.Order(),
             PathTemplate.KnownTokens.Order());
     }
 }

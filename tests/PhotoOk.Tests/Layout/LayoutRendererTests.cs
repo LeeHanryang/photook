@@ -24,9 +24,9 @@ public class LayoutRendererTests
     }
 
     private static string Render(Preset preset, FileGroup group, IReadOnlyList<ReviewReason>? reasons = null,
-        Session? session = null) =>
+        Session? session = null, string? eventName = null) =>
         new LayoutRenderer(preset).RenderDirectory(
-            new LayoutInput(session ?? SessionOf(group), group, reasons ?? [], Utc));
+            new LayoutInput(session ?? SessionOf(group), group, reasons ?? [], Utc, eventName));
 
     private static Preset OneBranch(params LevelTemplate[] levels) =>
         new("t", TimeOnly.MinValue, [new LayoutBranch("기본", BranchCondition.Always, levels)], [],
@@ -56,6 +56,34 @@ public class LayoutRendererTests
         var group = Group(@"D:\S\a.jpg", Oct14);
 
         Assert.Equal(@"2026\2026-10-14\기기 모름\JPG", Render(preset, group));
+    }
+
+    [Fact]
+    public void Render_EventName_AppendsToDate()
+    {
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"2026\2026-10-14 결혼식", Render(BuiltInPresets.DateEvent, group, eventName: "결혼식"));
+    }
+
+    [Fact]
+    public void Render_EventName_IsSanitized_AndBlankIsOmitted()
+    {
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"2026\2026-10-14 a_b_c_", Render(BuiltInPresets.DateEvent, group, eventName: "a/b:c?"));
+        Assert.Equal(@"2026\2026-10-14", Render(BuiltInPresets.DateEvent, group, eventName: "   "));
+        Assert.Equal(@"2026\2026-10-14", Render(BuiltInPresets.DateEvent, group, eventName: null));
+    }
+
+    [Fact]
+    public void Render_BracketPeriodAndEvent()
+    {
+        var preset = OneBranch(new LevelTemplate("[{기간}] {이벤트}"));
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal("[2026-10-14]", Render(preset, group));
+        Assert.Equal("[2026-10-14] 일상", Render(preset, group, eventName: "일상"));
     }
 
     [Fact]

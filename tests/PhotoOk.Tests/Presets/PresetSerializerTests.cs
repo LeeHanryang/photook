@@ -111,11 +111,28 @@ public class PresetSerializerTests
         Assert.Equal(["{연도}", "{날짜}", "{기기}", "{포맷}"], full.Branches[1].Levels.Select(l => l.Template));
         Assert.Equal(dateOnly.Branches[0].Levels, full.Branches[0].Levels);
 
-        Assert.Equal([dateOnly, full], BuiltInPresets.All);
         Assert.Equal([".jpg", ".jpeg"], full.FormatGroups["JPG"]);
         Assert.Equal([".heic", ".heif"], full.FormatGroups["HEIF"]);
         Assert.Equal([".png", ".tif", ".tiff", ".webp"], full.FormatGroups["기타 이미지"]);
         Assert.Contains(".rw2", full.FormatGroups["RAW"]);
         Assert.Contains(".mp4", full.FormatGroups["동영상"]);
+    }
+
+    [Fact]
+    public void BuiltIns_AreFour_InOrder_AndRoundTrip()
+    {
+        Assert.Equal(["날짜 + 이벤트", "날짜만", "날짜·기기·포맷", "월 단위"], BuiltInPresets.All.Select(p => p.Name));
+        Assert.Equal([BuiltInPresets.DateEvent, BuiltInPresets.DateOnly, BuiltInPresets.DateDeviceFormat, BuiltInPresets.Monthly],
+            BuiltInPresets.All);
+        Assert.Equal(["{연도}", "{날짜} {이벤트}"], BuiltInPresets.DateEvent.Branches[1].Levels.Select(l => l.Template));
+        Assert.Equal(["{연도}", "{연도}-{월}"], BuiltInPresets.Monthly.Branches[1].Levels.Select(l => l.Template));
+
+        foreach (var preset in BuiltInPresets.All)
+        {
+            var json = PresetSerializer.Serialize(preset);
+            var restored = PresetSerializer.Deserialize(json);
+            Assert.Equal(preset.Name, restored.Name);
+            Assert.Equal(json, PresetSerializer.Serialize(restored));
+        }
     }
 }

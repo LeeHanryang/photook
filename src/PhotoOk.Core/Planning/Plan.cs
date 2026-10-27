@@ -24,4 +24,4 @@ public sealed record Plan(string ArchiveRoot, IReadOnlyList<PlannedOperation> Op
     IReadOnlyList<string> Notes);
 
 public sealed record PlanRequest(IReadOnlyList<Session> Sessions, Preset Preset, string ArchiveRoot,
-    TransferMode Mode, TimeZoneInfo Zone);
+    TransferMode Mode, TimeZoneInfo Zone, IReadOnlyDictionary<string, string>? EventNames = null);

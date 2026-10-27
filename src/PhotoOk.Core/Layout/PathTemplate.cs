@@ -16,7 +16,7 @@ public sealed class PathTemplate
 
     public static IReadOnlySet<string> KnownTokens { get; } = new HashSet<string>(StringComparer.Ordinal)
     {
-        "연도", "월", "일", "날짜", "기간", "기기", "제조사", "모델", "포맷", "확장자", "원래폴더", "사유",
+        "연도", "월", "일", "날짜", "기간", "기기", "제조사", "모델", "포맷", "확장자", "원래폴더", "사유", "이벤트",
     };
 
     private PathTemplate(IReadOnlyList<TemplatePart> parts) => Parts = parts;

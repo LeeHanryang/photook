@@ -2,12 +2,16 @@ namespace PhotoOk.Core.Presets;
 
 public static class BuiltInPresets
 {
+    public static Preset DateEvent { get; } = Create("날짜 + 이벤트", [Level("{연도}"), Level("{날짜} {이벤트}")]);
+
     public static Preset DateOnly { get; } = Create("날짜만", [Level("{연도}"), Level("{날짜}")]);
 
     public static Preset DateDeviceFormat { get; } =
         Create("날짜·기기·포맷", [Level("{연도}"), Level("{날짜}"), Level("{기기}"), Level("{포맷}")]);
 
-    public static IReadOnlyList<Preset> All { get; } = [DateOnly, DateDeviceFormat];
+    public static Preset Monthly { get; } = Create("월 단위", [Level("{연도}"), Level("{연도}-{월}")]);
+
+    public static IReadOnlyList<Preset> All { get; } = [DateEvent, DateOnly, DateDeviceFormat, Monthly];
 
     private static LevelTemplate Level(string template) => new(template);
 

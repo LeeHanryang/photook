@@ -9,7 +9,8 @@ using PhotoOk.Core.Sessions;
 
 namespace PhotoOk.Core.Layout;
 
-public sealed record LayoutInput(Session Session, FileGroup Group, IReadOnlyList<ReviewReason> Reasons, TimeZoneInfo Zone);
+public sealed record LayoutInput(Session Session, FileGroup Group, IReadOnlyList<ReviewReason> Reasons, TimeZoneInfo Zone,
+    string? EventName = null);
 
 /// <summary>프리셋의 폴더 템플릿을 파일 그룹마다 실제 상대 폴더로 바꾼다.</summary>
 public sealed class LayoutRenderer(Preset preset)
@@ -100,6 +101,7 @@ public sealed class LayoutRenderer(Preset preset)
             case "확장자": return Path.GetExtension(primary.Path).TrimStart('.').ToUpperInvariant();
             case "원래폴더": return Path.GetFileName(Path.GetDirectoryName(primary.Path)) ?? "";
             case "사유": return string.Join('·', input.Reasons.Select(ReviewReasonText.Label));
+            case "이벤트": return input.EventName?.Trim() ?? "";
             default: throw new InvalidOperationException($"알 수 없는 토큰: {{{part.Token}}}");
         }
     }

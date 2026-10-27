@@ -34,12 +34,17 @@ public class PlannerTests
     private static FileGroup Group(PhotoInfo primary, params PhotoInfo[] companions) => new(primary, companions);
 
     private Plan Create(Preset preset, TransferMode mode, params FileGroup[] groups) =>
-        Create(new XxHasher(_fs), preset, mode, groups);
+        Create(new XxHasher(_fs), preset, mode, null, groups);
 
-    private Plan Create(IHasher hasher, Preset preset, TransferMode mode, params FileGroup[] groups)
+    private Plan Create(IHasher hasher, Preset preset, TransferMode mode, params FileGroup[] groups) =>
+        Create(hasher, preset, mode, null, groups);
+
+    private Plan Create(IHasher hasher, Preset preset, TransferMode mode, IReadOnlyDictionary<string, string>? eventNames,
+        params FileGroup[] groups)
     {
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
-        return new Planner(_fs, hasher).Create(new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc));
+        return new Planner(_fs, hasher).Create(
+            new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc, eventNames));
     }
 
     private static List<PlannedOperation> FileOps(Plan plan) =>
@@ -92,6 +97,20 @@ public class PlannerTests
         Assert.Equal(5, plan.Operations.Count);
         Assert.Equal(OperationKind.CreateDirectory, plan.Operations[1].Kind);
         AssertSequentialIds(plan);
+    }
+
+    [Fact]
+    public void Plan_PassesEventNamesBySessionId()
+    {
+        var a = Add(@"E:\DCIM\A.JPG", [1], Oct14);
+        var b = Add(@"E:\DCIM\B.JPG", [2], Oct15);
+        var names = new Dictionary<string, string> { ["2026-10-14"] = "여행" };
+
+        var plan = Create(new XxHasher(_fs), BuiltInPresets.DateEvent, TransferMode.Copy, names, Group(a), Group(b));
+
+        Assert.Equal(
+            [@"D:\Archive\2026\2026-10-14 여행\A.JPG", @"D:\Archive\2026\2026-10-15\B.JPG"],
+            FileOps(plan).Select(o => o.Destination));
     }
 
     [Fact]
