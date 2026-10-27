@@ -5,6 +5,7 @@ public sealed class FileDetailViewModel(
     string fileName,
     string device,
     string captureTime,
+    string captureSource,
     string destination,
     string branchName,
     string template,
@@ -18,6 +19,9 @@ public sealed class FileDetailViewModel(
 
     /// <summary><c>yyyy-MM-dd HH:mm:ss</c>. 촬영 시각이 없으면 그렇다고 적는다.</summary>
     public string CaptureTime { get; } = captureTime;
+
+    /// <summary>촬영 시각을 어디서 얻었는지: "(사진 정보)", "(동영상 정보)", "(파일 이름)", 없으면 "(촬영일 없음 — 파일 수정 시각)".</summary>
+    public string CaptureSource { get; } = captureSource;
 
     /// <summary>놓일 전체 경로. 건너뛰는 파일이면 이미 같은 파일이 있는 경로.</summary>
     public string Destination { get; } = destination;

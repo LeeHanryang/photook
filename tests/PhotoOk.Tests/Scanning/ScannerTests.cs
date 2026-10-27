@@ -155,6 +155,7 @@ public class ScannerTests
 
         var raf = result.Groups.Single(g => Name(g.Primary) == "DSCF1.RAF");
         Assert.Equal(taken, raf.Primary.CaptureTime);
+        Assert.Equal(CaptureTimeSource.Photo, raf.Primary.CaptureSource);
         Assert.Null(raf.Primary.CameraMake);
         Assert.Equal(taken, result.Groups.Single(g => Name(g.Primary) == "DSCF1.JPG").Primary.CaptureTime);
     }

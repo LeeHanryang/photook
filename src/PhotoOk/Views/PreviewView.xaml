@@ -236,7 +236,9 @@
                             <TextBlock Grid.Row="1" Text="기기" Style="{StaticResource FieldLabel}" />
                             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding Device}" Style="{StaticResource FieldValue}" />
                             <TextBlock Grid.Row="2" Text="촬영 시각" Style="{StaticResource FieldLabel}" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding CaptureTime}" Style="{StaticResource FieldValue}" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" Style="{StaticResource FieldValue}">
+                                <Run Text="{Binding CaptureTime, Mode=OneWay}" /><Run Text=" " /><Run Text="{Binding CaptureSource, Mode=OneWay}" />
+                            </TextBlock>
                         </Grid>
 
                         <TextBlock Text="왜 이 경로인가" Style="{StaticResource PaneTitle}" Margin="0,16,0,4" />

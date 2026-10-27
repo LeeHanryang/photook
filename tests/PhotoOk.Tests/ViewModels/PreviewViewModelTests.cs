@@ -2,6 +2,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.IO;
+using PhotoOk.Core.Metadata;
 using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Scanning;
@@ -328,6 +329,29 @@ public class PreviewViewModelTests
         Assert.Equal("판단 필요", detail.BranchName);
         Assert.Equal(["촬영일 없음"], detail.Reasons);
         Assert.StartsWith(@"D:\Archive\판단 필요\촬영일 없음\", detail.Destination, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Detail_ShowsCaptureSource()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1, 1, 1], Oct14, "CAM-1");
+        AddPhoto(@"E:\DCIM\photo_2026-10-17_00-32-09.jpg", [2, 2], new DateTime(2026, 10, 17, 0, 32, 9));
+        _reader.Set(@"E:\DCIM\photo_2026-10-17_00-32-09.jpg", new DateTime(2026, 10, 17, 0, 32, 9),
+            source: CaptureTimeSource.FileName);
+        _fs.AddFile(@"E:\DCIM\D.JPG", [4, 4, 4, 4]);
+        _reader.Set(@"E:\DCIM\D.JPG", null);
+        var vm = await CreateAsync();
+
+        vm.SelectedSession = vm.Sessions.Single(s => s.Files.Any(f => f.EndsWith("A.JPG", StringComparison.Ordinal)));
+        Assert.Equal("(사진 정보)", vm.Detail!.CaptureSource);
+
+        vm.SelectedSession = vm.Sessions.Single(s =>
+            s.Files.Any(f => f.EndsWith("photo_2026-10-17_00-32-09.jpg", StringComparison.Ordinal)));
+        Assert.Equal("2026-10-17 00:32:09", vm.Detail!.CaptureTime);
+        Assert.Contains("(파일 이름)", vm.Detail.CaptureSource, StringComparison.Ordinal);
+
+        vm.SelectedSession = vm.Sessions.Single(s => s.Files.Any(f => f.EndsWith("D.JPG", StringComparison.Ordinal)));
+        Assert.Equal("(촬영일 없음 — 파일 수정 시각)", vm.Detail!.CaptureSource);
     }
 
     [Fact]

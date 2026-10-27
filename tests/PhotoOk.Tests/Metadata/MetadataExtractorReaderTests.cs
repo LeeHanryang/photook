@@ -89,6 +89,77 @@ public class MetadataExtractorReaderTests
         Assert.Equal(MediaKind.Image, info.Kind);
     }
 
+    private static (FakeFileSystem Fs, MetadataExtractorReader Reader) CreateToday()
+    {
+        var fs = new FakeFileSystem();
+        return (fs, new MetadataExtractorReader(fs, FileKinds.Default, Kst, () => new DateTime(2026, 10, 28)));
+    }
+
+    [Fact]
+    public void Read_UsesFileNameDate_WhenNoExif()
+    {
+        var (fs, reader) = CreateToday();
+        fs.AddFile(@"D:\in\photo_2026-10-17_00-32-09.jpg", [1, 2, 3, 4]);
+
+        var info = reader.Read(fs.GetFile(@"D:\in\photo_2026-10-17_00-32-09.jpg"));
+
+        Assert.Equal(new DateTime(2026, 10, 17, 0, 32, 9), info.CaptureTime);
+        Assert.Equal(CaptureTimeSource.FileName, info.CaptureSource);
+    }
+
+    [Fact]
+    public void Read_UsesFileNameDate_WhenFileCannotBeRead()
+    {
+        var (fs, reader) = CreateToday();
+        fs.AddFile(@"D:\in\20231214_161919.jpg", TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0)));
+        fs.FailReadsOf(@"D:\in\20231214_161919.jpg");
+
+        var info = reader.Read(fs.GetFile(@"D:\in\20231214_161919.jpg"));
+
+        Assert.Equal(new DateTime(2023, 12, 14, 16, 19, 19), info.CaptureTime);
+        Assert.Equal(CaptureTimeSource.FileName, info.CaptureSource);
+    }
+
+    [Fact]
+    public void Read_PrefersExif_OverFileName()
+    {
+        var (fs, reader) = CreateToday();
+        fs.AddFile(@"D:\in\20200101_000000.jpg", TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0)));
+
+        var info = reader.Read(fs.GetFile(@"D:\in\20200101_000000.jpg"));
+
+        Assert.Equal(new DateTime(2026, 10, 14, 9, 30, 0), info.CaptureTime);
+        Assert.Equal(CaptureTimeSource.Photo, info.CaptureSource);
+    }
+
+    [Fact]
+    public void Read_HasNoSource_WhenNoDateAnywhere()
+    {
+        var (fs, reader) = CreateToday();
+        fs.AddFile(@"D:\in\plain.jpg", TestImages.Jpeg());
+
+        var info = reader.Read(fs.GetFile(@"D:\in\plain.jpg"));
+
+        Assert.Null(info.CaptureTime);
+        Assert.Equal(CaptureTimeSource.None, info.CaptureSource);
+    }
+
+    [Fact]
+    public void Read_DoesNotUseFileNameDate_ForSidecarOrOther()
+    {
+        var (fs, reader) = CreateToday();
+        fs.AddFile(@"D:\in\20231214_161919.xmp", [1]);
+        fs.AddFile(@"D:\in\20231214_161919.txt", [1]);
+
+        var xmp = reader.Read(fs.GetFile(@"D:\in\20231214_161919.xmp"));
+        var other = reader.Read(fs.GetFile(@"D:\in\20231214_161919.txt"));
+
+        Assert.Null(xmp.CaptureTime);
+        Assert.Equal(CaptureTimeSource.None, xmp.CaptureSource);
+        Assert.Null(other.CaptureTime);
+        Assert.Equal(CaptureTimeSource.None, other.CaptureSource);
+    }
+
     [Fact]
     public void Read_ConvertsQuickTimeUtc_ToLocal()
     {

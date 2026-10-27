@@ -516,6 +516,13 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
             Path.GetFileName(info.Path),
             _aliases.Resolve(group.Primary) ?? "알 수 없음",
             info.CaptureTime?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "촬영 시각 없음",
+            info.CaptureSource switch
+            {
+                CaptureTimeSource.Photo => "(사진 정보)",
+                CaptureTimeSource.Video => "(동영상 정보)",
+                CaptureTimeSource.FileName => "(파일 이름)",
+                _ => "(촬영일 없음 — 파일 수정 시각)",
+            },
             destination,
             branch.Name,
             string.Join('\\', branch.Levels.Select(level => level.Template)),

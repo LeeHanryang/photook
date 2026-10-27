@@ -7,9 +7,11 @@ namespace PhotoOk.Core.Metadata;
 
 /// <summary>
 /// MetadataExtractor로 EXIF·QuickTime 메타데이터를 읽는다.
-/// 촬영일 우선순위: EXIF DateTimeOriginal, IFD0 DateTime, QuickTime 무비 헤더 Created(UTC, 현지 시각으로 변환).
+/// 촬영일 우선순위: EXIF DateTimeOriginal, IFD0 DateTime, QuickTime 무비 헤더 Created(UTC, 현지 시각으로 변환),
+/// 마지막으로 파일 이름에 든 날짜(<see cref="FileNameDate"/>). 파일을 열지 못해도 파일 이름은 본다.
 /// </summary>
-public sealed class MetadataExtractorReader(IFileSystem fileSystem, FileKinds kinds, TimeZoneInfo localZone) : IMetadataReader
+public sealed class MetadataExtractorReader(
+    IFileSystem fileSystem, FileKinds kinds, TimeZoneInfo localZone, Func<DateTime>? todayLocal = null) : IMetadataReader
 {
     // 이 시각보다 이른 QuickTime 시각은 "설정되지 않음"(1904 기준 0)으로 보고 없음 처리한다.
     private static readonly DateTime QuickTimeEpochCutoff = new(1971, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -30,11 +32,11 @@ public sealed class MetadataExtractorReader(IFileSystem fileSystem, FileKinds ki
         }
         catch (ImageProcessingException)
         {
-            return Empty(file, kind);
+            return FromFileName(file, kind);
         }
         catch (IOException)
         {
-            return Empty(file, kind);
+            return FromFileName(file, kind);
         }
     }
 
@@ -45,24 +47,46 @@ public sealed class MetadataExtractorReader(IFileSystem fileSystem, FileKinds ki
         var movie = directories.OfType<QuickTimeMovieHeaderDirectory>().FirstOrDefault();
 
         DateTime? captureTime = null;
+        var source = CaptureTimeSource.None;
         if (subIfd is not null && subIfd.TryGetDateTime(ExifDirectoryBase.TagDateTimeOriginal, out var original))
         {
             captureTime = Unspecified(original);
+            source = CaptureTimeSource.Photo;
         }
         else if (ifd0 is not null && ifd0.TryGetDateTime(ExifDirectoryBase.TagDateTime, out var modified))
         {
             captureTime = Unspecified(modified);
+            source = CaptureTimeSource.Photo;
         }
         else if (movie is not null && movie.TryGetDateTime(QuickTimeMovieHeaderDirectory.TagCreated, out var created))
         {
             captureTime = QuickTimeToLocal(created, localZone);
+            source = captureTime is null ? CaptureTimeSource.None : CaptureTimeSource.Video;
+        }
+
+        if (captureTime is null)
+        {
+            captureTime = FileNameTime(file);
+            source = captureTime is null ? CaptureTimeSource.None : CaptureTimeSource.FileName;
         }
 
         return new PhotoInfo(file.Path, file.Length, file.LastWriteTimeUtc, kind, captureTime,
             Trimmed(ifd0?.GetString(ExifDirectoryBase.TagMake)),
             Trimmed(ifd0?.GetString(ExifDirectoryBase.TagModel)),
-            Trimmed(subIfd?.GetString(ExifDirectoryBase.TagBodySerialNumber)));
+            Trimmed(subIfd?.GetString(ExifDirectoryBase.TagBodySerialNumber)),
+            source);
     }
+
+    /// <summary>메타데이터를 읽지 못한 사진·영상. 파일 이름에 날짜가 있으면 그것을 촬영일로 쓴다.</summary>
+    private PhotoInfo FromFileName(FileEntry file, MediaKind kind)
+    {
+        var time = FileNameTime(file);
+        return new PhotoInfo(file.Path, file.Length, file.LastWriteTimeUtc, kind, time, null, null, null,
+            time is null ? CaptureTimeSource.None : CaptureTimeSource.FileName);
+    }
+
+    private DateTime? FileNameTime(FileEntry file) =>
+        FileNameDate.TryParse(Path.GetFileName(file.Path), todayLocal is null ? DateTime.Today : todayLocal());
 
     /// <summary>QuickTime의 UTC 시각을 현지 벽시계 시각으로 바꾼다. 1971년보다 이르면(미설정 값) null.</summary>
     internal static DateTime? QuickTimeToLocal(DateTime utc, TimeZoneInfo zone)

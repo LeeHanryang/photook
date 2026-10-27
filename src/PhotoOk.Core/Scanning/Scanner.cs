@@ -196,12 +196,12 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
             }
 
             // 규칙 5: 촬영일 빌리기. 빌린 값을 다시 빌려 주지 않도록 원래 값에서만 고른다.
-            var timeByKey = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            var timeByKey = new Dictionary<string, (DateTime Time, CaptureTimeSource Source)>(StringComparer.OrdinalIgnoreCase);
             foreach (var primary in primaries)
             {
                 if (primary.CaptureTime is { } time)
                 {
-                    timeByKey.TryAdd(Path.GetFileNameWithoutExtension(primary.Path), time);
+                    timeByKey.TryAdd(Path.GetFileNameWithoutExtension(primary.Path), (time, primary.CaptureSource));
                 }
             }
 
@@ -211,7 +211,7 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
                 if (primary.CaptureTime is null
                     && timeByKey.TryGetValue(Path.GetFileNameWithoutExtension(primary.Path), out var borrowed))
                 {
-                    finalPrimary = primary with { CaptureTime = borrowed };
+                    finalPrimary = primary with { CaptureTime = borrowed.Time, CaptureSource = borrowed.Source };
                 }
 
                 groups.Add(new FileGroup(finalPrimary, Ordered(companions.GetValueOrDefault(primary.Path))));
