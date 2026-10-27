@@ -131,8 +131,11 @@ public class ExecutorTests
         var copyCompleted = entries[6];
         Assert.Equal("op2", copyCompleted.OpId);
         Assert.Equal(new XxHasher(_fs).Hash(@"E:\DCIM\a.jpg"), copyCompleted.Hash);
+        Assert.Equal(2, entries[0].Length); // RunStarted에 계획한 작업 수
 
         var state = JournalReader.Load(_fs, result.JournalPath!);
+        Assert.Equal(2, state.ExpectedOperations);
+        Assert.Equal(entries.Count, state.EntryCount);
         Assert.True(state.Finished);
         Assert.All(state.Operations, o => Assert.Equal(OpStatus.Completed, o.Status));
     }

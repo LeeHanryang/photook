@@ -2,8 +2,9 @@ namespace PhotoOk.Core.Execution;
 
 /// <summary>
 /// 실행이 끝난 방식. <see cref="Cancelled"/>와 <see cref="Interrupted"/>는 기록을 끝맺지 않으므로(RunFinished 없음) 이어 하기 대상으로 남는다.
+/// <see cref="PlanIncomplete"/>는 이어 하기 전용이다: 계획을 기록하다 끊긴 실행이라 아무것도 하지 않았고, 다시 계획해야 한다.
 /// </summary>
-public enum RunOutcome { Completed, CompletedWithFailures, Cancelled, Interrupted, BlockedByPreflight }
+public enum RunOutcome { Completed, CompletedWithFailures, Cancelled, Interrupted, BlockedByPreflight, PlanIncomplete }
 
 public sealed record OperationFailure(string OpId, string? Source, string Destination, string Message);
 

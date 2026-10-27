@@ -28,6 +28,8 @@ public sealed class Executor(ExecutionContext context)
     internal const string BothMoveEndsExistMessage = "원본과 대상에 모두 파일이 있습니다. 확인이 필요합니다";
     internal const string MoveEndsMissingMessage = "파일을 찾을 수 없습니다";
     internal const string UndoStartedMessage = "되돌리기를 시작한 기록은 이어 할 수 없습니다";
+    internal const string PlanIncompleteMessage = "계획 기록이 끝나지 않아 이어 할 수 없습니다. 다시 계획해 주세요";
+    internal const string JournalCopiesDifferMessage = "기록 사본이 서로 달라 더 긴 기록을 사용했습니다";
 
     private const int BufferSize = 1024 * 1024;
 
@@ -48,7 +50,9 @@ public sealed class Executor(ExecutionContext context)
         var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId));
 
         // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다.
-        journal.Write(new JournalEntry(runId, JournalEvent.RunStarted, Destination: plan.ArchiveRoot, TimestampUtc: context.UtcNow()));
+        // RunStarted의 Length에는 계획한 작업 수를 적는다. 이어 하기는 이 수만큼 Planned가 있어야 계획이 다 기록된 것으로 본다.
+        journal.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: plan.Operations.Count, Destination: plan.ArchiveRoot,
+            TimestampUtc: context.UtcNow()));
         foreach (var op in plan.Operations)
         {
             journal.Write(new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
@@ -60,8 +64,11 @@ public sealed class Executor(ExecutionContext context)
     }
 
     /// <summary>
-    /// 끝나지 않은 실행을 기록만으로 이어 한다. 같은 실행ID로, 이미 있는 기록 파일([아카이브, 앱 데이터])에 이어서 쓴다.
-    /// Completed·Skipped는 건너뛰고, Pending·Failed는 일반 실행처럼 다시 하며, Started는 디스크 상태와 맞춰 본 뒤 끝맺는다.
+    /// 끝나지 않은 실행을 기록만으로 이어 한다. 같은 실행의 기록 사본(아카이브, 앱 데이터, 받은 경로) 중 항목이 가장 많은 것을
+    /// 사실로 삼고, 같은 실행ID로 그 사본에만 이어서 쓴다(뒤처진 사본에 이어 쓰면 빈 곳이 있는 기록이 된다).
+    /// 계획 기록(Planned)이 RunStarted에 적힌 수보다 적으면 아무것도 쓰지 않고 <see cref="RunOutcome.PlanIncomplete"/>.
+    /// Completed·Skipped는 건너뛰고, Pending과 Failed 폴더 만들기는 일반 실행처럼 다시 하며, Started 작업과 Failed 복사·이동은
+    /// 디스크 상태와 맞춰 본 뒤 끝맺는다(맞춰 보기는 일반 실행을 포함하므로, 이어 하기를 여러 번 해도 결과가 같다).
     /// 실행 전 점검(Preflight)은 다시 하지 않는다: 이미 옮긴 파일의 원본 자리가 비어 있는 것을 오류로 보기 때문이다.
     /// 드라이브가 없으면 작업마다 확인해 Interrupted로 멈춘다.
     /// </summary>
@@ -69,7 +76,19 @@ public sealed class Executor(ExecutionContext context)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(journalPath);
         var fs = context.FileSystem;
-        var state = JournalReader.Load(fs, journalPath);
+        var (path, state, copiesDiffer) = ChooseJournal(journalPath);
+        var warnings = new List<string>();
+        if (copiesDiffer)
+        {
+            warnings.Add($"{JournalCopiesDifferMessage}: {path}");
+        }
+
+        // 계획을 다 기록하기 전에 끊겼다면, 남은 계획만 실행하고 "완료"라고 하면 빠진 파일을 놓친다.
+        if (state.Operations.Count != state.ExpectedOperations)
+        {
+            warnings.Add(PlanIncompleteMessage);
+            return new ExecutionResult(state.RunId, RunOutcome.PlanIncomplete, 0, [], [], warnings, path);
+        }
 
         // 되돌리기가 손댄 기록을 다시 실행하면 되돌린 작업을 또 하게 된다.
         if (state.Operations.Any(o => o.Status is OpStatus.Undone or OpStatus.UndoSkipped))
@@ -80,24 +99,96 @@ public sealed class Executor(ExecutionContext context)
         var alreadyDone = state.Operations.Count(o => o.Status is OpStatus.Completed or OpStatus.Skipped);
         if (state.Finished)
         {
-            return new ExecutionResult(state.RunId, RunOutcome.Completed, alreadyDone, [], [], [], journalPath);
+            return new ExecutionResult(state.RunId, RunOutcome.Completed, alreadyDone, [], [], warnings, path);
         }
 
-        var journal = new JournalWriter(fs, ResumeJournalPaths(state, journalPath));
+        var journal = new JournalWriter(fs, [path]);
         var run = new Run(state.RunId, state.ArchiveRoot, journal, new SafeDelete(fs, state.ArchiveRoot, state.RunId))
         {
             Succeeded = alreadyDone,
         };
+        run.Warnings.AddRange(warnings);
 
         var steps = state.Operations
             .Where(o => o.Status is OpStatus.Pending or OpStatus.Failed or OpStatus.Started)
-            .Select(o => o.Status == OpStatus.Started
+            .Select(o => NeedsReconcile(o)
                 ? (Func<bool>)(() => ReconcileOperation(run, o.Operation))
                 : () => ExecuteOperation(run, o.Operation));
 
         var outcome = RunSteps(run, steps, ct);
         return run.ToResult(outcome, []);
     }
+
+    /// <summary>
+    /// Started는 어디서 끊겼는지 모른다. Failed 복사·이동도 앞선 이어 하기가 드라이브가 없어 실패로 적었을 뿐 실제로는 끝났을 수 있다.
+    /// 폴더 만들기의 일반 실행은 이미 있는 폴더를 건너뛰므로 맞춰 볼 필요가 없다.
+    /// </summary>
+    private static bool NeedsReconcile(OpState state) =>
+        state.Status == OpStatus.Started
+        || (state.Status == OpStatus.Failed && state.Operation.Kind is OperationKind.Copy or OperationKind.Move);
+
+    /// <summary>
+    /// 같은 실행의 기록 사본([아카이브, 앱 데이터] 순서, 받은 경로가 둘 다 아니면 세 번째 후보) 중 읽어 낸 항목이 가장 많은 것을 고른다.
+    /// 같으면 앞 순서. 받은 경로는 반드시 읽을 수 있어야 하고, 다른 사본은 없거나 읽을 수 없으면 후보에서 뺀다.
+    /// </summary>
+    private (string Path, RunState State, bool CopiesDiffer) ChooseJournal(string journalPath)
+    {
+        var fs = context.FileSystem;
+        var given = JournalReader.Load(fs, journalPath);
+        var candidates = new List<string>
+        {
+            JournalPaths.InArchive(given.ArchiveRoot, given.RunId),
+            JournalPaths.InAppData(context.AppDataRoot, given.RunId),
+        };
+        if (!candidates.Any(c => SamePath(c, journalPath)))
+        {
+            candidates.Add(journalPath);
+        }
+
+        var loaded = new List<(string Path, RunState State)>();
+        var unreadable = false;
+        foreach (var candidate in candidates)
+        {
+            if (SamePath(candidate, journalPath))
+            {
+                loaded.Add((candidate, given));
+                continue;
+            }
+
+            if (!fs.FileExists(candidate))
+            {
+                continue;
+            }
+
+            try
+            {
+                var state = JournalReader.Load(fs, candidate);
+                if (string.Equals(state.RunId, given.RunId, StringComparison.Ordinal))
+                {
+                    loaded.Add((candidate, state));
+                }
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            {
+                unreadable = true;
+            }
+        }
+
+        var best = loaded[0];
+        foreach (var copy in loaded.Skip(1))
+        {
+            if (copy.State.EntryCount > best.State.EntryCount)
+            {
+                best = copy;
+            }
+        }
+
+        var differ = unreadable || loaded.Any(c => c.State.EntryCount != best.State.EntryCount);
+        return (best.Path, best.State, differ);
+    }
+
+    private static bool SamePath(string a, string b) =>
+        string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase);
 
     // ------------------------------------------------------------------
     // 실행 흐름 (이어 하기에서도 그대로 쓴다)
@@ -415,23 +506,6 @@ public sealed class Executor(ExecutionContext context)
         }
 
         return false;
-    }
-
-    /// <summary>
-    /// 이어 쓸 기록 파일: [아카이브, 앱 데이터] 순서 중 이미 있는 것. 없는 곳에 새로 만들면 시작 정보(RunStarted)가 없는
-    /// 기록이 되므로 만들지 않는다. 둘 다 없으면(기록을 다른 곳으로 옮겨 온 경우) 읽은 파일에 이어 쓴다.
-    /// </summary>
-    private List<string> ResumeJournalPaths(RunState state, string journalPath)
-    {
-        var fs = context.FileSystem;
-        var paths = new[]
-            {
-                JournalPaths.InArchive(state.ArchiveRoot, state.RunId),
-                JournalPaths.InAppData(context.AppDataRoot, state.RunId),
-            }
-            .Where(fs.FileExists)
-            .ToList();
-        return paths.Count > 0 ? paths : [journalPath];
     }
 
     /// <summary>사용자에게 보일 한국어 오류 문구. 런타임 문구는 " — " 뒤에 덧붙인다(영어일 수 있다).</summary>

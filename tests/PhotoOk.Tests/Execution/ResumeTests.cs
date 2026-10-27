@@ -68,7 +68,7 @@ public class ResumeTests
     private string WriteJournal(PlannedOperation[] ops, params (string OpId, JournalEvent Event, string? Message)[] events)
     {
         var writer = new JournalWriter(_fs, [ArchiveJournal, AppDataJournal]);
-        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Length: ops.Length, Destination: Archive, TimestampUtc: Now));
         foreach (var op in ops)
         {
             writer.Write(new JournalEntry(RunId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
@@ -143,8 +143,8 @@ public class ResumeTests
         Assert.True(after.Finished);
         Assert.All(after.Operations, o => Assert.Equal(OpStatus.Completed, o.Status));
         Assert.Equal(Hash(@"E:\DCIM\b.jpg"), StateOf(after, "op2").Hash);
-        Assert.Equal(_fs.ReadAllBytes(JournalPaths.InArchive(Archive, before.RunId)),
-            _fs.ReadAllBytes(JournalPaths.InAppData(AppData, before.RunId)));
+        Assert.Equal(JournalPaths.InArchive(Archive, before.RunId), result.JournalPath); // 두 사본이 같으면 아카이브 쪽
+        Assert.Empty(result.Warnings);
     }
 
     [Fact]
@@ -523,19 +523,21 @@ public class ResumeTests
     }
 
     [Fact]
-    public void Resume_AppendsToBothJournals_WithoutCreatingNewOnes()
+    public void Resume_AppendsOnlyToChosenCopy_WhenCopiesAgree()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 27);
         _fs.AddDirectory(@"D:\Archive\2026");
         var journal = WriteJournal([Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)]);
         var journalsBefore = _fs.AllFiles().Count(p => p.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase));
+        var appDataBefore = _fs.ReadAllBytes(AppDataJournal);
 
-        var result = NewExecutor().Resume(journal);
+        var result = NewExecutor().Resume(AppDataJournal);
 
-        Assert.Equal(ArchiveJournal, result.JournalPath);
+        Assert.Equal(ArchiveJournal, result.JournalPath); // 길이가 같으면 [아카이브, 앱 데이터] 순서의 첫 사본
         Assert.Empty(result.Warnings);
         Assert.Equal(journalsBefore, _fs.AllFiles().Count(p => p.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)));
-        Assert.Equal(_fs.ReadAllBytes(ArchiveJournal), _fs.ReadAllBytes(AppDataJournal));
+        Assert.Equal(appDataBefore, _fs.ReadAllBytes(AppDataJournal));
+        Assert.Equal(journal, result.JournalPath);
         var entries = Entries(ArchiveJournal);
         Assert.All(entries, e => Assert.Equal(RunId, e.RunId));
         Assert.Single(entries, e => e.Event == JournalEvent.RunStarted);
@@ -550,7 +552,7 @@ public class ResumeTests
         _fs.AddDirectory(@"D:\Archive\2026");
         var op = Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length);
         var writer = new JournalWriter(_fs, [AppDataJournal]);
-        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Length: 1, Destination: Archive, TimestampUtc: Now));
         writer.Write(new JournalEntry(RunId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
             TimestampUtc: Now));
 
@@ -561,5 +563,152 @@ public class ResumeTests
         Assert.False(_fs.FileExists(ArchiveJournal));
         Assert.True(JournalReader.Load(_fs, AppDataJournal).Finished);
         Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+    }
+
+    // ------------------------------------------------------------------
+    // 계획 기록 완결, 멱등성, 기록 사본 고르기
+    // ------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(4, 0)] // 폴더 준비·RunStarted를 두 곳에 쓴 직후 죽음 → 계획 0개
+    [InlineData(6, 1)] // 첫 Planned를 두 곳에 쓴 직후 죽음 → 계획 1개
+    public void Resume_RefusesPlanIncomplete_WhenCrashedWhileWritingPlannedLines(int crashAfter, int plannedWritten)
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 29);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 30);
+        var c = AddFile(@"E:\DCIM\c.jpg", 300, 31);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.CrashAfter(crashAfter);
+        Assert.Throws<SimulatedCrashException>(() => NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length))));
+        _fs.ClearFault();
+
+        var journals = _fs.AllFiles().Where(p => p.EndsWith(".jsonl", StringComparison.OrdinalIgnoreCase)).ToList();
+        Assert.Equal(2, journals.Count);
+        var journal = journals.Single(p => p.Contains(@"\.photook\journal\", StringComparison.OrdinalIgnoreCase));
+        var before = JournalReader.Load(_fs, journal);
+        Assert.Equal(3, before.ExpectedOperations);
+        Assert.Equal(plannedWritten, before.Operations.Count);
+        var bytesBefore = journals.Select(_fs.ReadAllBytes).ToList();
+        var opsBefore = _fs.MutatingOps;
+
+        var result = NewExecutor().Resume(journal);
+
+        Assert.Equal(RunOutcome.PlanIncomplete, result.Outcome);
+        Assert.Equal(before.RunId, result.RunId);
+        Assert.Equal(0, result.Succeeded);
+        Assert.Empty(result.Failures);
+        Assert.Equal(new[] { "계획 기록이 끝나지 않아 이어 할 수 없습니다. 다시 계획해 주세요" }, result.Warnings);
+        Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.Equal(bytesBefore, journals.Select(_fs.ReadAllBytes).ToList());
+        Assert.False(_fs.FileExists(@"D:\Archive\2026\a.jpg"));
+        Assert.Empty(TempFiles());
+    }
+
+    [Fact]
+    public void Resume_IsIdempotent_WhenFirstResumeHitMissingDrive_ForCopy()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 500, 32);
+        _fs.AddFile(@"D:\Archive\2026\a.jpg", a); // 복사는 끝났고 Completed만 못 썼다
+        var journal = WriteJournal([Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)],
+            ("op1", JournalEvent.Started, null));
+        _fs.RemoveVolume(@"E:\");
+
+        var first = NewExecutor().Resume(journal);
+        Assert.Equal(RunOutcome.Interrupted, first.Outcome);
+        Assert.Equal(OpStatus.Failed, StateOf(JournalReader.Load(_fs, journal), "op1").Status);
+
+        _fs.RestoreVolume(@"E:\");
+        var second = NewExecutor().Resume(journal);
+
+        Assert.Equal(RunOutcome.Completed, second.Outcome);
+        Assert.Empty(second.Failures);
+        Assert.Empty(_hooked.Created);
+        Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        var state = JournalReader.Load(_fs, journal);
+        Assert.True(state.Finished);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op1").Status);
+        Assert.Equal(Hash(@"E:\DCIM\a.jpg"), StateOf(state, "op1").Hash);
+    }
+
+    [Fact]
+    public void Resume_IsIdempotent_WhenFirstResumeHitMissingDrive_ForMove()
+    {
+        var x = AddFile(@"D:\Archive\2026\x.jpg", 300, 33); // 이동은 끝났고 Completed만 못 썼다
+        _fs.AddDirectory(@"D:\Archive\2025");
+        var op = Move("op1", @"D:\Archive\2025\x.jpg", @"D:\Archive\2026\x.jpg", x.Length);
+        WriteJournal([op], ("op1", JournalEvent.Started, null));
+        _fs.RemoveVolume(@"D:\");
+
+        var first = NewExecutor().Resume(AppDataJournal);
+        Assert.Equal(RunOutcome.Interrupted, first.Outcome);
+        Assert.Equal("보관 드라이브가 연결되어 있지 않습니다", Assert.Single(first.Failures).Message);
+        Assert.Equal(OpStatus.Failed, StateOf(JournalReader.Load(_fs, AppDataJournal), "op1").Status);
+
+        _fs.RestoreVolume(@"D:\");
+        var second = NewExecutor().Resume(AppDataJournal);
+
+        Assert.Equal(RunOutcome.Completed, second.Outcome);
+        Assert.Empty(second.Failures);
+        Assert.Equal(x, _fs.ReadAllBytes(@"D:\Archive\2026\x.jpg"));
+        Assert.False(_fs.FileExists(@"D:\Archive\2025\x.jpg"));
+        var state = JournalReader.Load(_fs, AppDataJournal);
+        Assert.True(state.Finished);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op1").Status);
+    }
+
+    [Fact]
+    public void Resume_UsesLongerJournalCopy()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 34);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 35);
+        var c = AddFile(@"E:\DCIM\c.jpg", 300, 36);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _hooked.AfterMove = (_, destination) =>
+        {
+            if (destination.EndsWith(@"\a.jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                _fs.RemoveVolume(@"D:\"); // 아카이브 쪽 기록은 여기서 멈춘다
+            }
+        };
+
+        var first = NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length)));
+        _hooked.AfterMove = null;
+        _fs.RestoreVolume(@"D:\");
+
+        var lagging = JournalPaths.InArchive(Archive, first.RunId);
+        var longer = JournalPaths.InAppData(AppData, first.RunId);
+        Assert.True(Entries(lagging).Count < Entries(longer).Count);
+        var laggingBefore = _fs.ReadAllBytes(lagging);
+
+        var result = NewExecutor().Resume(lagging);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Equal(longer, result.JournalPath);
+        Assert.Contains($"기록 사본이 서로 달라 더 긴 기록을 사용했습니다: {longer}", result.Warnings);
+        Assert.Equal(laggingBefore, _fs.ReadAllBytes(lagging)); // 뒤처진 사본에는 이어 쓰지 않는다
+        Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        Assert.Equal(b, _fs.ReadAllBytes(@"D:\Archive\2026\b.jpg"));
+        Assert.Equal(c, _fs.ReadAllBytes(@"D:\Archive\2026\c.jpg"));
+
+        // 고른 사본에는 빈 곳이 없다: 작업마다 Started 뒤에 결과가 있고, 끝은 RunFinished.
+        var entries = Entries(longer);
+        Assert.Equal(JournalEvent.RunFinished, entries[^1].Event);
+        foreach (var opId in new[] { "op1", "op2", "op3" })
+        {
+            var events = entries.Where(e => e.OpId == opId && e.Event != JournalEvent.Planned).Select(e => e.Event).ToList();
+            Assert.Equal(JournalEvent.Started, events[0]);
+            Assert.Equal(JournalEvent.Completed, events[^1]);
+        }
+
+        var state = JournalReader.Load(_fs, longer);
+        Assert.True(state.Finished);
+        Assert.All(state.Operations, o => Assert.Equal(OpStatus.Completed, o.Status));
+        Assert.Equal(Hash(@"E:\DCIM\a.jpg"), StateOf(state, "op1").Hash);
     }
 }

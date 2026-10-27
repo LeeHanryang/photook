@@ -28,6 +28,8 @@ public static class JournalReader
         string? runId = null;
         string? archiveRoot = null;
         var finished = false;
+        var expectedOperations = 0;
+        var entryCount = 0;
         var order = new List<string>();
         var operations = new Dictionary<string, OpState>(StringComparer.Ordinal);
 
@@ -52,11 +54,18 @@ public static class JournalReader
                 throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄을 읽을 수 없습니다: {path}");
             }
 
+            entryCount++;
             switch (entry.Event)
             {
                 case JournalEvent.RunStarted:
                     runId = entry.RunId;
                     archiveRoot = entry.Destination;
+                    if (entry.Length < 0 || entry.Length > int.MaxValue)
+                    {
+                        throw new InvalidDataException($"작업 기록 {lineNumber}번째 줄: 계획 작업 수가 올바르지 않습니다.");
+                    }
+
+                    expectedOperations = (int)entry.Length;
                     break;
 
                 case JournalEvent.Planned:
@@ -105,7 +114,8 @@ public static class JournalReader
             throw new InvalidDataException($"작업 기록에 시작 정보(RunStarted)가 없습니다: {path}");
         }
 
-        return new RunState(runId, archiveRoot, order.Select(id => operations[id]).ToList(), finished);
+        return new RunState(runId, archiveRoot, order.Select(id => operations[id]).ToList(), finished,
+            expectedOperations, entryCount);
     }
 
     private static string RequireOpId(JournalEntry entry, int lineNumber) =>
