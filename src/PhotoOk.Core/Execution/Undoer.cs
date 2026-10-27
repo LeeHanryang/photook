@@ -26,8 +26,9 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
 /// 그중 디스크 상태를 그대로 남겨 앞 작업들의 판단을 틀리게 할 수 있는 것(작업 중 입출력 오류, 원래 드라이브가 없어 못 돌려놓은 이동)은
 /// 그 자리에서 이번 되돌리기를 멈춘다. 뒤의 작업은 그 작업이 풀린 뒤의 디스크를 봐야 하기 때문이다.
 /// 원본을 확인할 수 없어 복사본을 남기는 경우는 멈추지 않는다. 다만 그 복사본 자리가 아직 되돌리지 않은 다른 작업의 원래 자리라면
-/// 남긴 복사본이 그 작업을 막으므로 멈춘다.
-/// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이 있으면
+/// 남긴 복사본이 그 작업을 막으므로 멈춘다. 이 경우는 시작 전에 미리 확인해, 파일을 하나도 건드리지 않고 UndoStarted도 쓰지 않은 채
+/// 그 사유 하나만 돌려준다(루프 안의 같은 확인은 안전망이다).
+/// 사진을 임시 이름(<c>.photook-tmp</c>, 스캔에 보이지 않는다)으로 남기지 않는다: 원래 자리에 다른 파일이나 폴더가 있으면
 /// 원래 이름 옆의 첫 빈 이름(<c>이름_1.확장자</c>…)으로 돌려놓고 Undone으로 기록하며, 결과에 그 경로를 알린다.
 /// 이 실행의 자리 바꾸기 임시 경로에 있는 파일은 크기가 달라졌어도 항상 꺼낸다.
 /// 그런 사유가 있었던 되돌리기에서는 "폴더가 비어 있지 않습니다"도 기록하지 않는다(남긴 복사본 때문에 비어 있지 않을 수 있다).
@@ -63,16 +64,25 @@ public sealed class Undoer(ExecutionContext context)
         var run = new UndoRun(state.RunId, state.ArchiveRoot, new JournalWriter(fs, [path]),
             new SafeDelete(fs, state.ArchiveRoot, state.RunId), state.Operations);
 
+        // 기록에 나중에 나온 작업부터. 앞 작업의 대상을 뒤 작업이 원본으로 쓴 경우(자리 바꾸기)에도 역순이면 맞게 풀린다.
+        var pending = state.Operations
+            .Where(o => o.Status is OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
+            .OrderByDescending(o => o.LastSeq)
+            .ToList();
+
+        // 남길 복사본이 다른 작업의 원래 자리를 막고 있으면 파일을 하나도 건드리기 전에 멈춘다. 루프 안에서 멈추면 이미 처리한
+        // 뒤 작업(자리 바꾸기의 두 번째 다리)이 사진을 임시 이름으로 옮긴 뒤라, 드라이브를 다시 꽂을 때까지 사진이 숨는다.
+        var blocking = FindKeptCopyHoldingOpenSpot(run, pending);
+        if (blocking is not null)
+        {
+            return new UndoResult(0, [blocking]);
+        }
+
         // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
         if (!state.UndoStarted)
         {
             run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.UndoStarted, TimestampUtc: context.UtcNow()));
         }
-
-        // 기록에 나중에 나온 작업부터. 앞 작업의 대상을 뒤 작업이 원본으로 쓴 경우(자리 바꾸기)에도 역순이면 맞게 풀린다.
-        var pending = state.Operations
-            .Where(o => o.Status is OpStatus.Completed or OpStatus.Started or OpStatus.Failed)
-            .OrderByDescending(o => o.LastSeq);
 
         foreach (var opState in pending)
         {
@@ -183,8 +193,9 @@ public sealed class Undoer(ExecutionContext context)
                 : Outcome.Skipped(MovedFileMissingMessage);
         }
 
-        if (sourceExists)
+        if (sourceExists || fs.DirectoryExists(op.Source))
         {
+            // 원래 자리에 파일이든 폴더든 있으면 자리가 찬 것이다.
             // 임시 이름은 스캔에 보이지 않는다. 그 이름으로 남기지 말고 원래 자리 옆에 보이는 이름으로 돌려놓는다.
             return IsTempName(op.Destination) && SameVolume(op.Source, op.Destination)
                 ? RestoreBesideOriginal(op)
@@ -286,8 +297,9 @@ public sealed class Undoer(ExecutionContext context)
         // 이 실행의 임시 이름(원래 이름 + .photook-tmp- + 이 작업의 ID)에 있는 파일은 이 작업이 옮긴 것이다. 크기와 상관없이 꺼낸다.
         var runTemp = IsRunTempMove(op);
         var sizeMatches = fs.GetFile(op.Destination).Length == op.Length;
-        if (fs.FileExists(op.Source))
+        if (fs.FileExists(op.Source) || fs.DirectoryExists(op.Source))
         {
+            // 원래 자리에 파일이든 폴더든 있으면 자리가 찬 것이다.
             // 임시 이름에 계획한 크기의 파일이 있으면 이 작업이 옮긴 것이다. 임시 이름으로 남기지 않는다.
             return runTemp || (IsTempName(op.Destination) && sizeMatches)
                 ? RestoreBesideOriginal(op)
@@ -356,6 +368,7 @@ public sealed class Undoer(ExecutionContext context)
     /// <summary>
     /// 원본을 확인할 수 없어 복사본을 남긴다. 복사본 자리가 아직 되돌리지 않은 다른 작업의 원래 자리라면(자리 바꾸기에서 비운 자리를
     /// 다른 드라이브의 복사가 채운 경우) 남긴 복사본이 그 작업을 막으므로 이번 되돌리기를 멈춘다. 아니면 기록하지 않고 계속한다.
+    /// 보통은 <see cref="FindKeptCopyHoldingOpenSpot"/>가 시작 전에 같은 경우를 잡는다. 여기는 그 뒤 디스크가 바뀐 경우의 안전망이다.
     /// </summary>
     private Outcome KeepCopyForNow(UndoRun run, PlannedOperation op)
     {
@@ -364,9 +377,87 @@ public sealed class Undoer(ExecutionContext context)
             return Outcome.Transient(SourceGoneMessage);
         }
 
-        return op.Source is not null && !IsVolumePresent(op.Source)
-            ? Outcome.Blocked(Executor.SourceVolumeMissingMessage)
-            : Outcome.Blocked(SourceGoneMessage);
+        return Outcome.Blocked(KeptCopyReason(op));
+    }
+
+    private string KeptCopyReason(PlannedOperation op) =>
+        op.Source is not null && !IsVolumePresent(op.Source) ? Executor.SourceVolumeMissingMessage : SourceGoneMessage;
+
+    /// <summary>
+    /// 시작 전 미리 확인: 이번 되돌리기가 처리할 복사 중, 원본을 확인할 수 없어(드라이브 없음·읽기 불가) 남겨야 하는데 그 복사본 자리가
+    /// 아직 되돌리지 않은 다른 작업의 원래 자리인 것. 있으면 그 복사의 사유를 돌려주고, 되돌리기는 아무것도 쓰지 않고 멈춰야 한다.
+    /// 루프에서 <see cref="KeepCopyForNow"/>가 막는 조건과 같게 본다: 복사본이 있고, Completed면 기록한 해시 그대로여야 한다
+    /// (복사본을 읽을 수 없으면 그대로인 것으로 보고 막는 쪽을 택한다). 아무 파일도 바꾸지 않는다.
+    /// </summary>
+    private UndoSkip? FindKeptCopyHoldingOpenSpot(UndoRun run, IEnumerable<OpState> pending)
+    {
+        var fs = context.FileSystem;
+        foreach (var state in pending)
+        {
+            var op = state.Operation;
+            if (op.Kind != OperationKind.Copy || op.Source is null || !fs.FileExists(op.Destination))
+            {
+                continue;
+            }
+
+            if (state.Status == OpStatus.Completed && !CopyLooksIntact(op, state.Hash))
+            {
+                continue;
+            }
+
+            if (IsSourceUnavailable(op.Source) && run.HoldsOpenSpot(op))
+            {
+                return new UndoSkip(op.Id, op.Destination, KeptCopyReason(op));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>복사본이 기록한 해시 그대로인지. 기록이 없으면 루프가 "실행 후 바뀐 파일"로 남기므로 false. 읽을 수 없으면 true(보수적).</summary>
+    private bool CopyLooksIntact(PlannedOperation op, string? hash)
+    {
+        if (hash is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            return string.Equals(context.Hasher.Hash(op.Destination), hash, StringComparison.Ordinal);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 원본 드라이브가 없거나, 원본 파일이 있는데 열 수 없는지(<see cref="SourceState.Unavailable"/>와 같은 조건).
+    /// 원본이 없는 것은 해당하지 않는다(그 복사본은 최종적으로 남기고, 막힌 자리는 이름을 바꿔 되돌리기로 푼다). 파일은 열어 보기만 한다.
+    /// </summary>
+    private bool IsSourceUnavailable(string source)
+    {
+        var fs = context.FileSystem;
+        if (!IsVolumePresent(source))
+        {
+            return true;
+        }
+
+        if (!fs.FileExists(source))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var stream = fs.OpenRead(source);
+            return false;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return true;
+        }
     }
 
     /// <summary>

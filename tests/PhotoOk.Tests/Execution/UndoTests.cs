@@ -800,20 +800,30 @@ public class UndoTests
         var firstLeg = plan.Operations.Single(o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
         var copy = plan.Operations.Single(o => o.Kind == OperationKind.Copy);
         _fs.RemoveVolume(@"E:\"); // SD 카드를 뺐다
+        var journalBefore = _fs.ReadAllBytes(run.JournalPath!);
+        var opsBefore = _fs.MutatingOps;
 
         var first = NewUndoer().Undo(run.JournalPath!);
 
-        Assert.Equal(new UndoSkip(copy.Id, copy.Destination, "원본 드라이브가 연결되어 있지 않습니다"), first.Skipped[^1]);
+        // 남길 복사본이 B의 원래 자리를 막고 있으므로, 파일을 하나도 건드리기 전에 멈춰야 한다. B가 임시 이름에 숨으면 안 된다.
+        Assert.Equal(0, first.Undone);
+        Assert.Equal([new UndoSkip(copy.Id, copy.Destination, "원본 드라이브가 연결되어 있지 않습니다")], first.Skipped);
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(pb, _fs.ReadAllBytes($@"{Day15Dir}\P.JPG")); // B는 보이는 자리에 그대로
+        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
+        Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.Equal(journalBefore, _fs.ReadAllBytes(run.JournalPath!)); // UndoStarted도 쓰지 않는다
         var state = JournalReader.Load(_fs, run.JournalPath!);
+        Assert.False(state.UndoStarted);
         Assert.Equal(OpStatus.Completed, StateOf(state, copy.Id).Status);
         Assert.Equal(OpStatus.Completed, StateOf(state, firstLeg.Id).Status);
-        Assert.Equal(pa, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
         Assert.DoesNotContain(Entries(run.JournalPath!), e => e.OpId == firstLeg.Id && e.Event is JournalEvent.Undone or JournalEvent.UndoSkipped);
 
         _fs.RestoreVolume(@"E:\");
         var second = NewUndoer().Undo(run.JournalPath!);
 
         Assert.Empty(second.Skipped);
+        Assert.Equal(plan.Operations.Count, second.Undone);
         Assert.Empty(TempNamedFiles());
         Assert.Equal(pb, _fs.ReadAllBytes($@"{Day14Dir}\P.JPG"));
         Assert.False(_fs.DirectoryExists(Day15Dir));
@@ -907,6 +917,32 @@ public class UndoTests
         Assert.Equal(
             [new UndoSkip("op1", Temp, @"원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: D:\Archive\2026\14\P_1.JPG")],
             undo.Skipped);
+    }
+
+    [Theory]
+    [InlineData(JournalEvent.Completed)] // 기록된 첫 다리
+    [InlineData(JournalEvent.Started)]   // 옮겼지만 기록하지 못한 첫 다리
+    public void Undo_RescuesTempFileBesideOriginal_WhenDirectoryOccupiesSpot(JournalEvent result)
+    {
+        // 원래 자리에 파일이 아니라 폴더가 생겼다. 그래도 "자리가 찼다"로 보고 옆의 빈 이름으로 꺼내야 한다.
+        const string Spot = @"D:\Archive\2026\14\P.JPG";
+        const string Temp = Spot + ".photook-tmp-op1";
+        var original = Bytes(100, 53);
+        _fs.AddFile(Temp, original);
+        _fs.AddDirectory(Spot);
+        var ops = new[] { Move("op1", Spot, Temp, original.Length) };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op1", result, null));
+
+        var undo = NewUndoer().Undo(journal);
+
+        Assert.Empty(TempNamedFiles());
+        Assert.Equal(original, _fs.ReadAllBytes(@"D:\Archive\2026\14\P_1.JPG"));
+        Assert.True(_fs.DirectoryExists(Spot));
+        Assert.Equal(1, undo.Undone);
+        Assert.Equal(
+            [new UndoSkip("op1", Temp, @"원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: D:\Archive\2026\14\P_1.JPG")],
+            undo.Skipped);
+        Assert.Equal(OpStatus.Undone, StateOf(JournalReader.Load(_fs, journal), "op1").Status);
     }
 
     [Fact]
