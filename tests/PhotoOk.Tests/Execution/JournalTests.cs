@@ -1,0 +1,233 @@
+using System.IO;
+using System.Text.RegularExpressions;
+using PhotoOk.Core.Execution;
+using PhotoOk.Core.Planning;
+using PhotoOk.Tests.Fakes;
+
+namespace PhotoOk.Tests.Execution;
+
+public class JournalTests
+{
+    private const string Archive = @"D:\사진 아카이브";
+    private const string AppData = @"C:\Users\test\AppData\Local\PhotoOk";
+    private const string RunId = "20261027-103000-ab12";
+
+    private readonly FakeFileSystem _fs = new();
+    private readonly string _archivePath = JournalPaths.InArchive(Archive, RunId);
+    private readonly string _appDataPath = JournalPaths.InAppData(AppData, RunId);
+
+    private JournalWriter NewWriter() => new(_fs, new[] { _archivePath, _appDataPath });
+
+    private static JournalEntry Entry(JournalEvent ev, string? opId = null, OperationKind? kind = null, string? source = null,
+        string? destination = null, long length = 0, string? hash = null) =>
+        new(RunId, ev, opId, kind, source, destination, length, hash, null, new DateTime(2026, 10, 27, 1, 30, 0, DateTimeKind.Utc));
+
+    private string[] Lines(string path) =>
+        System.Text.Encoding.UTF8.GetString(_fs.ReadAllBytes(path)).Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+
+    private void WriteStandardRun(JournalWriter writer, bool complete)
+    {
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.CreateDirectory, null, @"D:\사진 아카이브\2026", 0));
+        writer.Write(Entry(JournalEvent.Planned, "op2", OperationKind.Copy, @"E:\DCIM\a.jpg", @"D:\사진 아카이브\2026\a.jpg", 1234));
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+        writer.Write(Entry(JournalEvent.Completed, "op1"));
+        writer.Write(Entry(JournalEvent.Started, "op2"));
+        if (complete)
+        {
+            writer.Write(Entry(JournalEvent.Completed, "op2", hash: "0123456789abcdef"));
+        }
+    }
+
+    [Fact]
+    public void Paths_UseExpectedLayout()
+    {
+        Assert.Equal(@"C:\X\journal\r1.jsonl", JournalPaths.InAppData(@"C:\X", "r1"));
+        Assert.Equal(@"D:\A\.photook\journal\r1.jsonl", JournalPaths.InArchive(@"D:\A", "r1"));
+    }
+
+    [Fact]
+    public void NewRunId_HasExpectedFormat()
+    {
+        var id = JournalPaths.NewRunId(DateTime.UtcNow);
+        Assert.Matches(new Regex(@"^\d{8}-\d{6}-[0-9a-f]{4}$"), id);
+    }
+
+    [Fact]
+    public void NewRunId_UsesLocalTime()
+    {
+        var utc = new DateTime(2026, 10, 27, 1, 2, 3, DateTimeKind.Utc);
+        var expected = TimeZoneInfo.ConvertTimeFromUtc(utc, TimeZoneInfo.Local).ToString("yyyyMMdd-HHmmss");
+        Assert.StartsWith(expected + "-", JournalPaths.NewRunId(utc));
+    }
+
+    [Fact]
+    public void Write_AppendsToBothPaths()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+
+        var a = Lines(_archivePath);
+        var b = Lines(_appDataPath);
+        Assert.Single(a);
+        Assert.Equal(a, b);
+        Assert.Empty(writer.Warnings);
+        Assert.Contains("사진 아카이브", a[0]);
+        Assert.Contains("\"event\":\"RunStarted\"", a[0]);
+        Assert.DoesNotContain("\"opId\"", a[0]);
+    }
+
+    [Fact]
+    public void Write_ContinuesWithWarning_WhenOnePathFails()
+    {
+        _fs.AddDirectory(@"C:\");
+        _fs.RemoveVolume(@"C:\");
+        var writer = NewWriter();
+
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+
+        Assert.Single(Lines(_archivePath));
+        Assert.Equal(new[] { $"기록을 남기지 못함: {_appDataPath}" }, writer.Warnings);
+    }
+
+    [Fact]
+    public void Write_DoesNotDuplicateWarning_OnRepeatedFailures()
+    {
+        _fs.RemoveVolume(@"C:\");
+        var writer = NewWriter();
+
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.CreateDirectory, null, Archive, 0));
+        writer.Write(Entry(JournalEvent.Started, "op1"));
+
+        Assert.Equal(3, Lines(_archivePath).Length);
+        Assert.Single(writer.Warnings);
+    }
+
+    [Fact]
+    public void Write_Throws_WhenAllPathsFail()
+    {
+        _fs.RemoveVolume(@"C:\");
+        _fs.RemoveVolume(@"D:\");
+        var writer = NewWriter();
+
+        Assert.Throws<JournalUnavailableException>(() => writer.Write(Entry(JournalEvent.RunStarted, destination: Archive)));
+        Assert.Equal(2, writer.Warnings.Count);
+    }
+
+    [Fact]
+    public void Write_PropagatesSimulatedCrash()
+    {
+        _fs.CrashAfter(0);
+        var writer = NewWriter();
+
+        Assert.Throws<SimulatedCrashException>(() => writer.Write(Entry(JournalEvent.RunStarted, destination: Archive)));
+    }
+
+    [Fact]
+    public void Load_ReplaysLastEventPerOperation()
+    {
+        var writer = NewWriter();
+        WriteStandardRun(writer, complete: true);
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(RunId, state.RunId);
+        Assert.Equal(Archive, state.ArchiveRoot);
+        Assert.False(state.Finished);
+        Assert.Equal(2, state.Operations.Count);
+
+        var op1 = state.Operations[0];
+        Assert.Equal("op1", op1.Operation.Id);
+        Assert.Equal(OperationKind.CreateDirectory, op1.Operation.Kind);
+        Assert.Null(op1.Operation.Source);
+        Assert.Equal(OpStatus.Completed, op1.Status);
+        Assert.Equal(5, op1.CompletedSeq);
+        Assert.Empty(op1.Operation.Reasons);
+
+        var op2 = state.Operations[1];
+        Assert.Equal("op2", op2.Operation.Id);
+        Assert.Equal(OperationKind.Copy, op2.Operation.Kind);
+        Assert.Equal(@"E:\DCIM\a.jpg", op2.Operation.Source);
+        Assert.Equal(@"D:\사진 아카이브\2026\a.jpg", op2.Operation.Destination);
+        Assert.Equal(1234, op2.Operation.Length);
+        Assert.Equal(OpStatus.Completed, op2.Status);
+        Assert.Equal("0123456789abcdef", op2.Hash);
+        Assert.Equal(7, op2.CompletedSeq);
+    }
+
+    [Fact]
+    public void Load_ReportsStartedAndFinished()
+    {
+        var writer = NewWriter();
+        WriteStandardRun(writer, complete: false);
+        var midRun = JournalReader.Load(_fs, _appDataPath);
+        Assert.Equal(OpStatus.Started, midRun.Operations[1].Status);
+        Assert.Equal(0, midRun.Operations[1].CompletedSeq);
+        Assert.Null(midRun.Operations[1].Hash);
+
+        writer.Write(Entry(JournalEvent.Failed, "op2"));
+        writer.Write(Entry(JournalEvent.RunFinished));
+        var done = JournalReader.Load(_fs, _appDataPath);
+        Assert.Equal(OpStatus.Failed, done.Operations[1].Status);
+        Assert.True(done.Finished);
+    }
+
+    [Theory]
+    [InlineData(JournalEvent.Skipped, OpStatus.Skipped)]
+    [InlineData(JournalEvent.Undone, OpStatus.Undone)]
+    [InlineData(JournalEvent.UndoSkipped, OpStatus.UndoSkipped)]
+    public void Load_MapsTerminalEvents(JournalEvent ev, OpStatus expected)
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+        writer.Write(Entry(ev, "op1"));
+
+        Assert.Equal(expected, JournalReader.Load(_fs, _archivePath).Operations[0].Status);
+    }
+
+    [Fact]
+    public void Load_IgnoresTruncatedLastLine()
+    {
+        var writer = NewWriter();
+        WriteStandardRun(writer, complete: true);
+        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"ev");
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(2, state.Operations.Count);
+        Assert.Equal(OpStatus.Completed, state.Operations[1].Status);
+    }
+
+    [Fact]
+    public void Load_Throws_WhenCorruptLineIsInTheMiddle()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        _fs.AppendLine(_archivePath, "{\"runId\":\"x\",\"ev");
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("2", ex.Message);
+    }
+
+    [Fact]
+    public void Load_Throws_WhenEventReferencesUnknownOperation()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        writer.Write(Entry(JournalEvent.Started, "nope"));
+
+        Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+    }
+
+    [Fact]
+    public void Load_Throws_WhenRunStartedMissing()
+    {
+        var writer = NewWriter();
+        writer.Write(Entry(JournalEvent.Planned, "op1", OperationKind.Move, @"E:\a.jpg", @"D:\b.jpg", 5));
+
+        Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+    }
+}
