@@ -71,6 +71,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private string? _blockingReason;
     private bool _isReplanning;
     private FileDetailViewModel? _detail;
+    private IReadOnlyList<FolderNodeViewModel> _folderTree = [];
+    private bool _freeSpaceKnown;
 
     [ObservableProperty]
     private SessionItemViewModel? selectedSession;
@@ -116,11 +118,21 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
 
         ScanErrors = scan.Errors.Select(DescribeScanError).ToList();
 
+        // 판단이 필요한 묶음은 날짜 카드에서 빼고 맨 끝 판단 필요 카드에만 보인다. 사유는 계획과 같은 함수(ReviewDetector)로
+        // 구하므로 계획 작업에 붙는 사유와 같다. 이벤트 이름과 관계없으므로 첫 계획을 기다리지 않고 카드를 바로 만든다.
         foreach (var session in scan.Sessions)
         {
-            var groups = session.Groups;
-            AddCard(new SessionItemViewModel(session.Id, CardTitle(session.Id, groups.Count), DevicesOf(groups),
-                isReviewGroup: false, groups.Select(g => g.Primary.Path).ToList(), OnEventNameChanged));
+            var groups = session.Groups
+                .Where(group => ReviewDetector.Detect(group, settings.Preset, _aliases).Count == 0)
+                .ToList();
+            if (groups.Count == 0)
+            {
+                continue;
+            }
+
+            AddCard(new SessionItemViewModel(session.Id, CardTitle(session.Id, groups.Sum(g => g.AllFiles.Count())),
+                DevicesOf(groups), isReviewGroup: false, groups.Select(g => g.Primary.Path).ToList(), OnEventNameChanged,
+                RequestCardThumbnail));
         }
 
         SelectedSession = Sessions.FirstOrDefault();
@@ -132,8 +144,12 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     /// <summary>날짜순 촬영 카드, 그 뒤에 판단 필요 묶음(있을 때).</summary>
     public ObservableCollection<SessionItemViewModel> Sessions { get; } = [];
 
-    /// <summary>아카이브 기준 정리 후 폴더 트리.</summary>
-    public ObservableCollection<FolderNodeViewModel> FolderTree { get; } = [];
+    /// <summary>아카이브 기준 정리 후 폴더 트리. 계획이 바뀔 때마다 백그라운드에서 만든 새 목록으로 통째로 바뀐다.</summary>
+    public IReadOnlyList<FolderNodeViewModel> FolderTree
+    {
+        get => _folderTree;
+        private set => SetProperty(ref _folderTree, value);
+    }
 
     /// <summary>선택 촬영의 처음 12장.</summary>
     public ObservableCollection<ThumbnailItemViewModel> Thumbnails { get; } = [];
@@ -178,7 +194,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
     }
 
-    /// <summary>보관 폴더 드라이브의 여유 공간. 알 수 없으면 0.</summary>
+    /// <summary>보관 폴더 드라이브의 여유 공간. 알 수 없으면 0(<see cref="FreeSpaceText"/>는 "알 수 없음").</summary>
     public long FreeBytes
     {
         get => _freeBytes;
@@ -200,7 +216,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
 
     public string TransferSizeText => FormatBytes(TransferBytes);
 
-    public string FreeSpaceText => FormatBytes(FreeBytes);
+    /// <summary>여유 공간. 알 수 없으면 "알 수 없음".</summary>
+    public string FreeSpaceText => _freeSpaceKnown ? FormatBytes(FreeBytes) : "알 수 없음";
 
     /// <summary>스캔 중 읽지 못한 폴더·파일. 예외 원문 없이 사유와 경로만.</summary>
     public IReadOnlyList<string> ScanErrors { get; }
@@ -349,16 +366,18 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
             }
 
             ct.ThrowIfCancellationRequested();
-            var build = Task.Run(() => _buildPlan(_settings, _scan, eventNames), CancellationToken.None);
+            var fileSystem = _fileSystem;
+            var build = Task.Run(() => PlanView.Create(_buildPlan(_settings, _scan, eventNames), fileSystem),
+                CancellationToken.None);
 
             // 계획 세우기는 중간에 멈출 수 없다. 취소되면 기다리지 않고 결과만 버린다. 버린 작업의 오류도 관찰해 둔다.
             _ = build.ContinueWith(t => _ = t.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            var outcome = await build.WaitAsync(ct);
+            var view = await build.WaitAsync(ct);
 
             if (generation == _generation && !ct.IsCancellationRequested)
             {
-                Apply(generation, outcome);
+                Apply(generation, view);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -384,78 +403,31 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
     }
 
-    private void Apply(int generation, PlanOutcome outcome)
+    /// <summary>백그라운드에서 정리해 둔 계획을 화면에 반영한다. 화면 스레드에서는 값과 목록을 바꿔 끼우기만 한다.</summary>
+    private void Apply(int generation, PlanView view)
     {
-        var plan = outcome.Plan;
-        _plan = plan;
+        _plan = view.Outcome.Plan;
         _appliedGeneration = generation;
+        _placementBySource = view.Placements;
+        _skipBySource = view.Skips;
 
-        // 자리 바꾸기에서는 원본을 먼저 임시 이름으로 옮긴 뒤 그 임시 파일을 최종 자리로 옮긴다. 원래 원본 경로로 찾게 한다.
-        var originalOfTemp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var placements = new Dictionary<string, PlannedOperation>(StringComparer.OrdinalIgnoreCase);
-        var copies = 0;
-        var moves = 0;
-        long bytes = 0;
-        var reviewSources = new List<string>();
-        foreach (var op in plan.Operations)
-        {
-            if (op.Kind == OperationKind.CreateDirectory || op.Source is null)
-            {
-                continue;
-            }
-
-            if (!FolderNodeViewModel.IsPlacement(op))
-            {
-                originalOfTemp[op.Destination] = op.Source;
-                continue;
-            }
-
-            var source = originalOfTemp.GetValueOrDefault(op.Source, op.Source);
-            placements[source] = op;
-            if (op.Kind == OperationKind.Copy)
-            {
-                copies++;
-            }
-            else
-            {
-                moves++;
-            }
-
-            bytes += op.Length;
-            if (op.Reasons.Count > 0)
-            {
-                reviewSources.Add(source);
-            }
-        }
-
-        _placementBySource = placements;
-        _skipBySource = plan.Skipped
-            .GroupBy(skip => FullPath(skip.Source), StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-        ReviewCount = reviewSources.Count;
-        DuplicateCount = plan.Skipped.Count(skip => skip.Reason is SkipReason.DuplicateAtDestination or SkipReason.DuplicateInPlan);
-        TransferCount = copies + moves;
-        TransferBytes = bytes;
-        TransferText = DescribeTransfer(copies, moves);
-        FreeBytes = FreeSpace(plan.ArchiveRoot);
-
-        PlanNotes = plan.Notes
-            .Concat(outcome.Issues.Where(i => i.Severity == Severity.Warning).Select(DescribeIssue))
-            .ToList();
-        BlockingReason = DescribeBlocking(outcome.Issues.Where(i => i.Severity == Severity.Error).ToList());
-
-        FolderTree.Clear();
-        foreach (var node in FolderNodeViewModel.Build(plan))
-        {
-            FolderTree.Add(node);
-        }
+        ReviewCount = view.ReviewSources.Count;
+        DuplicateCount = view.Duplicates;
+        TransferCount = view.Copies + view.Moves;
+        TransferBytes = view.Bytes;
+        TransferText = DescribeTransfer(view.Copies, view.Moves);
+        _freeSpaceKnown = view.FreeBytes is not null;
+        FreeBytes = view.FreeBytes ?? 0;
+        OnPropertyChanged(nameof(FreeSpaceText));
+        PlanNotes = view.Notes;
+        BlockingReason = view.BlockingReason;
+        FolderTree = view.Tree;
 
         // 판단 필요 사유는 이벤트 이름과 관계없으므로 묶음 카드는 첫 계획으로 한 번만 만든다.
         if (!_reviewCardAdded)
         {
             _reviewCardAdded = true;
-            AddReviewCard(reviewSources);
+            AddReviewCard(view.ReviewSources);
         }
 
         UpdateDetail();
@@ -465,7 +437,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private void ApplyFailure()
     {
         _plan = null;
-        FolderTree.Clear();
+        FolderTree = [];
         Detail = null;
         BlockingReason = PlanFailedMessage;
         ExecuteCommand.NotifyCanExecuteChanged();
@@ -490,12 +462,14 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
 
         AddCard(new SessionItemViewModel(ReviewGroupId, CardTitle(ReviewGroupId, groups.Count), DevicesOf(groups),
-            isReviewGroup: true, groups.Select(g => g.Primary.Path).ToList(), eventNameChanged: null));
+            isReviewGroup: true, groups.Select(g => g.Primary.Path).ToList(), eventNameChanged: null, RequestCardThumbnail));
     }
 
-    private void AddCard(SessionItemViewModel card)
+    private void AddCard(SessionItemViewModel card) => Sessions.Add(card);
+
+    /// <summary>카드가 처음 그려질 때(썸네일을 처음 읽을 때) 대표 한 장을 요청한다. 보이지 않는 카드는 요청하지 않는다.</summary>
+    private void RequestCardThumbnail(SessionItemViewModel card)
     {
-        Sessions.Add(card);
         if (card.Files.Count > 0)
         {
             _ = LoadThumbnailAsync(card.Files[0], CardThumbnailSize, image => card.Thumbnail = image, _lifetime.Token);
@@ -602,18 +576,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
             .OfType<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase));
 
-    private long FreeSpace(string archiveRoot)
-    {
-        try
-        {
-            return _fileSystem.GetAvailableFreeSpace(archiveRoot);
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
-        {
-            return 0;
-        }
-    }
-
     private static string CardTitle(string label, int count) =>
         string.Create(CultureInfo.InvariantCulture, $"{label} · {count}장");
 
@@ -675,6 +637,96 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
             return path;
+        }
+    }
+
+    /// <summary>
+    /// 계획을 화면에 보이기 좋게 정리한 것. 계획을 세운 백그라운드 작업 안에서 만든다(폴더 트리, 원본별 작업 찾기표,
+    /// 개수, 여유 공간 조회). 만든 뒤에는 바뀌지 않는다.
+    /// </summary>
+    private sealed record PlanView(
+        PlanOutcome Outcome,
+        Dictionary<string, PlannedOperation> Placements,
+        Dictionary<string, PlannedSkip> Skips,
+        IReadOnlyList<string> ReviewSources,
+        int Copies,
+        int Moves,
+        long Bytes,
+        int Duplicates,
+        long? FreeBytes,
+        IReadOnlyList<string> Notes,
+        string? BlockingReason,
+        IReadOnlyList<FolderNodeViewModel> Tree)
+    {
+        public static PlanView Create(PlanOutcome outcome, IFileSystem fileSystem)
+        {
+            var plan = outcome.Plan;
+
+            // 자리 바꾸기에서는 원본을 먼저 임시 이름으로 옮긴 뒤 그 임시 파일을 최종 자리로 옮긴다. 원래 원본 경로로 찾게 한다.
+            var originalOfTemp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var placements = new Dictionary<string, PlannedOperation>(StringComparer.OrdinalIgnoreCase);
+            var reviewSources = new List<string>();
+            var copies = 0;
+            var moves = 0;
+            long bytes = 0;
+            foreach (var op in plan.Operations)
+            {
+                if (op.Kind == OperationKind.CreateDirectory || op.Source is null)
+                {
+                    continue;
+                }
+
+                if (!FolderNodeViewModel.IsPlacement(op))
+                {
+                    originalOfTemp[op.Destination] = op.Source;
+                    continue;
+                }
+
+                var source = originalOfTemp.GetValueOrDefault(op.Source, op.Source);
+                placements[source] = op;
+                if (op.Kind == OperationKind.Copy)
+                {
+                    copies++;
+                }
+                else
+                {
+                    moves++;
+                }
+
+                bytes += op.Length;
+                if (op.Reasons.Count > 0)
+                {
+                    reviewSources.Add(source);
+                }
+            }
+
+            var skips = new Dictionary<string, PlannedSkip>(StringComparer.OrdinalIgnoreCase);
+            foreach (var skip in plan.Skipped)
+            {
+                skips.TryAdd(FullPath(skip.Source), skip);
+            }
+
+            var notes = plan.Notes
+                .Concat(outcome.Issues.Where(i => i.Severity == Severity.Warning).Select(DescribeIssue))
+                .ToList();
+
+            return new PlanView(outcome, placements, skips, reviewSources, copies, moves, bytes,
+                plan.Skipped.Count(skip => skip.Reason is SkipReason.DuplicateAtDestination or SkipReason.DuplicateInPlan),
+                FreeSpace(fileSystem, plan.ArchiveRoot), notes,
+                DescribeBlocking(outcome.Issues.Where(i => i.Severity == Severity.Error).ToList()),
+                FolderNodeViewModel.Build(plan));
+        }
+
+        private static long? FreeSpace(IFileSystem fileSystem, string archiveRoot)
+        {
+            try
+            {
+                return fileSystem.GetAvailableFreeSpace(archiveRoot);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+            {
+                return null;
+            }
         }
     }
 }

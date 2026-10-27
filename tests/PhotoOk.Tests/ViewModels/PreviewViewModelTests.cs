@@ -1,6 +1,7 @@
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PhotoOk.Core.Hashing;
+using PhotoOk.Core.IO;
 using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Scanning;
@@ -63,10 +64,11 @@ public class PreviewViewModelTests
     private async Task<ScanOutcome> ScanAsync() => await _workflow.ScanAsync(_settings, null, CancellationToken.None);
 
     private async Task<PreviewViewModel> CreateAsync(ScanOutcome? scan = null,
-        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null)
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null,
+        IFileSystem? fileSystem = null)
     {
         scan ??= await ScanAsync();
-        var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs,
+        var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, fileSystem ?? _fs, _thumbnails, _dialogs,
             new FileLog(_fs, LogFolder),
             createRun: (plan, errors) =>
             {
@@ -113,6 +115,7 @@ public class PreviewViewModelTests
         Assert.Equal(3, vm.TransferCount);
         Assert.Equal(9, vm.TransferBytes);
         Assert.Equal(50 * Gb, vm.FreeBytes);
+        Assert.Equal("50.0 GB", vm.FreeSpaceText);
         Assert.Null(vm.BlockingReason);
         Assert.Empty(vm.ScanErrors);
         Assert.Null(vm.ScanErrorNotice);
@@ -362,5 +365,66 @@ public class PreviewViewModelTests
 
         vm.SelectedThumbnail = vm.Thumbnails[3];
         Assert.Equal("P03.JPG", vm.Detail!.FileName);
+    }
+
+    [Fact]
+    public async Task Cards_DoNotRequestThumbnails_UntilRead()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1], Oct14);
+        AddPhoto(@"E:\DCIM\C.JPG", [3], Oct15);
+
+        var vm = await CreateAsync();
+
+        // 선택된 촬영의 격자만 요청했다. 카드는 아직 아무도 그리지(읽지) 않았다.
+        Assert.Equal([@"E:\DCIM\A.JPG"], _thumbnails.Requests);
+
+        _ = vm.Sessions[1].Thumbnail;
+        _ = vm.Sessions[1].Thumbnail;
+
+        Assert.Equal([@"E:\DCIM\A.JPG", @"E:\DCIM\C.JPG"], _thumbnails.Requests);
+    }
+
+    [Fact]
+    public async Task Grid_Thumbnails_RequestedOnSelection_WithoutCardRequests()
+    {
+        for (var day = 0; day < 30; day++)
+        {
+            AddPhoto($@"E:\DCIM\D{day:00}.JPG", [(byte)day], Oct14.AddDays(day));
+        }
+
+        AddPhoto(@"E:\DCIM\D05b.JPG", [200], Oct14.AddDays(5).AddMinutes(1));
+        var vm = await CreateAsync();
+
+        vm.SelectedSession = vm.Sessions[5];
+
+        // 30장의 카드 썸네일이 앞에 쌓이지 않고, 격자 요청만 차례대로 나간다.
+        Assert.Equal([@"E:\DCIM\D00.JPG", @"E:\DCIM\D05.JPG", @"E:\DCIM\D05b.JPG"], _thumbnails.Requests);
+    }
+
+    [Fact]
+    public async Task Review_Files_NotCountedOnDateCards()
+    {
+        AddStandardPhotos();
+        _fs.AddFile(@"E:\DCIM\B.xmp", [7]); // B.JPG에 딸린 사이드카
+
+        var vm = await CreateAsync();
+
+        Assert.Equal(["2026-10-14 · 3장", "2026-10-15 · 1장", "판단 필요 · 1장"], vm.Sessions.Select(c => c.Title));
+        Assert.Equal(3, Node(vm, "2026", "2026-10-14").FileCount);
+        Assert.DoesNotContain(vm.Sessions, c => !c.IsReviewGroup && c.Files.Contains(@"E:\DCIM\D.JPG"));
+        Assert.Equal([@"E:\DCIM\D.JPG"], vm.Sessions[^1].Files);
+    }
+
+    [Fact]
+    public async Task FreeSpace_Unknown_ShowsText()
+    {
+        AddStandardPhotos();
+        var hooked = new HookedFileSystem(_fs) { FreeSpace = _ => throw new IOException("드라이브 없음") };
+
+        var vm = await CreateAsync(fileSystem: hooked);
+
+        Assert.Equal(0, vm.FreeBytes);
+        Assert.Equal("알 수 없음", vm.FreeSpaceText);
+        Assert.Null(vm.BlockingReason); // 계획 쪽 점검은 진짜(가짜) 파일 시스템으로 했다
     }
 }

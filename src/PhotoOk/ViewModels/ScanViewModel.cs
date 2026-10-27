@@ -74,11 +74,19 @@ public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
 
             var progress = new Progress<int>(n => FilesRead = n);
             var scan = await _workflow.ScanAsync(_settings, progress, _cts.Token);
+
+            // 스캔이 막 끝난 뒤에 취소를 눌렀어도(창 닫기 포함) 사용자는 멈추기를 골랐으므로 미리보기로 가지 않는다.
+            if (_cts.IsCancellationRequested)
+            {
+                TryNavigate(_createSource);
+                return;
+            }
+
             _shell.Navigate(_createPreview(scan));
         }
         catch (OperationCanceledException) when (_cts.IsCancellationRequested)
         {
-            _shell.Navigate(_createSource());
+            TryNavigate(_createSource);
         }
         catch (Exception ex)
         {
@@ -113,7 +121,7 @@ public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
     }
 
     /// <summary>
-    /// 오류 처리 도중이라 화면 팩토리가 또 실패해도 안내 창은 띄울 수 있게 한다.
+    /// 화면을 바꾸되 예외를 던지지 않는다(로그만 남긴다). 취소·오류 처리 중에 화면 팩토리가 실패해도 작업을 끝내고 안내 창은 띄울 수 있게 한다.
     /// </summary>
     private void TryNavigate(Func<ObservableObject> create)
     {

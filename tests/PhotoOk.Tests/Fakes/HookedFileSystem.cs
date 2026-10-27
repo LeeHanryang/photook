@@ -70,5 +70,8 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
 
     public string GetVolumeRoot(string path) => inner.GetVolumeRoot(path);
 
-    public long GetAvailableFreeSpace(string path) => inner.GetAvailableFreeSpace(path);
+    /// <summary>정하면 여유 공간 조회를 이것으로 대신한다(예: 예외를 던져 알 수 없는 상황을 흉내 낸다).</summary>
+    public Func<string, long>? FreeSpace { get; set; }
+
+    public long GetAvailableFreeSpace(string path) => FreeSpace is { } freeSpace ? freeSpace(path) : inner.GetAvailableFreeSpace(path);
 }

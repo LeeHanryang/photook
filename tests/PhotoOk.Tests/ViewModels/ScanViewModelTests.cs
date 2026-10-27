@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PhotoOk.Core.Hashing;
@@ -164,6 +165,79 @@ public class ScanViewModelTests
         Assert.DoesNotContain("boom", error.Message, StringComparison.Ordinal);
         Assert.Contains(_fs.AllFiles(), p => p.StartsWith(LogFolder, StringComparison.OrdinalIgnoreCase));
         Assert.Equal(1, busyEnded);
+    }
+
+    /// <summary>보낸 작업을 쌓아 두고 테스트가 직접 돌린다. 스캔이 끝난 뒤 이어지는 작업 직전에 끼어들기 위해 쓴다.</summary>
+    private sealed class QueueContext : SynchronizationContext
+    {
+        private int _posted;
+
+        public BlockingCollection<(SendOrPostCallback Callback, object? State)> Queue { get; } = new();
+
+        public int Posted => Volatile.Read(ref _posted);
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            Interlocked.Increment(ref _posted);
+            Queue.Add((d, state));
+        }
+
+        public override void Send(SendOrPostCallback d, object? state) => d(state);
+
+        public void RunOne()
+        {
+            var work = Queue.Take();
+            work.Callback(work.State);
+        }
+
+        public void RunAll()
+        {
+            while (Queue.TryTake(out var work))
+            {
+                work.Callback(work.State);
+            }
+        }
+    }
+
+    [Fact]
+    public void Scan_CancelAfterCompletion_DoesNotNavigateToPreview()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1], Oct14);
+        AddPhoto(@"E:\DCIM\B.JPG", [2], Oct14);
+        var previous = SynchronizationContext.Current;
+        var context = new QueueContext();
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var vm = Create();
+            var busyEnded = 0;
+            vm.BusyEnded += (_, _) => busyEnded++;
+
+            var running = vm.StartAsync();
+            Assert.Equal(1, context.Posted); // 처음 양보
+            context.RunOne(); // 스캔 시작
+
+            // 진행률 보고 2번 + 스캔 뒤에 이어지는 작업 1번이 쌓이면 스캔은 이미 결과를 돌려준 것이다.
+            var deadline = DateTime.UtcNow + Wait;
+            while (context.Posted < 1 + 2 + 1 && DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(5);
+            }
+
+            Assert.Equal(4, context.Posted);
+            vm.Cancel();
+            context.RunAll();
+
+            Assert.True(running.IsCompleted);
+            Assert.Same(_sourceScreen, _shell.Current);
+            Assert.Empty(_previewRequests);
+            Assert.False(vm.IsBusy);
+            Assert.Equal(1, busyEnded);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
     }
 
     [Fact]

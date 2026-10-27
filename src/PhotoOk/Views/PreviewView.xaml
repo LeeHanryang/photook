@@ -186,7 +186,9 @@
 
             <DockPanel Grid.Column="1" Margin="0,0,12,0">
                 <TextBlock DockPanel.Dock="Top" Text="정리 후 폴더" Style="{StaticResource PaneTitle}" />
-                <TreeView ItemsSource="{Binding FolderTree}">
+                <TreeView ItemsSource="{Binding FolderTree}"
+                          VirtualizingPanel.IsVirtualizing="True"
+                          VirtualizingPanel.VirtualizationMode="Recycling">
                     <TreeView.ItemContainerStyle>
                         <Style TargetType="TreeViewItem">
                             <Setter Property="IsExpanded" Value="True" />
