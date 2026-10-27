@@ -335,6 +335,77 @@ public class JournalTests
         Assert.Single(state.Operations);
     }
 
+    private const string TornCompletedWithBrace =
+        "{\"runId\":\"x\",\"event\":\"Completed\",\"opId\":\"op-000001\",\"destination\":\"a}";
+
+    /// <summary>RunStarted, op-000001의 Planned·Started를 정상 줄로 쓰고, 그 뒤에 <paramref name="tail"/>을 그대로 붙인다.</summary>
+    private void WriteRunWithRawTail(string tail)
+    {
+        var writer = new JournalWriter(_fs, new[] { _archivePath });
+        writer.Write(Entry(JournalEvent.RunStarted, destination: Archive));
+        writer.Write(Entry(JournalEvent.Planned, "op-000001", OperationKind.Copy, @"E:\a.jpg", @"D:\사진 아카이브\a.jpg", 5));
+        writer.Write(Entry(JournalEvent.Started, "op-000001"));
+        var bytes = _fs.ReadAllBytes(_archivePath).Concat(System.Text.Encoding.UTF8.GetBytes(tail)).ToArray();
+        _fs.AddFile(_archivePath, bytes);
+    }
+
+    [Fact]
+    public void Load_IgnoresUnterminatedLastLine_EvenIfItEndsWithBrace()
+    {
+        WriteRunWithRawTail(TornCompletedWithBrace);
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        var op = Assert.Single(state.Operations);
+        Assert.Equal("op-000001", op.Operation.Id);
+        Assert.NotEqual(OpStatus.Completed, op.Status);
+        Assert.Equal(OpStatus.Started, op.Status);
+        Assert.Equal(3, state.EntryCount);
+    }
+
+    [Fact]
+    public void Load_IgnoresUnterminatedLastLine_EvenIfItIsCompleteJson()
+    {
+        // 줄바꿈까지 쓰기 전에 끊겼다면 그 줄은 기록된 것으로 보지 않는다(내용과 상관없이).
+        var complete = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(complete);
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Started, Assert.Single(state.Operations).Status);
+        Assert.Equal(3, state.EntryCount);
+    }
+
+    [Fact]
+    public void Load_IgnoresUnterminatedLastLine_EndingWithCarriageReturnOnly()
+    {
+        var complete = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(complete + "\r");
+
+        Assert.Equal(OpStatus.Started, Assert.Single(JournalReader.Load(_fs, _archivePath).Operations).Status);
+    }
+
+    [Fact]
+    public void Load_StillThrows_OnTerminatedCorruptLineEndingWithBrace()
+    {
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n");
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("4번째 줄", ex.Message);
+    }
+
+    [Fact]
+    public void Load_ReadsTerminatedLastLine_AsBefore()
+    {
+        var complete = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(complete + "\n");
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Completed, Assert.Single(state.Operations).Status);
+        Assert.Equal(4, state.EntryCount);
+    }
+
     [Fact]
     public void Write_StopsWritingToPath_AfterItFails()
     {

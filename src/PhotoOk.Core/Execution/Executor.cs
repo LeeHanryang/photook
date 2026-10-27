@@ -31,10 +31,11 @@ public sealed class Executor(ExecutionContext context)
     internal const string UndoStartedMessage = "되돌리기를 시작한 기록은 이어 할 수 없습니다";
     internal const string PlanIncompleteMessage = "계획 기록이 끝나지 않아 이어 할 수 없습니다. 다시 계획해 주세요";
     internal const string JournalCopiesDifferMessage = "기록 사본이 서로 달라 더 긴 기록을 사용했습니다";
+    internal const string TimestampNotKeptMessage = "원본 날짜를 유지하지 못했습니다";
 
     private const int BufferSize = 1024 * 1024;
 
-    public ExecutionResult Execute(Plan plan, CancellationToken ct = default)
+    public ExecutionResult Execute(Plan plan, CancellationToken ct = default, IProgress<ExecutionProgress>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var fs = context.FileSystem;
@@ -48,7 +49,11 @@ public sealed class Executor(ExecutionContext context)
         var runId = JournalPaths.NewRunId(context.UtcNow());
         var journal = new JournalWriter(fs,
             [JournalPaths.InArchive(plan.ArchiveRoot, runId), JournalPaths.InAppData(context.AppDataRoot, runId)]);
-        var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId));
+        var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId))
+        {
+            Total = plan.Operations.Count,
+            Progress = progress,
+        };
 
         // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다. 작업이 수만 개여도 사본마다 한 번에 쓰고 한 번만 flush한다.
         // RunStarted의 Length에는 계획한 작업 수를 적는다. 이어 하기는 이 수만큼 Planned가 있어야 계획이 다 기록된 것으로 본다
@@ -70,8 +75,11 @@ public sealed class Executor(ExecutionContext context)
     /// 디스크 상태와 맞춰 본 뒤 끝맺는다(맞춰 보기는 일반 실행을 포함하므로, 이어 하기를 여러 번 해도 결과가 같다).
     /// 실행 전 점검(Preflight)은 다시 하지 않는다: 이미 옮긴 파일의 원본 자리가 비어 있는 것을 오류로 보기 때문이다.
     /// 드라이브가 없으면 작업마다 확인해 Interrupted로 멈춘다.
+    /// 되돌리기를 시작한 기록이면 아무것도 하지 않고(기록에도 쓰지 않는다) <see cref="RunOutcome.UndoStarted"/>를 돌려준다.
+    /// 진행률은 이전 실행에서 끝난(Completed·Skipped) 작업을 끝난 수에 넣고 센다.
     /// </summary>
-    public ExecutionResult Resume(string journalPath, CancellationToken ct = default)
+    public ExecutionResult Resume(string journalPath, CancellationToken ct = default,
+        IProgress<ExecutionProgress>? progress = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(journalPath);
         var fs = context.FileSystem;
@@ -93,7 +101,7 @@ public sealed class Executor(ExecutionContext context)
         // 되돌리기가 아무 작업 결과도 남기지 못했더라도(일시적인 사유뿐) UndoStarted가 있으면 거부한다.
         if (state.UndoStarted || state.Operations.Any(o => o.Status is OpStatus.Undone or OpStatus.UndoSkipped))
         {
-            throw new InvalidOperationException(UndoStartedMessage);
+            return new ExecutionResult(state.RunId, RunOutcome.UndoStarted, 0, [], [], [UndoStartedMessage], path);
         }
 
         var alreadyDone = state.Operations.Count(o => o.Status is OpStatus.Completed or OpStatus.Skipped);
@@ -106,6 +114,9 @@ public sealed class Executor(ExecutionContext context)
         var run = new Run(state.RunId, state.ArchiveRoot, journal, new SafeDelete(fs, state.ArchiveRoot, state.RunId))
         {
             Succeeded = alreadyDone,
+            Done = alreadyDone,
+            Total = state.Operations.Count,
+            Progress = progress,
         };
         run.Warnings.AddRange(warnings);
 
@@ -159,7 +170,7 @@ public sealed class Executor(ExecutionContext context)
 
     /// <summary>
     /// 작업 하나를 Started → 실행 → Completed/Skipped/Failed로 기록하며 실행한다.
-    /// 실행을 계속해도 되면 true, 원본 드라이브가 빠져 멈춰야 하면 false.
+    /// 실행을 계속해도 되면 true(작업이 끝났으므로 진행률을 보고한다), 원본 드라이브가 빠져 멈춰야 하면 false.
     /// 모의 크래시나 <see cref="JournalUnavailableException"/> 같은 다른 예외는 잡지 않는다.
     /// </summary>
     private bool ExecuteOperation(Run run, PlannedOperation op) =>
@@ -221,6 +232,7 @@ public sealed class Executor(ExecutionContext context)
                 break;
         }
 
+        run.ReportDone(op);
         return true;
     }
 
@@ -241,6 +253,7 @@ public sealed class Executor(ExecutionContext context)
     /// 임시 이름에 쓰면서 원본 해시를 구하고 → 임시 파일을 다시 읽어 비교하고 → 일치하면 원본의 마지막 쓰기 시각을 임시 파일에 옮긴 뒤
     /// 진짜 이름으로 옮긴다(촬영 정보가 없는 파일은 이 시각으로 날짜를 정하므로, 다시 정리해도 같은 날짜에 놓이게 한다).
     /// 실패한 임시 파일은 격리 폴더로 치운다. 이어 하기가 다시 복사할 때도 이 경로를 쓴다.
+    /// 시각을 넣지 못해도(파일 시스템·권한) 내용 검증은 이미 끝났으므로 실패로 만들지 않고, 이름까지 붙였을 때 경고로 남긴다.
     /// </summary>
     private StepResult Copy(Run run, PlannedOperation op)
     {
@@ -298,7 +311,7 @@ public sealed class Executor(ExecutionContext context)
                 return StepResult.Failed(VerificationFailedMessage);
             }
 
-            fs.SetLastWriteTimeUtc(temp, sourceTime);
+            var timeKept = TrySetLastWriteTime(temp, sourceTime);
 
             try
             {
@@ -308,6 +321,11 @@ public sealed class Executor(ExecutionContext context)
             {
                 run.SafeDelete.Quarantine(temp);
                 return StepResult.Failed(DestinationTakenMessage);
+            }
+
+            if (!timeKept)
+            {
+                run.Warnings.Add($"{TimestampNotKeptMessage}: {op.Destination}");
             }
 
             return StepResult.Completed(sourceHash);
@@ -489,6 +507,20 @@ public sealed class Executor(ExecutionContext context)
         }
     }
 
+    /// <summary>검증을 마친 임시 파일에 원본의 마지막 쓰기 시각을 넣는다. 넣지 못하면 false(복사는 계속한다).</summary>
+    private bool TrySetLastWriteTime(string temp, DateTime sourceTime)
+    {
+        try
+        {
+            context.FileSystem.SetLastWriteTimeUtc(temp, sourceTime);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>실패한 복사가 남긴 임시 파일을 격리한다. 그마저 안 되면 경고로 남기고 이어 하기·되돌리기에 맡긴다.</summary>
     private void TryQuarantine(Run run, string temp)
     {
@@ -539,6 +571,20 @@ public sealed class Executor(ExecutionContext context)
         public List<string> Warnings { get; } = [];
 
         public int Succeeded { get; set; }
+
+        /// <summary>끝난 작업 수(완료·건너뜀·실패). 이어 하기는 이전 실행에서 끝난 작업부터 센다.</summary>
+        public int Done { get; set; }
+
+        /// <summary>계획한 작업 수.</summary>
+        public int Total { get; init; }
+
+        public IProgress<ExecutionProgress>? Progress { get; init; }
+
+        public void ReportDone(PlannedOperation op)
+        {
+            Done++;
+            Progress?.Report(new ExecutionProgress(Done, Total, op.Destination));
+        }
 
         public ExecutionResult ToResult(RunOutcome outcome, IReadOnlyList<PreflightIssue> issues) =>
             new(RunId, outcome, Succeeded, Failures.ToList(), issues, Journal.Warnings.Concat(Warnings).ToList(),

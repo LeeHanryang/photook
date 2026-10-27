@@ -511,7 +511,7 @@ public class ResumeTests
     }
 
     [Fact]
-    public void Resume_Refuses_AfterUndoThatWroteOnlyUndoStarted()
+    public void Resume_ReturnsUndoStarted_AfterUndoThatWroteOnlyUndoStarted()
     {
         // 첫 복사를 마친 뒤 취소된 실행. 원본 드라이브를 뺀 채 되돌리기를 하면 모든 사유가 일시적이라 작업 기록은 남지 않는다.
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 28);
@@ -542,16 +542,25 @@ public class ResumeTests
         Assert.Equal(JournalEvent.UndoStarted, entries[^1].Event);
         Assert.True(JournalReader.Load(_fs, run.JournalPath!).UndoStarted);
         var opsBefore = _fs.MutatingOps;
+        var journalBefore = _fs.ReadAllBytes(run.JournalPath!);
+        var progress = new SyncProgress<ExecutionProgress>();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => NewExecutor().Resume(run.JournalPath!));
+        var result = NewExecutor().Resume(run.JournalPath!, progress: progress);
 
-        Assert.Equal("되돌리기를 시작한 기록은 이어 할 수 없습니다", ex.Message);
+        Assert.Equal(RunOutcome.UndoStarted, result.Outcome);
+        Assert.Equal(run.RunId, result.RunId);
+        Assert.Equal(0, result.Succeeded);
+        Assert.Empty(result.Failures);
+        Assert.Equal(["되돌리기를 시작한 기록은 이어 할 수 없습니다"], result.Warnings);
+        Assert.Equal(run.JournalPath, result.JournalPath);
         Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.Equal(journalBefore, _fs.ReadAllBytes(run.JournalPath!));
         Assert.False(_fs.FileExists(@"D:\Archive\2026\b.jpg"));
+        Assert.Empty(progress.Reports);
     }
 
     [Fact]
-    public void Resume_Refuses_RunThatWasBeingUndone()
+    public void Resume_ReturnsUndoStarted_InsteadOfThrowing()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 26);
         var ops = new[]
@@ -562,11 +571,73 @@ public class ResumeTests
         var journal = WriteJournal(ops,
             ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null), ("op1", JournalEvent.Undone, null));
         var opsBefore = _fs.MutatingOps;
+        var journalBefore = _fs.ReadAllBytes(journal);
+        var filesBefore = _fs.AllFiles().ToList();
 
-        var ex = Assert.Throws<InvalidOperationException>(() => NewExecutor().Resume(journal));
+        var result = NewExecutor().Resume(journal);
 
-        Assert.Equal("되돌리기를 시작한 기록은 이어 할 수 없습니다", ex.Message);
+        Assert.Equal(RunOutcome.UndoStarted, result.Outcome);
+        Assert.Equal(RunId, result.RunId);
+        Assert.Equal(0, result.Succeeded);
+        Assert.Equal(journal, result.JournalPath);
+        Assert.Empty(result.Failures);
+        Assert.Empty(result.PreflightIssues);
+        Assert.Equal(["되돌리기를 시작한 기록은 이어 할 수 없습니다"], result.Warnings);
         Assert.Equal(opsBefore, _fs.MutatingOps);
+        Assert.Equal(journalBefore, _fs.ReadAllBytes(journal));
+        Assert.Equal(filesBefore, _fs.AllFiles().ToList());
+        Assert.False(_fs.FileExists(@"D:\Archive\2026\b.jpg"));
+    }
+
+    // ------------------------------------------------------------------
+    // 진행률, 날짜 유지 실패
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Resume_ReportsProgress_CountingAlreadyFinishedOperations()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 50);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 51);
+        var c = AddFile(@"E:\DCIM\c.jpg", 300, 52);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.AddFile(@"D:\Archive\2026\a.jpg", a);
+        var ops = new[]
+        {
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
+            Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length),
+        };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null),
+            ("op2", JournalEvent.Started, null));
+        var progress = new SyncProgress<ExecutionProgress>();
+
+        var result = NewExecutor().Resume(journal, progress: progress);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Equal(
+            [
+                new ExecutionProgress(2, 3, @"D:\Archive\2026\b.jpg"),
+                new ExecutionProgress(3, 3, @"D:\Archive\2026\c.jpg"),
+            ],
+            progress.Reports);
+    }
+
+    [Fact]
+    public void Resume_CopySucceedsWithWarning_WhenTimestampCannotBeSet()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 53);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        var ops = new[] { Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length) };
+        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null));
+        _fs.FailSetTimeOf(@"D:\Archive\2026\a.jpg.photook-tmp");
+
+        var result = NewExecutor().Resume(journal);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Failures);
+        Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        Assert.Contains("원본 날짜를 유지하지 못했습니다: " + @"D:\Archive\2026\a.jpg", result.Warnings);
+        Assert.Equal(OpStatus.Completed, StateOf(JournalReader.Load(_fs, journal), "op1").Status);
     }
 
     [Fact]

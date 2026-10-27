@@ -10,10 +10,12 @@ public static class JournalReader
     /// <summary>
     /// 기록 파일 하나를 읽어 실행 상태를 복원한다. 닫는 중괄호 없이 끝나 읽을 수 없는 줄(쓰다 만 줄)은 무시하고,
     /// 중괄호로 끝나는데 읽을 수 없는 줄은 손상이므로 <see cref="InvalidDataException"/>을 던진다.
+    /// 파일이 줄바꿈 문자로 끝나지 않으면 마지막 비지 않은 줄은 줄바꿈까지 쓰기 전에 끊긴 것이므로, 내용과 상관없이(중괄호로 끝나거나
+    /// 읽을 수 있는 줄이어도) 기록되지 않은 것으로 보고 무시한다.
     /// </summary>
     public static RunState Load(IFileSystem fileSystem, string path)
     {
-        var lines = ReadLines(fileSystem, path);
+        var (lines, endsWithNewline) = ReadLines(fileSystem, path);
 
         var lastNonEmpty = -1;
         for (var i = lines.Count - 1; i >= 0; i--)
@@ -23,6 +25,11 @@ public static class JournalReader
                 lastNonEmpty = i;
                 break;
             }
+        }
+
+        if (!endsWithNewline)
+        {
+            lastNonEmpty--;
         }
 
         string? runId = null;
@@ -139,16 +146,25 @@ public static class JournalReader
         }
     }
 
-    private static List<string> ReadLines(IFileSystem fileSystem, string path)
+    /// <summary>줄 목록과, 파일이 줄바꿈 문자(LF)로 끝나는지. 빈 파일은 줄바꿈으로 끝나지 않는다.</summary>
+    private static (List<string> Lines, bool EndsWithNewline) ReadLines(IFileSystem fileSystem, string path)
     {
-        var lines = new List<string>();
-        using var stream = fileSystem.OpenRead(path);
-        using var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
-        while (reader.ReadLine() is { } line)
+        string text;
+        using (var stream = fileSystem.OpenRead(path))
+        using (var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true))
         {
-            lines.Add(line);
+            text = reader.ReadToEnd();
         }
 
-        return lines;
+        var lines = new List<string>();
+        using (var lineReader = new StringReader(text))
+        {
+            while (lineReader.ReadLine() is { } line)
+            {
+                lines.Add(line);
+            }
+        }
+
+        return (lines, text.Length > 0 && text[^1] == '\n');
     }
 }

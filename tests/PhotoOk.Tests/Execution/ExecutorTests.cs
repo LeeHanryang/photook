@@ -648,4 +648,120 @@ public class ExecutorTests
         Assert.False(_fs.FileExists(@"D:\Archive\2026\a.jpg"));
         Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
     }
+
+    // ------------------------------------------------------------------
+    // 진행률
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Execute_ReportsProgress_ForEveryOperation()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 40);
+        var b = AddSource(@"E:\DCIM\b.jpg", 200, 41);
+        _fs.AddDirectory(@"D:\Archive\2025");
+        _fs.FailReadsOf(@"E:\DCIM\b.jpg");
+        var progress = new SyncProgress<ExecutionProgress>();
+
+        var result = NewExecutor().Execute(PlanOf(
+            Mkdir("op1", @"D:\Archive\2026"),
+            Mkdir("op2", @"D:\Archive\2025"),                                    // 이미 있다 → 건너뜀
+            Copy("op3", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op4", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),  // 읽기 실패 → 실패
+            Move("op5", @"D:\Archive\2026\a.jpg", @"D:\Archive\2025\a.jpg", a.Length)), progress: progress);
+
+        Assert.Equal(RunOutcome.CompletedWithFailures, result.Outcome);
+        Assert.Equal(4, result.Succeeded);
+        Assert.Equal(
+            [
+                new ExecutionProgress(1, 5, @"D:\Archive\2026"),
+                new ExecutionProgress(2, 5, @"D:\Archive\2025"),
+                new ExecutionProgress(3, 5, @"D:\Archive\2026\a.jpg"),
+                new ExecutionProgress(4, 5, @"D:\Archive\2026\b.jpg"),
+                new ExecutionProgress(5, 5, @"D:\Archive\2025\a.jpg"),
+            ],
+            progress.Reports);
+    }
+
+    [Fact]
+    public void Execute_ReportsNoProgress_ForOperationsNotAttempted()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 42);
+        var b = AddSource(@"E:\DCIM\b.jpg", 200, 43);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        using var cts = new CancellationTokenSource();
+        _hooked.AfterMove = (_, _) => cts.Cancel(); // 첫 작업의 마지막 단계 직후
+        var progress = new SyncProgress<ExecutionProgress>();
+
+        var result = NewExecutor().Execute(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length)), cts.Token, progress);
+
+        Assert.Equal(RunOutcome.Cancelled, result.Outcome);
+        Assert.Equal([new ExecutionProgress(1, 2, @"D:\Archive\2026\a.jpg")], progress.Reports);
+    }
+
+    [Fact]
+    public void Execute_ReportsNoProgress_WhenBlockedByPreflight()
+    {
+        var progress = new SyncProgress<ExecutionProgress>();
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\missing.jpg", @"D:\Archive\a.jpg", 10)),
+            progress: progress);
+
+        Assert.Equal(RunOutcome.BlockedByPreflight, result.Outcome);
+        Assert.Empty(progress.Reports);
+    }
+
+    // ------------------------------------------------------------------
+    // 원본 날짜를 유지하지 못한 복사
+    // ------------------------------------------------------------------
+
+    [Fact]
+    public void Execute_CopySucceedsWithWarning_WhenTimestampCannotBeSet()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 3000, 44);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.FailSetTimeOf(@"D:\Archive\2026\a.jpg.photook-tmp");
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Equal(1, result.Succeeded);
+        Assert.Empty(result.Failures);
+        Assert.Equal(a, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
+        Assert.Empty(TempFiles());
+        Assert.Equal(["원본 날짜를 유지하지 못했습니다: " + @"D:\Archive\2026\a.jpg"], result.Warnings);
+
+        var state = JournalReader.Load(_fs, result.JournalPath!);
+        Assert.Equal(OpStatus.Completed, StateOf(state, "op1").Status);
+        Assert.NotNull(StateOf(state, "op1").Hash);
+        Assert.True(state.Finished);
+    }
+
+    [Fact]
+    public void Execute_DoesNotWarnAboutTimestamp_WhenRenameFailsAfterwards()
+    {
+        // 날짜를 못 넣은 뒤 이름 바꾸기 직전에 대상이 생기면 실패로 기록한다. 만든 대상이 없으므로 날짜 경고도 남기지 않는다.
+        var a = AddSource(@"E:\DCIM\a.jpg", 3000, 45);
+        _fs.AddDirectory(@"D:\Archive\2026");
+        _fs.FailSetTimeOf(@"D:\Archive\2026\a.jpg.photook-tmp");
+        var other = Bytes(10, 46);
+        _hooked.BeforeMove = (source, destination) =>
+        {
+            if (source.EndsWith(".photook-tmp", StringComparison.OrdinalIgnoreCase)
+                && destination.Equals(@"D:\Archive\2026\a.jpg", StringComparison.OrdinalIgnoreCase))
+            {
+                _fs.AddFile(destination, other);
+            }
+        };
+
+        var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
+
+        Assert.Equal(RunOutcome.CompletedWithFailures, result.Outcome);
+        Assert.Equal("대상에 같은 이름의 파일이 생겼습니다", Assert.Single(result.Failures).Message);
+        Assert.Equal(other, _fs.ReadAllBytes(@"D:\Archive\2026\a.jpg"));
+        Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
+        Assert.DoesNotContain(result.Warnings, w => w.StartsWith("원본 날짜를 유지하지 못했습니다", StringComparison.Ordinal));
+    }
 }

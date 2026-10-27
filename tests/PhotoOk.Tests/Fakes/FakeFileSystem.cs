@@ -32,6 +32,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly Dictionary<string, long> _freeSpace = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReads = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _failSetTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _deniedDirs = new(StringComparer.OrdinalIgnoreCase);
     private readonly List<IHandle> _handles = new();
     private int? _crashAtOps;
@@ -141,7 +142,7 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
-    /// <summary>크래시 예약, <see cref="FailReadsOf"/>, <see cref="FailReadsAfterOpen"/>, <see cref="CorruptNextWrite"/>를 모두 해제한다. (분리된 볼륨은 <see cref="RestoreVolume"/>으로 되돌린다.)</summary>
+    /// <summary>크래시 예약, <see cref="FailReadsOf"/>, <see cref="FailReadsAfterOpen"/>, <see cref="FailSetTimeOf"/>, <see cref="CorruptNextWrite"/>를 모두 해제한다. (분리된 볼륨은 <see cref="RestoreVolume"/>으로 되돌린다.)</summary>
     public void ClearFault()
     {
         lock (_gate)
@@ -149,6 +150,7 @@ public sealed class FakeFileSystem : IFileSystem
             _crashAtOps = null;
             _failReads.Clear();
             _failReadsAfterOpen.Clear();
+            _failSetTimes.Clear();
             _corruptNextWrite = false;
         }
     }
@@ -168,6 +170,18 @@ public sealed class FakeFileSystem : IFileSystem
         lock (_gate)
         {
             _failReads.Add(Normalize(path));
+        }
+    }
+
+    /// <summary>
+    /// 이 경로의 <see cref="SetLastWriteTimeUtc"/>가 <see cref="IOException"/>을 던지게 한다(시각을 바꿀 수 없는 파일 시스템·권한).
+    /// 시도는 변경 작업으로 센다.
+    /// </summary>
+    public void FailSetTimeOf(string path)
+    {
+        lock (_gate)
+        {
+            _failSetTimes.Add(Normalize(path));
         }
     }
 
@@ -544,6 +558,11 @@ public sealed class FakeFileSystem : IFileSystem
             if (file.Writers > 0)
             {
                 throw new IOException($"다른 곳에서 쓰는 중인 파일입니다: {path}");
+            }
+
+            if (_failSetTimes.Contains(full))
+            {
+                throw new IOException($"파일 시각을 바꿀 수 없습니다: {path}");
             }
 
             file.LastWriteTimeUtc = ToUtc(utc);
