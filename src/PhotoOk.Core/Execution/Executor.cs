@@ -51,7 +51,7 @@ public sealed class Executor(ExecutionContext context)
             [JournalPaths.InArchive(plan.ArchiveRoot, runId), JournalPaths.InAppData(context.AppDataRoot, runId)]);
         var run = new Run(runId, plan.ArchiveRoot, journal, new SafeDelete(fs, plan.ArchiveRoot, runId))
         {
-            Total = plan.Operations.Count,
+            Total = plan.Operations.Count(Run.IsFileOperation),
             Progress = progress,
         };
 
@@ -76,7 +76,7 @@ public sealed class Executor(ExecutionContext context)
     /// 실행 전 점검(Preflight)은 다시 하지 않는다: 이미 옮긴 파일의 원본 자리가 비어 있는 것을 오류로 보기 때문이다.
     /// 드라이브가 없으면 작업마다 확인해 Interrupted로 멈춘다.
     /// 되돌리기를 시작한 기록이면 아무것도 하지 않고(기록에도 쓰지 않는다) <see cref="RunOutcome.UndoStarted"/>를 돌려준다.
-    /// 진행률은 이전 실행에서 끝난(Completed·Skipped) 작업을 끝난 수에 넣고 센다.
+    /// 진행률은 이전 실행에서 끝난(Completed·Skipped) 파일 작업을 끝난 수에 넣고 센다.
     /// </summary>
     public ExecutionResult Resume(string journalPath, CancellationToken ct = default,
         IProgress<ExecutionProgress>? progress = null)
@@ -114,8 +114,8 @@ public sealed class Executor(ExecutionContext context)
         var run = new Run(state.RunId, state.ArchiveRoot, journal, new SafeDelete(fs, state.ArchiveRoot, state.RunId))
         {
             Succeeded = alreadyDone,
-            Done = alreadyDone,
-            Total = state.Operations.Count,
+            Done = state.Operations.Count(o => Run.IsFileOperation(o.Operation) && o.Status is OpStatus.Completed or OpStatus.Skipped),
+            Total = state.Operations.Count(o => Run.IsFileOperation(o.Operation)),
             Progress = progress,
         };
         run.Warnings.AddRange(warnings);
@@ -572,16 +572,24 @@ public sealed class Executor(ExecutionContext context)
 
         public int Succeeded { get; set; }
 
-        /// <summary>끝난 작업 수(완료·건너뜀·실패). 이어 하기는 이전 실행에서 끝난 작업부터 센다.</summary>
+        /// <summary>끝난 파일 작업 수(완료·건너뜀·실패). 이어 하기는 이전 실행에서 끝난 파일 작업부터 센다.</summary>
         public int Done { get; set; }
 
-        /// <summary>계획한 작업 수.</summary>
+        /// <summary>계획한 파일 작업 수(폴더 만들기 제외).</summary>
         public int Total { get; init; }
 
         public IProgress<ExecutionProgress>? Progress { get; init; }
 
+        /// <summary>진행률에 세는 작업인지(복사·이동). 폴더 만들기는 세지 않는다.</summary>
+        public static bool IsFileOperation(PlannedOperation op) => op.Kind != OperationKind.CreateDirectory;
+
         public void ReportDone(PlannedOperation op)
         {
+            if (!IsFileOperation(op))
+            {
+                return;
+            }
+
             Done++;
             Progress?.Report(new ExecutionProgress(Done, Total, op.Destination));
         }

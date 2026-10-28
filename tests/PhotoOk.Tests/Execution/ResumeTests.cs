@@ -594,7 +594,7 @@ public class ResumeTests
     // ------------------------------------------------------------------
 
     [Fact]
-    public void Resume_ReportsProgress_CountingAlreadyFinishedOperations()
+    public void Resume_ReportsProgress_CountingAlreadyFinishedFileOperations_NotFolders()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 50);
         var b = AddFile(@"E:\DCIM\b.jpg", 200, 51);
@@ -603,17 +603,20 @@ public class ResumeTests
         _fs.AddFile(@"D:\Archive\2026\a.jpg", a);
         var ops = new[]
         {
+            Mkdir("op0", @"D:\Archive\2026"),
             Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length),
             Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\2026\b.jpg", b.Length),
             Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\2026\c.jpg", c.Length),
+            Mkdir("op4", @"D:\Archive\2025"), // 남은 폴더 만들기는 하지만 세지 않는다
         };
-        var journal = WriteJournal(ops, ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null),
-            ("op2", JournalEvent.Started, null));
+        var journal = WriteJournal(ops, ("op0", JournalEvent.Started, null), ("op0", JournalEvent.Completed, null),
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, null), ("op2", JournalEvent.Started, null));
         var progress = new SyncProgress<ExecutionProgress>();
 
         var result = NewExecutor().Resume(journal, progress: progress);
 
         Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.True(_fs.DirectoryExists(@"D:\Archive\2025"));
         Assert.Equal(
             [
                 new ExecutionProgress(2, 3, @"D:\Archive\2026\b.jpg"),

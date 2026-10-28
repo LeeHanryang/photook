@@ -606,7 +606,10 @@ public class RunViewModelTests
 
         await vm.StartAsync();
 
-        Assert.Equal(3, vm.Done); // 진행률은 폴더 만들기도 센다
+        // 진행률도 폴더 만들기를 세지 않아 미리보기의 "복사 2개", "처리한 파일 2개"와 같은 수다.
+        Assert.Equal(2, vm.Done);
+        Assert.Equal(2, vm.Total);
+        Assert.Equal("2 / 2", vm.ProgressText);
         Assert.Equal("처리한 파일 2개", vm.SucceededFilesText);
     }
 
@@ -669,6 +672,40 @@ public class RunViewModelTests
         Assert.Equal(
             [@"원본 날짜를 유지하지 못했습니다: D:\Archive\2026\p1.jpg", @"원본 날짜를 유지하지 못했습니다: D:\Archive\2026\p3.jpg"],
             vm.WarningLines);
+    }
+
+    [Fact]
+    public async Task Progress_FromJournalResume_CountsFilesOnly_NotFolders()
+    {
+        var a = AddSource(@"E:\DCIM\a.jpg", 100, 1);
+        var b = AddSource(@"E:\DCIM\b.jpg", 120, 2);
+        var c = AddSource(@"E:\DCIM\c.jpg", 140, 3);
+        var vm = ForPlan(PlanOf(
+            Mkdir("op1", @"D:\Archive\2027"),
+            Mkdir("op2", @"D:\Archive\2028"),
+            Copy("op3", @"E:\DCIM\a.jpg", @"D:\Archive\2027\a.jpg", a.Length),
+            Copy("op4", @"E:\DCIM\b.jpg", @"D:\Archive\2027\b.jpg", b.Length),
+            Copy("op5", @"E:\DCIM\c.jpg", @"D:\Archive\2028\c.jpg", c.Length)));
+        var cancelled = false;
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (source.EndsWith(".photook-tmp", StringComparison.OrdinalIgnoreCase) && !cancelled)
+            {
+                cancelled = true;
+                vm.Cancel(); // 첫 파일을 마친 뒤 멈춘다
+            }
+        };
+
+        await vm.StartAsync();
+        Assert.Equal("1 / 3", vm.ProgressText);
+
+        _hooked.AfterMove = null;
+        var resumed = ForResume(ArchiveJournals().Single());
+        await resumed.StartAsync();
+
+        Assert.Equal("정리를 마쳤습니다", resumed.ResultTitle);
+        Assert.Equal("3 / 3", resumed.ProgressText);
+        Assert.Equal("처리한 파일 3개", resumed.SucceededFilesText);
     }
 
     [Fact]

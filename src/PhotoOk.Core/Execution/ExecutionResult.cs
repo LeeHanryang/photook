@@ -18,8 +18,9 @@ public sealed record ExecutionResult(string RunId, RunOutcome Outcome, int Succe
     IReadOnlyList<PreflightIssue> PreflightIssues, IReadOnlyList<string> Warnings, string? JournalPath);
 
 /// <summary>
-/// 실행 진행률. 작업 하나가 끝날 때마다(완료·건너뜀·실패) 보고한다. <see cref="Total"/>은 계획한 작업 수,
-/// <see cref="Done"/>은 지금까지 끝난 작업 수(이어 하기는 이전 실행에서 끝난 작업을 포함한다),
+/// 실행 진행률. 파일 작업(복사·이동) 하나가 끝날 때마다(완료·건너뜀·실패) 보고한다. 폴더 만들기는 보고하지도 세지도 않는다
+/// (미리보기의 파일 수, 결과의 "처리한 파일 N개"와 같은 기준). <see cref="Total"/>은 계획한 파일 작업 수,
+/// <see cref="Done"/>은 지금까지 끝난 파일 작업 수(이어 하기는 이전 실행에서 끝난 파일 작업을 포함한다),
 /// <see cref="CurrentPath"/>는 방금 끝난 작업의 대상 경로다.
 /// </summary>
 public sealed record ExecutionProgress(int Done, int Total, string? CurrentPath);

@@ -129,7 +129,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
 
     public IRelayCommand OpenHistoryCommand { get; }
 
-    /// <summary>"끝난 수 / 전체 수".</summary>
+    /// <summary>"끝난 파일 수 / 전체 파일 수". 폴더 만들기는 세지 않는다(미리보기의 파일 수와 같은 기준).</summary>
     public string ProgressText => string.Create(CultureInfo.InvariantCulture, $"{Done} / {Total}");
 
     /// <summary>방금 끝낸 파일의 이름(폴더 제외).</summary>

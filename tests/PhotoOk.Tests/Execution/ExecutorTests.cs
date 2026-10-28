@@ -654,7 +654,7 @@ public class ExecutorTests
     // ------------------------------------------------------------------
 
     [Fact]
-    public void Execute_ReportsProgress_ForEveryOperation()
+    public void Execute_ReportsProgress_ForEveryFileOperation_NotForFolders()
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 100, 40);
         var b = AddSource(@"E:\DCIM\b.jpg", 200, 41);
@@ -673,11 +673,10 @@ public class ExecutorTests
         Assert.Equal(4, result.Succeeded);
         Assert.Equal(
             [
-                new ExecutionProgress(1, 5, @"D:\Archive\2026"),
-                new ExecutionProgress(2, 5, @"D:\Archive\2025"),
-                new ExecutionProgress(3, 5, @"D:\Archive\2026\a.jpg"),
-                new ExecutionProgress(4, 5, @"D:\Archive\2026\b.jpg"),
-                new ExecutionProgress(5, 5, @"D:\Archive\2025\a.jpg"),
+                // 폴더 만들기는 세지 않는다: 미리보기의 "복사 N개"와 같은 수가 전체가 된다.
+                new ExecutionProgress(1, 3, @"D:\Archive\2026\a.jpg"),
+                new ExecutionProgress(2, 3, @"D:\Archive\2026\b.jpg"),
+                new ExecutionProgress(3, 3, @"D:\Archive\2025\a.jpg"),
             ],
             progress.Reports);
     }
