@@ -94,7 +94,7 @@ public partial class App : Application
     private static SourceViewModel CreateSourceScreen(AppServices services, ShellViewModel shell, string? driveRoot) =>
         new(shell, services.FileSystem, services.Presets, services.Paths.SettingsPath,
             AppSettingsStore.Load(services.FileSystem, services.Paths.SettingsPath), driveRoot,
-            services.FolderPicker, services.FilePicker, services.Dialogs,
+            services.FolderPicker, services.FilePicker, services.Dialogs, services.Log,
             createScan: settings => CreateScanScreen(services, shell, settings),
             createStart: () => CreateStartScreen(services, shell));
 

@@ -5,6 +5,7 @@ using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Settings;
 using PhotoOk.Core.Workflow;
+using PhotoOk.Services;
 using PhotoOk.Tests.Fakes;
 using PhotoOk.ViewModels;
 
@@ -20,6 +21,7 @@ public class SourceViewModelTests
     private const string NoPreset = "정리 방식을 고르세요";
     private const string MoveNoticeText = "다른 드라이브에서는 이동을 골라도 복사합니다";
     private const string PresetErrorTitle = "프리셋을 열 수 없습니다";
+    private const string LogFolder = @"L:\PhotoOk\logs";
 
     private readonly FakeFileSystem _fs = new();
     private readonly FakeFolderPicker _folders = new();
@@ -48,7 +50,7 @@ public class SourceViewModelTests
 
     private SourceViewModel Create(AppSettings? settings = null, string? driveRoot = null) =>
         new(_shell, _fs, new PresetLibrary(_fs, PresetFolder), SettingsPath, settings ?? AppSettings.Default, driveRoot,
-            _folders, _files, _dialogs,
+            _folders, _files, _dialogs, new FileLog(_fs, LogFolder),
             createScan: s =>
             {
                 _scanRequests.Add(s);
@@ -211,9 +213,51 @@ public class SourceViewModelTests
     [InlineData(@"E:\DCIM", @"D:\Archive")]
     public void Validation_SiblingWithSamePrefix_IsNotOverlap(string source, string archive)
     {
+        _fs.AddDirectory(archive);
         var vm = Create(Settings([source], archive));
 
         Assert.Null(vm.ValidationMessage);
+    }
+
+    [Theory]
+    [InlineData(@"Archive")]          // 손으로 고친 상대 경로
+    [InlineData(@"D:\없는 보관 폴더")]  // 사라진 폴더
+    public void Validation_ArchiveMustBeFullyQualifiedAndExist(string archive)
+    {
+        var vm = Create(Settings([@"E:\DCIM"], archive));
+
+        Assert.Equal("보관 폴더를 찾을 수 없습니다: " + archive, vm.ValidationMessage);
+        Assert.False(vm.NextCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public void Validation_ArchiveNotFound_ComesAfterChooseArchive()
+    {
+        var vm = Create(Settings([@"E:\DCIM"], archive: null));
+        Assert.Equal(NoArchive, vm.ValidationMessage);
+
+        vm.ArchiveRoot = @"D:\없음";
+        Assert.Equal(@"보관 폴더를 찾을 수 없습니다: D:\없음", vm.ValidationMessage);
+    }
+
+    [Fact]
+    public void Next_Blocked_ReRaisesValidation_WhenFolderVanished()
+    {
+        var vm = Create(Settings([@"E:\DCIM"], @"D:\Archive"));
+        Assert.True(vm.NextCommand.CanExecute(null));
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        var canExecuteChanges = 0;
+        vm.NextCommand.CanExecuteChanged += (_, _) => canExecuteChanges++;
+
+        _fs.RemoveVolume(@"E:\"); // 카드가 빠졌다(속성 변경 알림 없음)
+        vm.NextCommand.Execute(null);
+
+        Assert.Empty(_scanRequests);
+        Assert.Contains(nameof(SourceViewModel.ValidationMessage), raised);
+        Assert.True(canExecuteChanges > 0);
+        Assert.Equal(@"폴더를 찾을 수 없습니다: E:\DCIM", vm.ValidationMessage);
+        Assert.False(vm.NextCommand.CanExecute(null));
     }
 
     [Fact]
@@ -323,6 +367,10 @@ public class SourceViewModelTests
 
         Assert.Single(_scanRequests);
         Assert.Same(_scanScreen, _shell.Current);
+        var log = string.Concat(_fs.AllFiles()
+            .Where(p => p.StartsWith(LogFolder, StringComparison.OrdinalIgnoreCase))
+            .Select(p => Encoding.UTF8.GetString(_fs.ReadAllBytes(p))));
+        Assert.Contains("마지막 선택을 저장하지 못했습니다", log, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -28,6 +28,7 @@ public sealed partial class SourceViewModel : ObservableObject
     private readonly IFolderPicker _folderPicker;
     private readonly IFileOpenPicker _filePicker;
     private readonly IDialogService _dialogs;
+    private readonly FileLog _log;
     private readonly Func<ImportSettings, ObservableObject> _createScan;
     private readonly Func<ObservableObject> _createStart;
 
@@ -53,7 +54,7 @@ public sealed partial class SourceViewModel : ObservableObject
     /// <param name="driveRoot">시작 화면에서 드라이브를 골라 왔으면 그 루트. 있으면 저장된 가져올 폴더 대신 이것만 채운다.</param>
     public SourceViewModel(ShellViewModel shell, IFileSystem fileSystem, PresetLibrary presetLibrary, string settingsPath,
         AppSettings settings, string? driveRoot, IFolderPicker folderPicker, IFileOpenPicker filePicker,
-        IDialogService dialogs, Func<ImportSettings, ObservableObject> createScan, Func<ObservableObject> createStart)
+        IDialogService dialogs, FileLog log, Func<ImportSettings, ObservableObject> createScan, Func<ObservableObject> createStart)
     {
         _shell = shell;
         _fileSystem = fileSystem;
@@ -62,6 +63,7 @@ public sealed partial class SourceViewModel : ObservableObject
         _folderPicker = folderPicker;
         _filePicker = filePicker;
         _dialogs = dialogs;
+        _log = log;
         _createScan = createScan;
         _createStart = createStart;
 
@@ -115,6 +117,12 @@ public sealed partial class SourceViewModel : ObservableObject
             if (Sources.Any(source => Overlaps(source, ArchiveRoot)))
             {
                 return "보관 폴더와 가져올 폴더가 겹칩니다. 서로 다른 폴더를 고르세요";
+            }
+
+            // 설정 파일을 손으로 고친 상대 경로나 사라진 폴더는 받지 않는다(상대 경로면 계획이 현재 작업 폴더 기준이 된다).
+            if (!Path.IsPathFullyQualified(ArchiveRoot) || !_fileSystem.DirectoryExists(ArchiveRoot))
+            {
+                return "보관 폴더를 찾을 수 없습니다: " + ArchiveRoot;
             }
 
             return SelectedPreset is null ? "정리 방식을 고르세요" : null;
@@ -194,9 +202,12 @@ public sealed partial class SourceViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanNext))]
     private void Next()
     {
-        // 명령의 Execute는 CanExecute를 확인하지 않으므로 여기서도 막는다.
+        // 명령의 Execute는 CanExecute를 확인하지 않으므로 여기서도 막는다. 폴더가 그사이 사라졌을 수 있으므로(속성 변경 알림이
+        // 없는 변화) 막힐 때는 안내 문구와 "다음" 버튼 상태를 다시 알린다.
         if (ValidationMessage is not null || SelectedPreset is null || ArchiveRoot is null)
         {
+            OnPropertyChanged(nameof(ValidationMessage));
+            NextCommand.NotifyCanExecuteChanged();
             return;
         }
 
@@ -220,6 +231,7 @@ public sealed partial class SourceViewModel : ObservableObject
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             // 마지막 선택을 기억하지 못할 뿐이다. 가져오기를 막지는 않는다.
+            _log.Error("마지막 선택을 저장하지 못했습니다", ex);
         }
     }
 
