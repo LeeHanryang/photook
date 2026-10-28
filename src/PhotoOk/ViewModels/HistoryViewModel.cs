@@ -60,8 +60,11 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     private bool isCancelling;
 
+    /// <summary>기록을 읽는 동안에는 고른 실행의 상태가 낡았을 수 있으므로 이어 하기·되돌리기를 막는다.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(RunsNotice))]
+    [NotifyCanExecuteChangedFor(nameof(ResumeCommand))]
+    [NotifyCanExecuteChangedFor(nameof(UndoCommand))]
     private bool isLoading;
 
     /// <param name="selectRunId">처음부터 골라 둘 실행 ID. 없거나 목록에 없으면 고르지 않는다.</param>
@@ -76,8 +79,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         _createResume = createResume;
         _createHome = createHome;
 
-        ResumeCommand = new AsyncRelayCommand(ResumeAsync, () => !IsBusy && Selected is { CanResume: true });
-        UndoCommand = new AsyncRelayCommand(UndoAsync, () => !IsBusy && Selected is { CanUndo: true });
+        ResumeCommand = new AsyncRelayCommand(ResumeAsync, () => !IsBusy && !IsLoading && Selected is { CanResume: true });
+        UndoCommand = new AsyncRelayCommand(UndoAsync, () => !IsBusy && !IsLoading && Selected is { CanUndo: true });
         HomeCommand = new RelayCommand(() => _shell.Navigate(_createHome()), () => !IsBusy);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy && !IsCancelling);
 
@@ -95,10 +98,10 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     /// <summary>가장 나중에 요청한 기록 읽기가 끝나면(반영·실패) 완료된다. 예외로 끝나지 않는다.</summary>
     public Task WhenLoaded { get; private set; }
 
-    /// <summary>"이어 하기": 고른 실행이 끝나지 않았을 때만. 실행 화면으로 가서 이어 한다.</summary>
+    /// <summary>"이어 하기": 고른 실행이 끝나지 않았을 때만(기록을 읽는 중에는 안 된다). 실행 화면으로 가서 이어 한다.</summary>
     public IAsyncRelayCommand ResumeCommand { get; }
 
-    /// <summary>"되돌리기": 되돌릴 수 있는 실행을 골랐을 때만. 먼저 묻는다.</summary>
+    /// <summary>"되돌리기": 되돌릴 수 있는 실행을 골랐을 때만(기록을 읽는 중에는 안 된다). 먼저 묻는다.</summary>
     public IAsyncRelayCommand UndoCommand { get; }
 
     public IRelayCommand HomeCommand { get; }
@@ -217,7 +220,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
 
     private Task ResumeAsync()
     {
-        if (!IsBusy && Selected is { CanResume: true } run)
+        if (!IsBusy && !IsLoading && Selected is { CanResume: true } run)
         {
             _shell.Navigate(_createResume(run.JournalPath));
         }
@@ -227,7 +230,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
 
     private async Task UndoAsync()
     {
-        if (IsBusy || Selected is not { CanUndo: true } run)
+        if (IsBusy || IsLoading || Selected is not { CanUndo: true } run)
         {
             return;
         }
@@ -260,9 +263,12 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         }
         finally
         {
+            // 다시 읽기를 먼저 시작해(IsLoading) 바쁜 상태가 끝난 사이에 낡은 상태로 되돌리기·이어 하기를 누를 수 없게 한 뒤,
+            // 바쁜 상태를 끝낸다. 기록 읽기는 읽기만 하므로 그동안 창을 닫아도 "실행 중입니다"를 묻지 않는다.
+            var reload = Task.CompletedTask;
             try
             {
-                await RefreshAsync(run.RunId);
+                reload = RefreshAsync(run.RunId);
             }
             catch (Exception ex)
             {
@@ -275,6 +281,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
                 IsBusy = false;
                 BusyEnded?.Invoke(this, EventArgs.Empty);
             }
+
+            await reload; // 예외로 끝나지 않는다(LoadAsync가 로그에 남기고 안내를 보인다)
         }
     }
 

@@ -242,6 +242,38 @@ public class HistoryViewModelTests
     }
 
     [Fact]
+    public async Task Undo_EndsBusyBeforeReloading_AndBlocksCommandsWhileLoading()
+    {
+        Run(CopyPlan(1));
+        var history = new FakeRunHistory { Gate = new ManualResetEventSlim(initialState: true) };
+        history.Runs.AddRange(new RunHistory(_fs, AppData).List().Runs);
+        var vm = await CreateAsync(history: history);
+        _shell.Navigate(vm);
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+        var busyEnded = 0;
+        vm.BusyEnded += (_, _) => busyEnded++;
+        history.Gate.Reset(); // 되돌린 뒤의 다시 읽기는 느리다
+
+        var undo = vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.True(SpinWait.SpinUntil(() => busyEnded == 1, TimeSpan.FromSeconds(10)));
+        Assert.False(vm.IsBusy);
+        Assert.True(vm.IsLoading);
+        Assert.False(vm.UndoCommand.CanExecute(null));
+        Assert.False(vm.ResumeCommand.CanExecute(null));
+        Assert.True(_shell.ConfirmClose()); // 읽기만 하는 중이라 닫기를 묻지 않는다
+        Assert.Single(_dialogs.Confirms); // 되돌리기 확인 하나뿐
+
+        history.Gate.Set();
+        await undo;
+
+        Assert.False(vm.IsLoading);
+        Assert.Equal("되돌린 파일 1개, 남긴 항목 0개", vm.UndoSummary);
+        Assert.Equal(1, busyEnded);
+    }
+
+    [Fact]
     public async Task Undo_ShowsOnlyReasonSummary_AndLogsFullReason()
     {
         Run(CopyPlan(1));
