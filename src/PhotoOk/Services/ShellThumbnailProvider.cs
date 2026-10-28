@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
@@ -15,16 +16,27 @@ namespace PhotoOk.Services;
 /// </summary>
 public sealed class ShellThumbnailProvider : IThumbnailProvider, IDisposable
 {
-    /// <summary>앱을 닫을 때 작업 스레드가 지금 그림을 마치기를 기다리는 최대 시간.</summary>
-    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
+    /// <summary>앱을 닫을 때 작업 스레드들이 지금 그림을 마치기를 기다리는 최대 시간(모든 스레드를 합쳐서).</summary>
+    private static readonly TimeSpan DefaultStopTimeout = TimeSpan.FromSeconds(2);
 
     private readonly BlockingCollection<Request> _queue = new();
     private readonly List<Thread> _workers = [];
+    private readonly TimeSpan _stopTimeout;
+    private readonly Func<string, int, BitmapSource?> _create;
     private volatile bool _disposed;
 
     public ShellThumbnailProvider(int workerCount = 2)
+        : this(workerCount, DefaultStopTimeout, Create)
+    {
+    }
+
+    /// <param name="stopTimeout">닫을 때 모든 작업 스레드를 합쳐 기다리는 최대 시간.</param>
+    /// <param name="create">그림을 만드는 함수(시험에서 셸 대신 쓴다).</param>
+    internal ShellThumbnailProvider(int workerCount, TimeSpan stopTimeout, Func<string, int, BitmapSource?> create)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(workerCount, 1);
+        _stopTimeout = stopTimeout;
+        _create = create;
         for (var i = 0; i < workerCount; i++)
         {
             var thread = new Thread(Work) { IsBackground = true, Name = $"PhotoOk 미리보기 {i + 1}" };
@@ -58,7 +70,10 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider, IDisposable
         return request.Result.Task;
     }
 
-    /// <summary>새 요청을 받지 않고, 남은 요청은 null로 끝내고, 작업 스레드가 멈추기를 잠시 기다린다. 여러 번 불러도 된다.</summary>
+    /// <summary>
+    /// 새 요청을 받지 않고, 남은 요청은 null로 끝내고, 작업 스레드가 멈추기를 잠시 기다린다. 기다리는 시간은 스레드마다가 아니라
+    /// 모두 합쳐 한 번의 마감(2초)이다. 여러 번 불러도 된다.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed)
@@ -69,9 +84,11 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider, IDisposable
         _disposed = true;
         _queue.CompleteAdding();
         var stopped = true;
+        var waited = Stopwatch.StartNew();
         foreach (var worker in _workers)
         {
-            stopped &= worker.Join(StopTimeout);
+            var remaining = _stopTimeout - waited.Elapsed;
+            stopped &= worker.Join(remaining > TimeSpan.Zero ? remaining : TimeSpan.Zero);
         }
 
         // 아직 셸 호출 중인 스레드가 있으면 대기열을 그 스레드가 다 쓸 때까지 남겨 둔다(배경 스레드라 앱 종료를 막지 않는다).
@@ -90,7 +107,7 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider, IDisposable
             {
                 try
                 {
-                    image = Create(request.Path, request.Size);
+                    image = _create(request.Path, request.Size);
                 }
                 catch (Exception)
                 {

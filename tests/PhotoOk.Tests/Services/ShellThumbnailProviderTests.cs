@@ -85,4 +85,35 @@ public sealed class ShellThumbnailProviderDisposeTests
         var image = await provider.GetAsync(@"C:\없음\a.jpg", 96, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Null(image);
     }
+
+    [Fact]
+    public async Task Dispose_WaitsOneSharedDeadline_NotOnePerWorker()
+    {
+        const int workers = 4;
+        var stopTimeout = TimeSpan.FromMilliseconds(500);
+        using var release = new ManualResetEventSlim();
+        using var busy = new CountdownEvent(workers);
+        var provider = new ShellThumbnailProvider(workers, stopTimeout, (_, _) =>
+        {
+            busy.Signal();
+            release.Wait(TimeSpan.FromSeconds(30)); // 셸 호출이 오래 걸린다
+            return null;
+        });
+        var pending = Enumerable.Range(0, workers)
+            .Select(i => provider.GetAsync($@"C:\x\{i}.jpg", 96, CancellationToken.None))
+            .ToList();
+        Assert.True(busy.Wait(TimeSpan.FromSeconds(10))); // 작업 스레드가 모두 그림을 만드는 중
+
+        var waited = System.Diagnostics.Stopwatch.StartNew();
+        provider.Dispose();
+        waited.Stop();
+
+        // 스레드마다 기다리면 4 × 0.5초. 마감 하나를 나눠 쓰면 0.5초 남짓.
+        Assert.True(waited.Elapsed < TimeSpan.FromMilliseconds(1500), $"닫기 대기 {waited.Elapsed}");
+        Assert.False(provider.IsStopped);
+
+        release.Set();
+        var images = await Task.WhenAll(pending).WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.All(images, Assert.Null); // 닫은 뒤 끝난 요청은 그림 없이 끝난다
+    }
 }
