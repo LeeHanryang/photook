@@ -545,7 +545,7 @@ public sealed class Undoer(ExecutionContext context)
     /// 자리 바꾸기의 첫 다리인지: 대상이 정확히 <c>원본 경로 + ".photook-tmp-" + 이 작업의 ID</c>다.
     /// 그 경로에 있는 파일은 이 실행의 이 작업만 만들 수 있다. 두 번째 다리(임시 이름에서 최종 자리로)는 해당하지 않는다.
     /// </summary>
-    private static bool IsRunTempMove(PlannedOperation op) =>
+    internal static bool IsRunTempMove(PlannedOperation op) =>
         op.Kind == OperationKind.Move && op.Source is not null
         && string.Equals(op.Destination, op.Source + Executor.TempSuffix + "-" + op.Id, StringComparison.OrdinalIgnoreCase);
 

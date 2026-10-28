@@ -11,9 +11,11 @@ public enum RunStatus { Completed, CompletedWithFailures, Unfinished, PlanIncomp
 /// 지난 실행 하나의 요약. <paramref name="FileOperations"/>는 폴더 만들기를 뺀 작업 수, <paramref name="CompletedFiles"/>,
 /// <paramref name="SkippedFiles"/>(이미 같은 파일이 있어 건너뜀), <paramref name="FailedFiles"/>는 그 가운데 완료·건너뜀·실패한 수다.
 /// <paramref name="JournalPath"/>는 읽어 낸 항목이 가장 많은 사본이다.
+/// <paramref name="UndoneFiles"/>는 기록에 Undone으로 남은 파일 작업 수다(폴더 만들기와, 자리 바꾸기에서 원본을 임시 이름으로 옮긴
+/// 첫 다리는 세지 않는다: 되돌리기 결과의 "되돌린 파일" 수와 같은 기준). 실행하지 않은 작업은 들어가지 않는다.
 /// </summary>
 public sealed record RunSummary(string RunId, string JournalPath, string ArchiveRoot, DateTime StartedLocal, RunStatus Status,
-    int FileOperations, int CompletedFiles, int SkippedFiles, int FailedFiles, bool CanResume, bool CanUndo);
+    int FileOperations, int CompletedFiles, int SkippedFiles, int FailedFiles, bool CanResume, bool CanUndo, int UndoneFiles = 0);
 
 public sealed record HistoryError(string JournalPath, string Message);
 
@@ -86,12 +88,13 @@ public sealed class RunHistory(IFileSystem fileSystem, string appDataRoot) : IRu
         var completed = fileOps.Count(o => o.Status == OpStatus.Completed);
         var skipped = fileOps.Count(o => o.Status == OpStatus.Skipped);
         var failed = fileOps.Count(o => o.Status == OpStatus.Failed);
+        var undone = fileOps.Count(o => o.Status == OpStatus.Undone && !Undoer.IsRunTempMove(o.Operation));
         var status = Judge(state, failed);
         var canResume = status == RunStatus.Unfinished;
         var canUndo = status is RunStatus.Completed or RunStatus.CompletedWithFailures or RunStatus.Unfinished
             or RunStatus.UndoInProgress;
         return new RunSummary(state.RunId, path, state.ArchiveRoot, started, status, fileOps.Count, completed, skipped, failed,
-            canResume, canUndo);
+            canResume, canUndo, undone);
     }
 
     private static RunStatus Judge(RunState state, int failedFiles)

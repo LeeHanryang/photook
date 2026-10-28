@@ -143,10 +143,11 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel,
     };
 
     /// <summary>
-    /// 작업 기록 줄의 파일 수. 되돌린 작업은 완료 수가 0으로 돌아가므로 "완료 0"이 아니라 되돌린 파일 수로 보인다.
+    /// 작업 기록 줄의 파일 수. 되돌린 작업은 완료 수가 0으로 돌아가므로 "완료 0"이 아니라 기록에서 실제로 되돌린 파일 수로 보인다
+    /// (계획한 수가 아니다: 중간에 멈춘 실행은 실행한 만큼만 되돌린다).
     /// </summary>
     internal static string CountsOf(RunSummary run) => run.Status == RunStatus.Undone
-        ? $"파일 {run.FileOperations}개 되돌림"
+        ? $"파일 {run.UndoneFiles}개 되돌림"
         : $"완료 {run.CompletedFiles} · 건너뜀 {run.SkippedFiles} / 전체 {run.FileOperations}";
 
     /// <summary>

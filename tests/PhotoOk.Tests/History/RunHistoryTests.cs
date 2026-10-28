@@ -155,6 +155,7 @@ public class RunHistoryTests
         Assert.Equal(RunStatus.Undone, run.Status);
         Assert.False(run.CanResume);
         Assert.False(run.CanUndo);
+        Assert.Equal(0, run.UndoneFiles); // 남긴 복사본은 되돌린 파일이 아니다
     }
 
     [Fact]
@@ -230,6 +231,81 @@ public class RunHistoryTests
         Assert.Equal(RunStatus.Undone, undone.Status);
         Assert.False(undone.CanResume);
         Assert.False(undone.CanUndo);
+        Assert.Equal(2, undone.UndoneFiles);
+    }
+
+    /// <summary>손으로 만든 기록: RunStarted, 모든 작업의 Planned, 그리고 (작업 ID, 사건) 순서대로.</summary>
+    private void WriteJournal(string runId, PlannedOperation[] ops, params (string? OpId, JournalEvent Event)[] events)
+    {
+        var writer = new JournalWriter(_fs, [JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: ops.Length, Destination: Archive, TimestampUtc: Now));
+        foreach (var op in ops)
+        {
+            writer.Write(new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
+                TimestampUtc: Now));
+        }
+
+        foreach (var (opId, ev) in events)
+        {
+            writer.Write(new JournalEntry(runId, ev, opId, TimestampUtc: Now));
+        }
+    }
+
+    [Fact]
+    public void UndoneFiles_CountsOnlyFilesActuallyUndone_NotPlannedOnes()
+    {
+        // 파일 5개를 계획했지만 2개를 복사하고 세 번째 도중에 꺼졌다. 되돌리기는 2개만 되돌린다.
+        const string runId = "20261027-103000-ab12";
+        WriteJournal(runId,
+            [
+                Mkdir("op0", @"D:\Archive\2026"),
+                Copy("op1", @"E:\a.jpg", @"D:\Archive\2026\a.jpg", 5),
+                Copy("op2", @"E:\b.jpg", @"D:\Archive\2026\b.jpg", 5),
+                Copy("op3", @"E:\c.jpg", @"D:\Archive\2026\c.jpg", 5),
+                Copy("op4", @"E:\d.jpg", @"D:\Archive\2026\d.jpg", 5),
+                Copy("op5", @"E:\e.jpg", @"D:\Archive\2026\e.jpg", 5),
+            ],
+            ("op0", JournalEvent.Started), ("op0", JournalEvent.Completed),
+            ("op1", JournalEvent.Started), ("op1", JournalEvent.Completed),
+            ("op2", JournalEvent.Started), ("op2", JournalEvent.Completed),
+            ("op3", JournalEvent.Started), // 도중에 꺼졌다
+            (null, JournalEvent.UndoStarted),
+            ("op3", JournalEvent.UndoSkipped),
+            ("op2", JournalEvent.Undone), ("op1", JournalEvent.Undone),
+            ("op0", JournalEvent.Undone)); // 폴더는 세지 않는다
+
+        var run = Single();
+
+        Assert.Equal(RunStatus.Undone, run.Status);
+        Assert.Equal(5, run.FileOperations);
+        Assert.Equal(2, run.UndoneFiles);
+    }
+
+    [Fact]
+    public void UndoneFiles_CountsSwapOnce_NotItsFirstLegToTempName()
+    {
+        // 자리 바꾸기는 원본을 임시 이름으로 옮기는 첫 다리와 최종 자리로 옮기는 두 번째 다리로 이뤄진다.
+        // 사진 하나는 한 번만 센다(되돌리기 결과의 "되돌린 파일" 수와 같은 기준).
+        const string runId = "20261027-103000-ab12";
+        const string day14 = @"D:\Archive\2026\14\P.JPG";
+        const string day15 = @"D:\Archive\2026\15\P.JPG";
+        const string temp = day15 + ".photook-tmp-op1";
+        WriteJournal(runId,
+            [
+                new PlannedOperation("op1", OperationKind.Move, day15, temp, 5, Array.Empty<ReviewReason>()),
+                new PlannedOperation("op2", OperationKind.Move, temp, day14, 5, Array.Empty<ReviewReason>()),
+            ],
+            ("op1", JournalEvent.Started), ("op1", JournalEvent.Completed),
+            ("op2", JournalEvent.Started), ("op2", JournalEvent.Completed),
+            (null, JournalEvent.RunFinished),
+            (null, JournalEvent.UndoStarted),
+            ("op2", JournalEvent.Undone), ("op1", JournalEvent.Undone));
+
+        var run = Single();
+
+        Assert.Equal(RunStatus.Undone, run.Status);
+        Assert.Equal(2, run.FileOperations);
+        Assert.Equal(1, run.UndoneFiles);
     }
 
     [Fact]
