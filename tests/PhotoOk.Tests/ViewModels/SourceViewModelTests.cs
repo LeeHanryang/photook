@@ -48,15 +48,18 @@ public class SourceViewModelTests
         string? presetFile = null, TransferMode mode = TransferMode.Copy, bool includeSubfolders = true) =>
         new(sources ?? [], includeSubfolders, archive, presetName, presetFile, mode);
 
-    private SourceViewModel Create(AppSettings? settings = null, string? driveRoot = null) =>
-        new(_shell, _fs, new PresetLibrary(_fs, PresetFolder), SettingsPath, settings ?? AppSettings.Default, driveRoot,
+    /// <summary>보관 폴더 확인은 기본으로 그 자리에서 끝낸다(결과가 바로 보인다). 백그라운드 동작은 따로 시험한다.</summary>
+    private SourceViewModel Create(AppSettings? settings = null, string? driveRoot = null,
+        PhotoOk.Core.IO.IFileSystem? fileSystem = null, Func<Func<bool>, Task<bool>>? runCheck = null) =>
+        new(_shell, fileSystem ?? _fs, new PresetLibrary(_fs, PresetFolder), SettingsPath, settings ?? AppSettings.Default, driveRoot,
             _folders, _files, _dialogs, new FileLog(_fs, LogFolder),
             createScan: s =>
             {
                 _scanRequests.Add(s);
                 return _scanScreen;
             },
-            createStart: () => _startScreen);
+            createStart: () => _startScreen,
+            runCheck: runCheck ?? (check => Task.FromResult(check())));
 
     private string AddUserPreset(string fileName, string presetName)
     {
@@ -238,6 +241,86 @@ public class SourceViewModelTests
 
         vm.ArchiveRoot = @"D:\없음";
         Assert.Equal(@"보관 폴더를 찾을 수 없습니다: D:\없음", vm.ValidationMessage);
+    }
+
+    [Fact]
+    public void ArchiveExistence_IsCheckedOncePerPathChange()
+    {
+        var hooked = new HookedFileSystem(_fs);
+        var vm = Create(Settings([@"E:\DCIM"], @"D:\Archive"), fileSystem: hooked);
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Null(vm.ValidationMessage);
+            Assert.True(vm.NextCommand.CanExecute(null));
+        }
+
+        Assert.Single(hooked.DirectoryChecks, p => p == @"D:\Archive");
+
+        vm.ArchiveRoot = @"D:\Photos2";
+        _ = vm.ValidationMessage;
+        _ = vm.NextCommand.CanExecute(null);
+
+        Assert.Single(hooked.DirectoryChecks, p => p == @"D:\Photos2");
+    }
+
+    [Fact]
+    public async Task ArchiveExistence_IsCheckedInBackground_AndValidationUpdatesWhenDone()
+    {
+        using var gate = new ManualResetEventSlim();
+        var vm = Create(Settings([@"E:\DCIM"], @"D:\Archive"), runCheck: check => Task.Run(() =>
+        {
+            gate.Wait(TimeSpan.FromSeconds(10));
+            return check();
+        }));
+        var raised = new List<string?>();
+        vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+
+        Assert.Equal("보관 폴더를 확인하는 중…", vm.ValidationMessage);
+        Assert.False(vm.NextCommand.CanExecute(null));
+
+        gate.Set();
+        await vm.WhenArchiveChecked;
+
+        Assert.Contains(nameof(SourceViewModel.ValidationMessage), raised);
+        Assert.Null(vm.ValidationMessage);
+        Assert.True(vm.NextCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task ArchiveExistence_OnlyLatestCheckCounts()
+    {
+        using var firstGate = new ManualResetEventSlim();
+        var calls = 0;
+        var vm = Create(Settings([@"E:\DCIM"], @"D:\Archive"), runCheck: check =>
+            Interlocked.Increment(ref calls) == 1
+                ? Task.Run(() =>
+                {
+                    firstGate.Wait(TimeSpan.FromSeconds(10));
+                    return check();
+                })
+                : Task.FromResult(check()));
+        var first = vm.WhenArchiveChecked;
+
+        vm.ArchiveRoot = @"D:\없음";
+        firstGate.Set();
+        await first;
+
+        Assert.Equal(@"보관 폴더를 찾을 수 없습니다: D:\없음", vm.ValidationMessage);
+    }
+
+    [Fact]
+    public void Next_RechecksArchive_WhenItVanishedAfterCheck()
+    {
+        var vm = Create(Settings([@"E:\DCIM"], @"D:\Archive"));
+        Assert.True(vm.NextCommand.CanExecute(null));
+
+        _fs.RemoveVolume(@"D:\"); // 보관 드라이브가 빠졌다(속성 변경 알림 없음)
+        vm.NextCommand.Execute(null);
+
+        Assert.Empty(_scanRequests);
+        Assert.Equal(@"보관 폴더를 찾을 수 없습니다: D:\Archive", vm.ValidationMessage);
+        Assert.False(vm.NextCommand.CanExecute(null));
     }
 
     [Fact]

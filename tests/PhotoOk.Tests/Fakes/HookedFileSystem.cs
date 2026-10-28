@@ -29,7 +29,18 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
 
     public bool FileExists(string path) => inner.FileExists(path);
 
-    public bool DirectoryExists(string path) => inner.DirectoryExists(path);
+    /// <summary><see cref="DirectoryExists"/>로 확인한 경로, 부른 순서대로.</summary>
+    public List<string> DirectoryChecks { get; } = [];
+
+    public bool DirectoryExists(string path)
+    {
+        lock (DirectoryChecks)
+        {
+            DirectoryChecks.Add(path);
+        }
+
+        return inner.DirectoryExists(path);
+    }
 
     public FileEntry GetFile(string path) => inner.GetFile(path);
 
