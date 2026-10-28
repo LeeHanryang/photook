@@ -32,7 +32,7 @@ public sealed class FakeFileSystem : IFileSystem
     private readonly Dictionary<string, long> _freeSpace = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReads = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _failReadsAfterOpen = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _failSetTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Type> _failSetTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _deniedDirs = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _deniedReads = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _linkedDirs = new(StringComparer.OrdinalIgnoreCase);
@@ -191,14 +191,21 @@ public sealed class FakeFileSystem : IFileSystem
     }
 
     /// <summary>
-    /// 이 경로의 <see cref="SetLastWriteTimeUtc"/>가 <see cref="IOException"/>을 던지게 한다(시각을 바꿀 수 없는 파일 시스템·권한).
+    /// 이 경로의 <see cref="SetLastWriteTimeUtc"/>가 <paramref name="exceptionType"/>(기본 <see cref="IOException"/>)을 던지게 한다
+    /// (시각을 바꿀 수 없는 파일 시스템·권한·범위 밖 시각). 예외 종류는 메시지 하나를 받는 생성자가 있어야 한다.
     /// 시도는 변경 작업으로 센다.
     /// </summary>
-    public void FailSetTimeOf(string path)
+    public void FailSetTimeOf(string path, Type? exceptionType = null)
     {
+        var type = exceptionType ?? typeof(IOException);
+        if (!typeof(Exception).IsAssignableFrom(type))
+        {
+            throw new ArgumentException("예외 종류가 아닙니다.", nameof(exceptionType));
+        }
+
         lock (_gate)
         {
-            _failSetTimes.Add(Normalize(path));
+            _failSetTimes[Normalize(path)] = type;
         }
     }
 
@@ -618,9 +625,9 @@ public sealed class FakeFileSystem : IFileSystem
                 throw new IOException($"다른 곳에서 쓰는 중인 파일입니다: {path}");
             }
 
-            if (_failSetTimes.Contains(full))
+            if (_failSetTimes.TryGetValue(full, out var failure))
             {
-                throw new IOException($"파일 시각을 바꿀 수 없습니다: {path}");
+                throw (Exception)Activator.CreateInstance(failure, $"파일 시각을 바꿀 수 없습니다: {path}")!;
             }
 
             file.LastWriteTimeUtc = ToUtc(utc);

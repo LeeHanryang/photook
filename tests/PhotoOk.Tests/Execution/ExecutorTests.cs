@@ -716,12 +716,15 @@ public class ExecutorTests
     // 원본 날짜를 유지하지 못한 복사
     // ------------------------------------------------------------------
 
-    [Fact]
-    public void Execute_CopySucceedsWithWarning_WhenTimestampCannotBeSet()
+    [Theory]
+    [InlineData(typeof(IOException))]
+    [InlineData(typeof(UnauthorizedAccessException))]
+    [InlineData(typeof(ArgumentOutOfRangeException))]
+    public void Execute_CopySucceedsWithWarning_WhenTimestampCannotBeSet(Type failure)
     {
         var a = AddSource(@"E:\DCIM\a.jpg", 3000, 44);
         _fs.AddDirectory(@"D:\Archive\2026");
-        _fs.FailSetTimeOf(@"D:\Archive\2026\a.jpg.photook-tmp");
+        _fs.FailSetTimeOf(@"D:\Archive\2026\a.jpg.photook-tmp", failure);
 
         var result = NewExecutor().Execute(PlanOf(Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\2026\a.jpg", a.Length)));
 

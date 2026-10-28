@@ -28,7 +28,8 @@ public static class JournalReader
             }
         }
 
-        if (!endsWithNewline)
+        // 줄바꿈 없이 끝난 꼬리가 마지막 비지 않은 줄일 때만 버린다. 꼬리가 공백뿐이면 그 앞 줄은 줄바꿈까지 쓰인 진짜 항목이다.
+        if (!endsWithNewline && lastNonEmpty == lines.Count - 1)
         {
             lastNonEmpty--;
         }
@@ -56,7 +57,7 @@ public static class JournalReader
                 // 쓰다 만 줄은 대개 닫는 중괄호로 끝나지 않는다. 그런 줄은 어디에 있든 무시한다.
                 // 중괄호로 끝나도 기록하는 쪽이 닫은 조각(다음 항목이 TornLineClosed 표시)이면 무시하고,
                 // 그 밖에 중괄호로 끝나는데 읽을 수 없으면 진짜 손상이므로 예외를 던진다.
-                if (!lines[i].TrimEnd().EndsWith('}') || IsClosedTornLine(lines, i, lastNonEmpty))
+                if (!lines[i].TrimEnd().EndsWith('}') || IsClosedTornLine(lines, i))
                 {
                     continue;
                 }
@@ -145,10 +146,11 @@ public static class JournalReader
     /// <summary>
     /// <paramref name="index"/>의 읽을 수 없는 줄 다음의 첫 항목이 TornLineClosed 표시인지. 빈 줄과, 닫는 중괄호로 끝나지 않는
     /// 읽을 수 없는 줄(표시를 쓰다가 다시 끊긴 조각)은 건너뛴다. 그 밖의 줄을 만나면 거기서 판단한다.
+    /// 줄바꿈 없이 끝나 기록되지 않은 것으로 보는 꼬리도 살핀다. 표시를 다 쓴 뒤 줄바꿈 직전에 끊겼어도 조각은 닫힌 것이다.
     /// </summary>
-    private static bool IsClosedTornLine(List<string> lines, int index, int lastIndex)
+    private static bool IsClosedTornLine(List<string> lines, int index)
     {
-        for (var j = index + 1; j <= lastIndex; j++)
+        for (var j = index + 1; j < lines.Count; j++)
         {
             if (lines[j].Trim().Length == 0)
             {

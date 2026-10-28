@@ -469,6 +469,41 @@ public class JournalTests
     }
 
     [Fact]
+    public void Load_KeepsLastEntry_WhenUnterminatedTailIsWhitespaceOnly()
+    {
+        var complete = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(complete + "\n   ");
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Completed, Assert.Single(state.Operations).Status);
+        Assert.Equal(4, state.EntryCount);
+    }
+
+    [Fact]
+    public void Load_IgnoresClosedTornLine_WhenMarkerIsTheUnterminatedTail()
+    {
+        // 조각을 닫는 표시를 다 썼지만 마지막 줄바꿈 직전에 끊겼다. 표시는 기록되지 않은 꼬리지만 조각이 닫혔다는 것은 안다.
+        var marker = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.TornLineClosed), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n" + marker);
+
+        var state = JournalReader.Load(_fs, _archivePath);
+
+        Assert.Equal(OpStatus.Started, Assert.Single(state.Operations).Status);
+        Assert.Equal(3, state.EntryCount);
+    }
+
+    [Fact]
+    public void Load_StillThrows_WhenUnterminatedTailIsAnotherEntry()
+    {
+        var completed = System.Text.Json.JsonSerializer.Serialize(Entry(JournalEvent.Completed, "op-000001"), JournalWriter.JsonOptions);
+        WriteRunWithRawTail(TornCompletedWithBrace + "\r\n" + completed);
+
+        var ex = Assert.Throws<InvalidDataException>(() => JournalReader.Load(_fs, _archivePath));
+        Assert.Contains("4번째 줄", ex.Message);
+    }
+
+    [Fact]
     public void Load_StillThrows_OnBraceLineFollowedByOtherEntry()
     {
         WriteRunWithRawTail(TornCompletedWithBrace + "\r\n");
