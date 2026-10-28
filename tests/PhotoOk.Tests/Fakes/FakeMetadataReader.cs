@@ -24,8 +24,12 @@ public sealed class FakeMetadataReader : IMetadataReader
         _failures[path] = exception;
     }
 
+    /// <summary>읽기 직전에 경로를 받아 부른다(예: 스캔 도중에 취소하기).</summary>
+    public Action<string>? OnRead { get; set; }
+
     public PhotoInfo Read(FileEntry file)
     {
+        OnRead?.Invoke(file.Path);
         if (_failures.TryGetValue(file.Path, out var failure))
         {
             throw failure;

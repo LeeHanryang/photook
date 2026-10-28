@@ -12,7 +12,6 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
     private const string PhotookFolder = ".photook";
     private const string TempMarker = ".photook-tmp";
     internal const string InaccessibleFolderMessage = "폴더를 열 수 없어 건너뛰었습니다: ";
-    internal const string LinkedFolderMessage = "연결 폴더라 건너뛰었습니다: ";
 
     public ScanResult Scan(IReadOnlyList<string> sourceRoots, bool recursive, CancellationToken ct = default,
         IProgress<int>? filesRead = null)
@@ -92,7 +91,7 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
             {
                 if (skippedFolders.Add(folder))
                 {
-                    var message = error is LinkedFolderSkippedException ? LinkedFolderMessage : InaccessibleFolderMessage;
+                    var message = error is LinkedFolderSkippedException ? LinkedFolderSkippedException.MessagePrefix : InaccessibleFolderMessage;
                     errors.Add(new ScanError(folder, message + folder));
                 }
             }).GetEnumerator();

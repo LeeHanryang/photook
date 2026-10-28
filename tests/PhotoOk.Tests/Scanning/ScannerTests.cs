@@ -455,6 +455,50 @@ public class ScannerTests
         Assert.Equal([1, 2, 3], reports);
     }
 
+    [Fact]
+    public void Scan_ReadError_StillAdvancesProgress()
+    {
+        Add($@"{Root}\A.JPG");
+        Add($@"{Root}\B.JPG");
+        Add($@"{Root}\C.JPG");
+        _reader.FailOn($@"{Root}\B.JPG", new IOException("bad sector"));
+        var reports = new List<int>();
+
+        var result = CreateScanner().Scan([Root], recursive: true, filesRead: new SyncProgress(reports.Add));
+
+        Assert.Equal([1, 2, 3], reports);
+        Assert.Equal($@"{Root}\B.JPG", Assert.Single(result.Errors).Path);
+    }
+
+    [Fact]
+    public void Scan_CancelledMidway_StopsReading()
+    {
+        Add($@"{Root}\A.JPG");
+        Add($@"{Root}\B.JPG");
+        Add($@"{Root}\C.JPG");
+        using var cts = new CancellationTokenSource();
+        var read = new List<string>();
+        _reader.OnRead = path =>
+        {
+            read.Add(path);
+            if (read.Count == 2)
+            {
+                cts.Cancel(); // 두 번째 파일을 읽는 중에 취소
+            }
+        };
+
+        Assert.Throws<OperationCanceledException>(() => CreateScanner().Scan([Root], recursive: true, cts.Token));
+        Assert.Equal(2, read.Count);
+    }
+
+    [Fact]
+    public void LinkedFolderMessage_IsTheSameAsTheExceptionText()
+    {
+        var exception = new LinkedFolderSkippedException($@"{Root}\link");
+
+        Assert.Equal(LinkedFolderSkippedException.MessagePrefix + $@"{Root}\link", exception.Message);
+    }
+
     private sealed class SyncProgress(Action<int> report) : IProgress<int>
     {
         public void Report(int value) => report(value);
