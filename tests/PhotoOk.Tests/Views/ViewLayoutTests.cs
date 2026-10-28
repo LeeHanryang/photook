@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.IO;
+using System.Text.RegularExpressions;
 using System.Xml.Linq;
 
 namespace PhotoOk.Tests.Views;
@@ -89,6 +90,36 @@ public class ViewLayoutTests
         var radios = hint.ElementsBeforeSelf().Last();
         Assert.Equal(2, radios.Elements(Wpf + "RadioButton").Count());
         Assert.Equal("Wrap", (string?)hint.Attribute("TextWrapping"));
+    }
+
+    [Fact]
+    public void Views_DoNotBreakLinesBetweenRuns()
+    {
+        // TextBlock 안의 Run 사이 줄바꿈은 빈칸 하나로 보인다("300 개 처리"). 띄어 쓸 곳은 Run 글자에 넣는다.
+        var folder = Path.Combine(RepoRoot(), "src", "PhotoOk", "Views");
+        var offenders = Directory.GetFiles(folder, "*.xaml")
+            .Where(path => Regex.IsMatch(File.ReadAllText(path), @"</?Run[^<]*>\s*\r?\n\s*<Run\b"))
+            .Select(path => Path.GetFileName(path))
+            .ToList();
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void StartView_UnfinishedLine_ReadsCountWithoutSpaceBeforeUnit()
+    {
+        var notice = Load("Views", "StartView.xaml").Descendants(Wpf + "TextBlock")
+            .Single(t => t.Elements(Wpf + "Run").Any(r => (string?)r.Attribute("Text") == "개 처리"));
+
+        var text = string.Concat(notice.Elements(Wpf + "Run").Select(r => (string?)r.Attribute("Text") switch
+        {
+            "{Binding UnfinishedRun.CompletedFiles, Mode=OneWay}" => "58",
+            "{Binding UnfinishedRun.FileOperations, Mode=OneWay}" => "300",
+            var t when t!.StartsWith('{') => "?",
+            var t => t,
+        }));
+
+        Assert.Equal("? · ? · 58 / 300개 처리", text);
     }
 
     [Fact]
