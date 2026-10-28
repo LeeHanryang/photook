@@ -177,6 +177,58 @@ public class HistoryViewModelTests
     }
 
     [Fact]
+    public async Task Undo_OfRunKilledMidCopy_ShowsNoKeptItem_AndRowCountsOnlyUndoneFiles()
+    {
+        // 복사 5개를 계획했지만 2개를 마치고 세 번째를 쓰던 중에 꺼졌다(Started만 있고 임시 파일이 남았다).
+        const string runId = "20261027-103000-ab12";
+        var ops = new List<PlannedOperation>();
+        var writer = new JournalWriter(_fs, [JournalPaths.InArchive(Archive, runId), JournalPaths.InAppData(AppData, runId)]);
+        for (var i = 1; i <= 5; i++)
+        {
+            var data = new byte[100];
+            new Random(70 + i).NextBytes(data);
+            _fs.AddFile($@"E:\DCIM\p{i}.jpg", data);
+            ops.Add(Copy($"op{i}", $@"E:\DCIM\p{i}.jpg", $@"D:\Archive\2026\p{i}.jpg", data.Length));
+        }
+
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: ops.Count, Destination: Archive, TimestampUtc: Now));
+        foreach (var op in ops)
+        {
+            writer.Write(new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length,
+                TimestampUtc: Now));
+        }
+
+        var hasher = new XxHasher(_fs);
+        foreach (var op in ops.Take(2))
+        {
+            _fs.AddFile(op.Destination, _fs.ReadAllBytes(op.Source!));
+            writer.Write(new JournalEntry(runId, JournalEvent.Started, op.Id, TimestampUtc: Now));
+            writer.Write(new JournalEntry(runId, JournalEvent.Completed, op.Id, Hash: hasher.Hash(op.Destination), TimestampUtc: Now));
+        }
+
+        var partial = _fs.ReadAllBytes(@"E:\DCIM\p3.jpg")[..30];
+        _fs.AddFile(@"D:\Archive\2026\p3.jpg.photook-tmp", partial);
+        writer.Write(new JournalEntry(runId, JournalEvent.Started, "op3", TimestampUtc: Now));
+
+        var vm = await CreateAsync();
+        vm.Selected = vm.Runs.Single();
+        Assert.Equal(RunStatus.Unfinished, vm.Selected.Status);
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal("되돌린 파일 2개, 남긴 항목 0개", vm.UndoSummary);
+        Assert.Empty(vm.UndoResultLines);
+        Assert.Null(vm.UndoFault);
+        Assert.Empty(ArchiveFilesOutsidePhotook());
+        Assert.Equal(partial, _fs.ReadAllBytes(Path.Combine(Archive, ".photook", "되돌림", runId, @"2026\p3.jpg.photook-tmp")));
+
+        // 작업 기록 줄: 계획한 5개가 아니라 실제로 되돌린 2개.
+        Assert.Equal(RunStatus.Undone, vm.Selected!.Status);
+        Assert.Equal("파일 2개 되돌림", HistoryViewModel.CountsOf(vm.Selected));
+    }
+
+    [Fact]
     public async Task UndoSummary_CountsFilesOnly_NotFolders()
     {
         var data = new byte[50];

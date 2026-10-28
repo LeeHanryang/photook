@@ -22,7 +22,8 @@ public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped, int
 /// 처리 순서: Completed·Started·Failed 작업을 한 번에, 기록에 마지막으로 나온 순서의 역순(<see cref="OpState.LastSeq"/> 내림차순)으로
 /// 처리한다. Completed는 기록대로 되돌리고, Started·Failed(실제로는 끝났을 수 있다)는 디스크를 보고 실제로 한 일만 되돌린다.
 /// 실행되지 않았다고 판단한 Started·Failed 작업은 "실행되지 않은 작업이라 되돌릴 것이 없습니다"로 기록해 끝낸다. 그래야 다음 되돌리기가
-/// 이미 돌려놓은 파일을 그 작업의 결과로 착각하지 않는다.
+/// 이미 돌려놓은 파일을 그 작업의 결과로 착각하지 않는다. 그중 대상 자리에 아무것도 없는 작업(<see cref="Outcome.NothingDone"/>)은
+/// 남긴 것이 없으므로 결과에 싣지 않는다(실행하지 않은 Pending 작업처럼). 대상 자리에 무언가 있어 그대로 두는 경우는 결과에 싣는다.
 /// 첫 파일 작업 전에 UndoStarted를 한 번 쓴다(이미 있으면 쓰지 않는다). 이 표시가 있는 기록은 이어 하기가 거부한다.
 /// 결과는 작업마다 Undone 또는 UndoSkipped(Message=사유)로 같은 기록 사본에 쓴다. 기록 사본은 이어 하기와 같은 방식으로 고르고
 /// (같은 실행ID에서 항목이 가장 많은 것) 그 사본에만 쓴다. 이미 Undone·UndoSkipped인 작업은 건너뛰므로 다시 실행해도 안전하다.
@@ -313,7 +314,7 @@ public sealed class Undoer(ExecutionContext context)
         // 끊긴 폴더 만들기는 원래 있던 폴더인지 알 수 없으므로 남긴다(빈 폴더는 파일을 잃게 하지 않는다).
         _ => context.FileSystem.DirectoryExists(op.Destination)
             ? Outcome.Skipped(UnknownFolderMessage)
-            : Outcome.Skipped(NotPerformedMessage),
+            : Outcome.NothingDone(),
     };
 
     /// <summary>
@@ -329,7 +330,12 @@ public sealed class Undoer(ExecutionContext context)
             run.SafeDelete.Quarantine(temp);
         }
 
-        if (op.Source is null || !fs.FileExists(op.Destination))
+        if (!fs.FileExists(op.Destination))
+        {
+            return Outcome.NothingDone();
+        }
+
+        if (op.Source is null)
         {
             return Outcome.Skipped(NotPerformedMessage);
         }
@@ -354,7 +360,12 @@ public sealed class Undoer(ExecutionContext context)
     private Outcome UndoUnrecordedMove(PlannedOperation op)
     {
         var fs = context.FileSystem;
-        if (op.Source is null || !fs.FileExists(op.Destination))
+        if (!fs.FileExists(op.Destination))
+        {
+            return Outcome.NothingDone();
+        }
+
+        if (op.Source is null)
         {
             return Outcome.Skipped(NotPerformedMessage);
         }
@@ -580,7 +591,11 @@ public sealed class Undoer(ExecutionContext context)
             case OutcomeKind.Skipped:
                 run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.UndoSkipped, op.Id, op.Kind, Message: outcome.Reason,
                     TimestampUtc: context.UtcNow()));
-                run.Skipped.Add(new UndoSkip(op.Id, op.Destination, outcome.Reason!));
+                if (!outcome.Quiet)
+                {
+                    run.Skipped.Add(new UndoSkip(op.Id, op.Destination, outcome.Reason!));
+                }
+
                 break;
 
             case OutcomeKind.Transient:
@@ -611,13 +626,20 @@ public sealed class Undoer(ExecutionContext context)
     /// 작업 하나의 되돌리기 결과. Undone·Skipped는 기록하고, Transient·Blocked는 결과로만 알린다(다음 되돌리기에서 다시 본다).
     /// Blocked는 이번 되돌리기를 그 자리에서 멈춘다. Transient는 디스크 상태를 바꾸지 않고 남기는 경우(복사본 유지)라 계속한다.
     /// <see cref="Location"/>은 Undone일 때 파일이 지금 있는 곳(격리 경로나 원래 자리).
+    /// <see cref="Quiet"/>이면 기록은 하지만 결과(남긴 항목)에는 싣지 않는다.
     /// </summary>
-    private readonly record struct Outcome(OutcomeKind Kind, string? Reason, string? Location)
+    private readonly record struct Outcome(OutcomeKind Kind, string? Reason, string? Location, bool Quiet = false)
     {
         /// <summary><paramref name="note"/>가 있으면 기록은 Undone이지만 사용자에게 알릴 내용이 있다(결과의 Skipped에 함께 싣는다).</summary>
         public static Outcome Undone(string? location, string? note = null) => new(OutcomeKind.Undone, note, location);
 
         public static Outcome Skipped(string reason) => new(OutcomeKind.Skipped, reason, null);
+
+        /// <summary>
+        /// 실행되지 않아 대상 자리에 아무것도 없는 작업. 다음 되돌리기가 다시 보지 않도록 Skipped와 같이 기록하지만,
+        /// 남긴 것이 없으므로 결과에는 싣지 않는다(끊긴 복사가 남긴 임시 파일은 그 전에 격리 폴더로 옮겼다).
+        /// </summary>
+        public static Outcome NothingDone() => new(OutcomeKind.Skipped, NotPerformedMessage, null, Quiet: true);
 
         public static Outcome Transient(string reason) => new(OutcomeKind.Transient, reason, null);
 

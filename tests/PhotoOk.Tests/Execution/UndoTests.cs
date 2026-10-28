@@ -522,7 +522,7 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(2, result.Undone);
-        Assert.Equal([new UndoSkip("op3", Day14, NotPerformed)], result.Skipped);
+        Assert.Empty(result.Skipped); // 실행되지 않아 대상 자리에 아무것도 없는 작업은 남긴 항목이 아니다
         Assert.Equal(pa, _fs.ReadAllBytes(Day15));
         Assert.Equal(pb, _fs.ReadAllBytes(Day14));
         Assert.Equal(OpStatus.UndoSkipped, StateOf(JournalReader.Load(_fs, journal), "op3").Status);
@@ -576,10 +576,77 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(1, result.Undone); // 폴더. 임시 파일은 작업이 아니므로 세지 않는다
-        Assert.Equal([new UndoSkip("op2", @"D:\Archive\2026\a.jpg", NotPerformed)], result.Skipped);
+        Assert.Empty(result.Skipped); // 끝나지 않은 복사는 남긴 것이 없다(임시 파일은 격리했다)
         Assert.Empty(ArchiveFiles());
         Assert.False(_fs.DirectoryExists(@"D:\Archive\2026"));
         Assert.Equal(a, _fs.ReadAllBytes(@"E:\DCIM\a.jpg"));
+    }
+
+    [Fact]
+    public void Undo_CrashedCopyWithLeftoverTemp_IsNotReportedAsKept_ButTempIsQuarantined()
+    {
+        // 복사 3개 중 2개를 마치고 세 번째를 쓰던 중에 꺼졌다(Started만 있고 임시 파일이 남았다).
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 50);
+        var b = AddFile(@"E:\DCIM\b.jpg", 100, 51);
+        var c = AddFile(@"E:\DCIM\c.jpg", 100, 52);
+        _fs.AddFile(@"D:\Archive\a.jpg", a);
+        _fs.AddFile(@"D:\Archive\b.jpg", b);
+        var partial = c[..40];
+        _fs.AddFile(@"D:\Archive\c.jpg.photook-tmp", partial);
+        var journal = WriteJournal(
+            [
+                Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length),
+                Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\b.jpg", b.Length),
+                Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\c.jpg", c.Length),
+            ],
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, Hash(@"D:\Archive\a.jpg")),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Completed, Hash(@"D:\Archive\b.jpg")),
+            ("op3", JournalEvent.Started, null));
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal(2, result.UndoneFiles);
+        Assert.Empty(result.Skipped);
+        Assert.False(result.Stopped);
+        Assert.Empty(ArchiveFiles());
+        Assert.Equal(a, _fs.ReadAllBytes(Quarantined(RunId, "a.jpg")));
+        Assert.Equal(b, _fs.ReadAllBytes(Quarantined(RunId, "b.jpg")));
+        Assert.Equal(partial, _fs.ReadAllBytes(Quarantined(RunId, "c.jpg.photook-tmp")));
+        Assert.Equal(c, _fs.ReadAllBytes(@"E:\DCIM\c.jpg"));
+
+        // 다음 되돌리기가 다시 보지 않도록 기록은 남는다.
+        var skipped = Entries(journal).Single(e => e.Event == JournalEvent.UndoSkipped);
+        Assert.Equal("op3", skipped.OpId);
+        Assert.Equal(NotPerformed, skipped.Message);
+    }
+
+    [Fact]
+    public void Undo_StillReportsKeptItems_NextToUnperformedOne()
+    {
+        // 끝나지 않은 작업은 알리지 않아도, 실제로 남긴 항목(실행 후 바뀐 복사본, 대상에 다른 파일이 있는 작업)은 계속 알린다.
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 53);
+        var b = AddFile(@"E:\DCIM\b.jpg", 100, 54);
+        var c = AddFile(@"E:\DCIM\c.jpg", 100, 55);
+        var hashA = Hash(@"E:\DCIM\a.jpg"); // 복사할 때 기록한 해시
+        _fs.AddFile(@"D:\Archive\a.jpg", Bytes(100, 56)); // 실행 후 바뀌었다
+        var other = AddFile(@"D:\Archive\b.jpg", 100, 57); // 이번 실행이 만든 것이 아닌 파일
+        var journal = WriteJournal(
+            [
+                Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length),
+                Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\b.jpg", b.Length),
+                Copy("op3", @"E:\DCIM\c.jpg", @"D:\Archive\c.jpg", c.Length),
+            ],
+            ("op1", JournalEvent.Started, null), ("op1", JournalEvent.Completed, hashA),
+            ("op2", JournalEvent.Started, null), ("op2", JournalEvent.Failed, null),
+            ("op3", JournalEvent.Started, null));
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal(0, result.UndoneFiles);
+        Assert.Equal(
+            [new UndoSkip("op2", @"D:\Archive\b.jpg", NotPerformed), new UndoSkip("op1", @"D:\Archive\a.jpg", KeptModified)],
+            result.Skipped);
+        Assert.Equal(other, _fs.ReadAllBytes(@"D:\Archive\b.jpg"));
     }
 
     [Fact]
@@ -754,12 +821,8 @@ public class UndoTests
         var result = NewUndoer().Undo(journal);
 
         Assert.Equal(0, result.Undone);
-        Assert.Equal(
-            [
-                new UndoSkip("op2", @"D:\Archive\2027", NotPerformed),
-                new UndoSkip("op1", @"D:\Archive\2026", "만들었는지 알 수 없는 폴더라 그대로 둡니다"),
-            ],
-            result.Skipped);
+        // 만들어지지 않은 폴더(op2)는 남긴 것이 없으므로 알리지 않는다. 그대로 둔 폴더(op1)는 알린다.
+        Assert.Equal([new UndoSkip("op1", @"D:\Archive\2026", "만들었는지 알 수 없는 폴더라 그대로 둡니다")], result.Skipped);
         Assert.True(_fs.DirectoryExists(@"D:\Archive\2026"));
         var state = JournalReader.Load(_fs, journal);
         Assert.Equal(OpStatus.UndoSkipped, StateOf(state, "op1").Status);
