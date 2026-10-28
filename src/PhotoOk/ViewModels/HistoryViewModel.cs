@@ -13,6 +13,7 @@ namespace PhotoOk.ViewModels;
 /// 파일은 <see cref="Undoer"/>(와 이어 하는 화면의 실행기)만 건드린다. 이 화면은 기록을 읽고 되돌리기를 백그라운드에서 부를 뿐이다.
 /// 되돌리기는 항상 먼저 묻고, 아니라고 하면 아무것도 바꾸지 않는다. 복사본은 지우지 않고 보관 폴더로 옮겨진다.
 /// 이어 하기 화면과 시작 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다. 상태는 화면(UI) 스레드에서만 바꾼다.
+/// 작업 기록은 백그라운드에서 읽는다(기록이 많거나 보관 폴더가 꺼진 네트워크 경로여도 화면이 멈추지 않게).
 /// </summary>
 public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
 {
@@ -20,11 +21,13 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     private const string UndoFaultMessage = "예기치 못한 오류로 되돌리기를 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다. 기록이 남아 있어 다시 되돌릴 수 있습니다.";
     private const string JournalUnavailableMessage = "기록을 남길 수 없어 되돌리기를 멈췄습니다. 기록 폴더를 확인한 뒤 다시 시도해 주세요.";
     private const string LoadFaultMessage = "작업 기록을 읽지 못했습니다";
+    private const string LoadingNotice = "작업 기록을 읽는 중…";
+    private const string EmptyNotice = "아직 작업 기록이 없습니다.";
     private const string DetailSeparator = " — ";
     private const int LineLimit = 50;
 
     private readonly ShellViewModel _shell;
-    private readonly RunHistory _history;
+    private readonly IRunHistory _history;
     private readonly Undoer _undoer;
     private readonly IDialogService _dialogs;
     private readonly FileLog _log;
@@ -33,6 +36,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
 
     private CancellationTokenSource? _cts;
     private bool _refreshing;
+    private int _loadGeneration;
     private string? _resultRunId;
     private IReadOnlyList<string> _undoResultLines = [];
     private IReadOnlyList<string> _loadErrors = [];
@@ -55,8 +59,12 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
     private bool isCancelling;
 
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(RunsNotice))]
+    private bool isLoading;
+
     /// <param name="selectRunId">처음부터 골라 둘 실행 ID. 없거나 목록에 없으면 고르지 않는다.</param>
-    public HistoryViewModel(ShellViewModel shell, RunHistory history, Undoer undoer, IDialogService dialogs, FileLog log,
+    public HistoryViewModel(ShellViewModel shell, IRunHistory history, Undoer undoer, IDialogService dialogs, FileLog log,
         Func<string, ObservableObject> createResume, Func<ObservableObject> createHome, string? selectRunId = null)
     {
         _shell = shell;
@@ -72,13 +80,19 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         HomeCommand = new RelayCommand(() => _shell.Navigate(_createHome()), () => !IsBusy);
         CancelCommand = new RelayCommand(Cancel, () => IsBusy && !IsCancelling);
 
-        Refresh(selectRunId);
+        WhenLoaded = RefreshAsync(selectRunId);
     }
 
     public event EventHandler? BusyEnded;
 
     /// <summary>실행 ID 내림차순(최근 실행이 먼저).</summary>
     public ObservableCollection<RunSummary> Runs { get; } = [];
+
+    /// <summary>"작업 기록을 읽는 중…", 기록이 없으면 "아직 작업 기록이 없습니다.", 목록이 있으면 null.</summary>
+    public string? RunsNotice => IsLoading ? LoadingNotice : Runs.Count == 0 ? EmptyNotice : null;
+
+    /// <summary>가장 나중에 요청한 기록 읽기가 끝나면(반영·실패) 완료된다. 예외로 끝나지 않는다.</summary>
+    public Task WhenLoaded { get; private set; }
 
     /// <summary>"이어 하기": 고른 실행이 끝나지 않았을 때만. 실행 화면으로 가서 이어 한다.</summary>
     public IAsyncRelayCommand ResumeCommand { get; }
@@ -116,30 +130,44 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     };
 
     /// <summary>
-    /// 기록을 다시 읽는다. 읽던 실행(<paramref name="keepRunId"/>, 없으면 지금 고른 실행)이 아직 있으면 계속 고른 상태로 둔다.
-    /// 읽지 못해도 예외를 던지지 않는다(로그에 남기고 한국어 안내만 보인다).
+    /// 기록을 백그라운드에서 다시 읽는다. 읽던 실행(<paramref name="keepRunId"/>, 없으면 반영할 때 고른 실행)이 아직 있으면
+    /// 계속 고른 상태로 둔다. 가장 나중 요청만 반영한다. 읽지 못해도 예외를 던지지 않는다(로그에 남기고 한국어 안내만 보인다).
     /// </summary>
-    public void Refresh(string? keepRunId = null)
+    public Task RefreshAsync(string? keepRunId = null)
     {
+        var generation = ++_loadGeneration;
+        IsLoading = true;
+        WhenLoaded = LoadAsync(generation, keepRunId);
+        return WhenLoaded;
+    }
+
+    private async Task LoadAsync(int generation, string? keepRunId)
+    {
+        IReadOnlyList<RunSummary> runs;
+        IReadOnlyList<string> errorLines;
+        try
+        {
+            var history = _history;
+            var (found, errors) = await Task.Run(history.List);
+            runs = found;
+            errorLines = errors.Select(e => $"{e.JournalPath}: {e.Message}").ToList();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("작업 기록을 읽지 못했습니다", ex);
+            runs = [];
+            errorLines = [LoadFaultMessage];
+        }
+
+        if (generation != _loadGeneration)
+        {
+            return;
+        }
+
         var keep = keepRunId ?? Selected?.RunId;
         _refreshing = true;
         try
         {
-            IReadOnlyList<RunSummary> runs;
-            IReadOnlyList<string> errorLines;
-            try
-            {
-                var (found, errors) = _history.List();
-                runs = found;
-                errorLines = errors.Select(e => $"{e.JournalPath}: {e.Message}").ToList();
-            }
-            catch (Exception ex)
-            {
-                _log.Error("작업 기록을 읽지 못했습니다", ex);
-                runs = [];
-                errorLines = [LoadFaultMessage];
-            }
-
             SetLoadErrors(errorLines);
 
             Runs.Clear();
@@ -153,6 +181,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         finally
         {
             _refreshing = false;
+            IsLoading = false;
+            OnPropertyChanged(nameof(RunsNotice));
         }
     }
 
@@ -231,7 +261,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         {
             try
             {
-                Refresh(run.RunId);
+                await RefreshAsync(run.RunId);
             }
             catch (Exception ex)
             {

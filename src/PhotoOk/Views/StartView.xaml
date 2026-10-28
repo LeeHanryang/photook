@@ -84,13 +84,12 @@
             </ItemsControl>
 
             <TextBlock Text="최근 작업" Style="{StaticResource SectionTitle}" />
-            <TextBlock Text="아직 작업 기록이 없습니다." Opacity="0.7">
+            <TextBlock Text="{Binding HistoryNotice}" Opacity="0.7">
                 <TextBlock.Style>
                     <Style TargetType="TextBlock">
-                        <Setter Property="Visibility" Value="Collapsed" />
                         <Style.Triggers>
-                            <DataTrigger Binding="{Binding RecentRuns.Count}" Value="0">
-                                <Setter Property="Visibility" Value="Visible" />
+                            <DataTrigger Binding="{Binding HistoryNotice}" Value="{x:Null}">
+                                <Setter Property="Visibility" Value="Collapsed" />
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>

@@ -40,8 +40,15 @@ public class HistoryViewModelTests
 
     private FileLog Log => new(_fs, LogFolder);
 
-    private HistoryViewModel Create(string? selectRunId = null) =>
-        new(_shell, new RunHistory(_fs, AppData), new Undoer(Context()), _dialogs, Log,
+    private async Task<HistoryViewModel> CreateAsync(string? selectRunId = null, IRunHistory? history = null)
+    {
+        var vm = Create(selectRunId, history);
+        await vm.WhenLoaded;
+        return vm;
+    }
+
+    private HistoryViewModel Create(string? selectRunId = null, IRunHistory? history = null) =>
+        new(_shell, history ?? new RunHistory(_fs, AppData), new Undoer(Context()), _dialogs, Log,
             createResume: path =>
             {
                 _resumeRequests.Add(path);
@@ -99,13 +106,13 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void Lists_Runs_WithStatusText()
+    public async Task Lists_Runs_WithStatusText()
     {
         WriteJournal("20261026-100000-aaaa", [], expected: 2);                          // 계획이 끝나지 않음
         Run(CopyPlan(1));                                                               // 완료
         WriteJournal("20261025-100000-cccc", [], expected: 0, JournalEvent.UndoStarted); // 되돌림
 
-        var vm = Create();
+        var vm = await CreateAsync();
 
         Assert.Equal(3, vm.Runs.Count);
         Assert.Equal(RunStatus.PlanIncomplete, vm.Runs.Single(r => r.RunId == "20261026-100000-aaaa").Status);
@@ -122,11 +129,11 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void ShowsReadErrors_InKorean()
+    public async Task ShowsReadErrors_InKorean()
     {
         _fs.AddFile(Path.Combine(AppData, "journal", "broken.jsonl"), Encoding.UTF8.GetBytes("not json\n"));
 
-        var vm = Create();
+        var vm = await CreateAsync();
 
         Assert.Empty(vm.Runs);
         var line = Assert.Single(vm.LoadErrors);
@@ -137,7 +144,7 @@ public class HistoryViewModelTests
     public async Task Undo_AsksFirst_AndShowsResult()
     {
         var journal = Run(CopyPlan(2));
-        var vm = Create();
+        var vm = await CreateAsync();
         vm.Selected = vm.Runs.Single();
         var started = vm.Selected.StartedLocal;
         var busyEnded = 0;
@@ -174,7 +181,7 @@ public class HistoryViewModelTests
     {
         Run(CopyPlan(1));
         _fs.RemoveVolume(@"E:\"); // 원본을 확인할 수 없으면 복사본을 남긴다
-        var vm = Create();
+        var vm = await CreateAsync();
         vm.Selected = vm.Runs.Single();
         _dialogs.ConfirmAnswers.Enqueue(true);
 
@@ -191,7 +198,7 @@ public class HistoryViewModelTests
     public async Task Undo_Declined_ChangesNothing()
     {
         Run(CopyPlan(2));
-        var vm = Create();
+        var vm = await CreateAsync();
         vm.Selected = vm.Runs.Single();
         var before = _fs.AllFiles().ToList();
         var opsBefore = _fs.MutatingOps;
@@ -208,14 +215,14 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void Commands_FollowCanResumeAndCanUndo()
+    public async Task Commands_FollowCanResumeAndCanUndo()
     {
         var planned = new[] { Copy("op1", @"E:\DCIM\p1.jpg", @"D:\Archive\2026\p1.jpg", 10) };
         WriteJournal("20261026-100000-aaaa", [], expected: 2);                           // 계획 미완료
         WriteJournal("20261025-100000-bbbb", [], expected: 0, JournalEvent.UndoStarted); // 되돌림
         WriteJournal("20261024-100000-cccc", planned);                                   // 끝나지 않음
         Run(CopyPlan(1));                                                                // 완료
-        var vm = Create();
+        var vm = await CreateAsync();
 
         Assert.False(vm.ResumeCommand.CanExecute(null));
         Assert.False(vm.UndoCommand.CanExecute(null));
@@ -242,7 +249,7 @@ public class HistoryViewModelTests
     {
         var plan = CopyPlan(2);
         var journal = WriteJournal("20261027-090000-bbbb", [.. plan.Operations]);
-        var vm = Create();
+        var vm = await CreateAsync();
         vm.Selected = vm.Runs.Single();
         Assert.Equal(RunStatus.Unfinished, vm.Selected.Status);
 
@@ -257,12 +264,12 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void SelectsRequestedRun_WhenOpenedFromStart()
+    public async Task SelectsRequestedRun_WhenOpenedFromStart()
     {
         WriteJournal("20261026-100000-aaaa", [], expected: 2);
         Run(CopyPlan(1));
 
-        var vm = Create(selectRunId: "20261026-100000-aaaa");
+        var vm = await CreateAsync(selectRunId: "20261026-100000-aaaa");
 
         Assert.Equal("20261026-100000-aaaa", vm.Selected?.RunId);
     }
@@ -271,7 +278,7 @@ public class HistoryViewModelTests
     public async Task Undo_Fault_ShowsKoreanMessage_AndStillEndsBusy()
     {
         Run(CopyPlan(1));
-        var vm = Create();
+        var vm = await CreateAsync();
         vm.Selected = vm.Runs.Single();
         _dialogs.ConfirmAnswers.Enqueue(true);
         _fs.CrashAfter(0); // 되돌리기의 첫 변경에서 예외
@@ -289,9 +296,9 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void Cancel_WhenIdle_DoesNothing()
+    public async Task Cancel_WhenIdle_DoesNothing()
     {
-        var vm = Create();
+        var vm = await CreateAsync();
 
         vm.Cancel();
 
@@ -299,12 +306,70 @@ public class HistoryViewModelTests
     }
 
     [Fact]
-    public void Home_NavigatesToHome()
+    public async Task Home_NavigatesToHome()
     {
-        var vm = Create();
+        var vm = await CreateAsync();
 
         vm.HomeCommand.Execute(null);
 
         Assert.Same(_home, _shell.Current);
+    }
+
+    private static RunSummary Summary(string runId, RunStatus status) =>
+        new(runId, @"C:\j\" + runId + ".jsonl", Archive, new DateTime(2026, 10, 27, 9, 0, 0), status, 1, 1, 0,
+            CanResume: status == RunStatus.Unfinished, CanUndo: true);
+
+    [Fact]
+    public async Task Runs_AreReadInBackground_WithLoadingNotice_AndKeepRequestedSelection()
+    {
+        var history = new FakeRunHistory { Gate = new ManualResetEventSlim() };
+        history.Runs.Add(Summary("20261027-090000-bbbb", RunStatus.Completed));
+        history.Runs.Add(Summary("20261026-090000-aaaa", RunStatus.Unfinished));
+        var uiThread = Environment.CurrentManagedThreadId;
+
+        var vm = Create(selectRunId: "20261026-090000-aaaa", history: history);
+
+        Assert.True(history.Started.Wait(TimeSpan.FromSeconds(10)));
+        Assert.True(vm.IsLoading);
+        Assert.Equal("작업 기록을 읽는 중…", vm.RunsNotice);
+        Assert.False(vm.IsBusy); // 읽기만 하므로 닫기를 막지 않는다
+        Assert.Empty(vm.Runs);
+
+        history.Gate.Set();
+        await vm.WhenLoaded;
+
+        Assert.DoesNotContain(uiThread, history.CallingThreads);
+        Assert.False(vm.IsLoading);
+        Assert.Null(vm.RunsNotice);
+        Assert.Equal(2, vm.Runs.Count);
+        Assert.Equal("20261026-090000-aaaa", vm.Selected?.RunId);
+        Assert.True(vm.ResumeCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Refresh_KeepsCurrentSelection()
+    {
+        var history = new FakeRunHistory();
+        history.Runs.Add(Summary("20261027-090000-bbbb", RunStatus.Completed));
+        history.Runs.Add(Summary("20261026-090000-aaaa", RunStatus.Completed));
+        var vm = await CreateAsync(history: history);
+        vm.Selected = vm.Runs[1];
+
+        await vm.RefreshAsync();
+
+        Assert.Equal("20261026-090000-aaaa", vm.Selected?.RunId);
+    }
+
+    [Fact]
+    public async Task Runs_Failure_ShowsKoreanMessage_AndLogs()
+    {
+        var history = new FakeRunHistory { Failure = new ArgumentException("bad archive root") };
+
+        var vm = await CreateAsync(history: history);
+
+        Assert.Empty(vm.Runs);
+        Assert.Equal(["작업 기록을 읽지 못했습니다"], vm.LoadErrors);
+        Assert.Equal("아직 작업 기록이 없습니다.", vm.RunsNotice);
+        Assert.Contains("bad archive root", LogText(), StringComparison.Ordinal);
     }
 }

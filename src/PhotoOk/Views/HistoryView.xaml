@@ -74,18 +74,7 @@
         </StackPanel>
 
         <Grid Grid.Row="2" MaxWidth="900" HorizontalAlignment="Stretch" Margin="0,12,0,0">
-            <TextBlock Text="아직 작업 기록이 없습니다." Opacity="0.7">
-                <TextBlock.Style>
-                    <Style TargetType="TextBlock">
-                        <Setter Property="Visibility" Value="Collapsed" />
-                        <Style.Triggers>
-                            <DataTrigger Binding="{Binding Runs.Count}" Value="0">
-                                <Setter Property="Visibility" Value="Visible" />
-                            </DataTrigger>
-                        </Style.Triggers>
-                    </Style>
-                </TextBlock.Style>
-            </TextBlock>
+            <TextBlock Text="{Binding RunsNotice}" Style="{StaticResource OptionalText}" Margin="0" Opacity="0.7" />
             <ListBox ItemsSource="{Binding Runs}" SelectedItem="{Binding Selected, Mode=TwoWay}"
                      HorizontalContentAlignment="Stretch"
                      IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}">

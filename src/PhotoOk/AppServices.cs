@@ -19,7 +19,7 @@ internal sealed record AppServices(
     IHasher Hasher,
     CoreExecutionContext Execution,
     PresetLibrary Presets,
-    RunHistory History,
+    IRunHistory History,
     IRemovableDrives Drives,
     IFolderPicker FolderPicker,
     IFileOpenPicker FilePicker,

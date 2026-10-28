@@ -85,7 +85,7 @@ public partial class App : Application
 
     /// <summary>시작 화면. 가져오기·작업 기록·이어 하기는 각 화면 팩토리로 화면을 만든다.</summary>
     private static StartViewModel CreateStartScreen(AppServices services, ShellViewModel shell) =>
-        new(shell, services.Drives, services.History,
+        new(shell, services.Drives, services.History, services.Log,
             createSource: driveRoot => CreateSourceScreen(services, shell, driveRoot),
             createHistory: runId => CreateHistoryScreen(services, shell, runId),
             createResume: journalPath => CreateResumeScreen(services, shell, journalPath));
