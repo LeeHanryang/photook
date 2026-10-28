@@ -158,7 +158,7 @@ public class HistoryViewModelTests
         Assert.Equal("되돌리기", confirm.Title);
         Assert.Equal(
             started.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)
-            + @" 실행을 되돌릴까요? 복사본은 보관 폴더의 .photook\되돌림으로 옮겨집니다.",
+            + @" 실행을 되돌릴까요? 가져온 복사본은 보관 폴더의 .photook\되돌림으로 옮기고, 옮긴 파일은 원래 자리로 돌려놓습니다.",
             confirm.Message);
         Assert.Empty(ArchiveFilesOutsidePhotook());
         Assert.True(_fs.FileExists(@"E:\DCIM\p1.jpg"));

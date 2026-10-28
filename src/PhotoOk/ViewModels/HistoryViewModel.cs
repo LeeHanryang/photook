@@ -11,13 +11,19 @@ namespace PhotoOk.ViewModels;
 /// <summary>
 /// 작업 기록 화면. 지난 실행을 보여 주고, 끝나지 않은 실행을 이어 하거나 실행 하나를 되돌린다.
 /// 파일은 <see cref="Undoer"/>(와 이어 하는 화면의 실행기)만 건드린다. 이 화면은 기록을 읽고 되돌리기를 백그라운드에서 부를 뿐이다.
-/// 되돌리기는 항상 먼저 묻고, 아니라고 하면 아무것도 바꾸지 않는다. 복사본은 지우지 않고 보관 폴더로 옮겨진다.
+/// 되돌리기는 항상 먼저 묻고, 아니라고 하면 아무것도 바꾸지 않는다. 복사본은 지우지 않고 보관 폴더로 옮겨지고, 옮긴 파일은 원래 자리로 돌아간다.
 /// 이어 하기 화면과 시작 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다. 상태는 화면(UI) 스레드에서만 바꾼다.
 /// 작업 기록은 백그라운드에서 읽는다(기록이 많거나 보관 폴더가 꺼진 네트워크 경로여도 화면이 멈추지 않게).
 /// </summary>
 public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel, ILeavableScreen
 {
     private const string UndoTitle = "되돌리기";
+
+    /// <summary>
+    /// 되돌리기 확인 문구의 뒷부분. 복사·이동 실행 모두에 맞는다. 시작 화면의 "되돌리기"도 이 화면에서 같은 확인을 거친다.
+    /// </summary>
+    internal const string UndoConfirmNote =
+        @"가져온 복사본은 보관 폴더의 .photook\되돌림으로 옮기고, 옮긴 파일은 원래 자리로 돌려놓습니다.";
     private const string UndoFaultMessage = "예기치 못한 오류로 되돌리기를 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다. 기록이 남아 있어 다시 되돌릴 수 있습니다.";
     private const string JournalUnavailableMessage = "기록을 남길 수 없어 되돌리기를 멈췄습니다. 기록 폴더를 확인한 뒤 다시 시도해 주세요.";
     private const string LoadFaultMessage = "작업 기록을 읽지 못했습니다";
@@ -264,7 +270,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel,
         }
 
         var started = run.StartedLocal.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-        if (!_dialogs.Confirm(UndoTitle, $@"{started} 실행을 되돌릴까요? 복사본은 보관 폴더의 .photook\되돌림으로 옮겨집니다."))
+        if (!_dialogs.Confirm(UndoTitle, $"{started} 실행을 되돌릴까요? {UndoConfirmNote}"))
         {
             return;
         }
