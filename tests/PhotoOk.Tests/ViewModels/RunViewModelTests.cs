@@ -149,6 +149,8 @@ public class RunViewModelTests
     [InlineData(2, false, 3, false, false)] // 둘 다
     [InlineData(0, false, 0, true, false)]  // 하위 폴더를 포함하지 않았는데 하위 폴더가 있었다
     [InlineData(2, false, 3, true, false)]  // 셋 다
+    [InlineData(2, true, 3, true, false)]   // 복사 실패가 있어도 주의 줄은 모두 남는다
+    [InlineData(0, true, 3, false, false)]  // 복사 실패 + 가져오지 않은 파일
     public async Task SafeToClean_OnlyWhenNoScanErrors_NoFailures_NoIgnoredFiles_AndNoSubfoldersLeftOut(int scanErrors, bool failRead,
         int ignored, bool subfolders, bool safe)
     {
@@ -168,12 +170,13 @@ public class RunViewModelTests
             Assert.Equal("일부 파일을 처리하지 못했습니다", vm.ResultTitle);
             var line = Assert.Single(vm.FailureLines);
             Assert.StartsWith(@"E:\DCIM\p1.jpg → D:\Archive\2026\p1.jpg: ", line);
-            Assert.Null(vm.CautionMessage);
-            return;
+        }
+        else
+        {
+            Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
         }
 
-        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
-        if (safe)
+        if (scanErrors == 0 && ignored == 0 && !subfolders)
         {
             Assert.Null(vm.CautionMessage);
             return;

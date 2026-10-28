@@ -143,21 +143,24 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         CompletedWithoutFailures && _scan is { ScanErrors: 0, IgnoredFiles: 0, SubfoldersNotImported: false } ? SafeMessage : null;
 
     /// <summary>
-    /// 실패 없이 끝났는데도 "안전" 문구를 못 보이는 까닭(스캔 때 읽지 못한 파일이나 가져오지 않은 파일·하위 폴더가 있거나, 있었는지 모른다).
-    /// 까닭이 여럿이면 줄을 바꿔 모두 보인다. 그 밖에는 null.
+    /// 원본을 정리하기 전에 확인할 것(스캔 때 읽지 못한 파일, 가져오지 않은 파일, 가져오지 않은 하위 폴더). 실행 결과가 있으면
+    /// 처리하지 못한 파일이 있어도 보인다. 까닭이 여럿이면 서로 지우지 않고 줄을 바꿔 모두 보인다.
+    /// 기록에서 이어 한 실행은 그것을 모르므로, 실패 없이 끝났을 때 모른다는 안내 한 줄만 보인다. 그 밖에는 null.
     /// </summary>
     public string? CautionMessage
     {
         get
         {
-            if (!CompletedWithoutFailures)
+            if (_result is null)
             {
                 return null;
             }
 
             if (_scan is null)
             {
-                return "이 기록은 스캔할 때 읽지 못한 파일이나 가져오지 않은 파일이 있었는지 알 수 없습니다. 원본을 직접 정리하기 전에 확인해 주세요";
+                return CompletedWithoutFailures
+                    ? "이 기록은 스캔할 때 읽지 못한 파일이나 가져오지 않은 파일이 있었는지 알 수 없습니다. 원본을 직접 정리하기 전에 확인해 주세요"
+                    : null;
             }
 
             var lines = new List<string>();
