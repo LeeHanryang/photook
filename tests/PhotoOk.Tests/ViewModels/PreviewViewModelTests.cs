@@ -503,7 +503,8 @@ public class PreviewViewModelTests
         Assert.Contains("(파일 이름)", vm.Detail.CaptureSource, StringComparison.Ordinal);
 
         vm.SelectedSession = vm.Sessions.Single(s => s.Files.Any(f => f.EndsWith("D.JPG", StringComparison.Ordinal)));
-        Assert.Equal("(촬영일 없음 — 파일 수정 시각)", vm.Detail!.CaptureSource);
+        Assert.Equal("촬영 시각 없음 — 파일 수정 시각으로 대체", vm.Detail!.CaptureTime);
+        Assert.Equal("", vm.Detail.CaptureSource);
     }
 
     [Fact]

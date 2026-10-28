@@ -31,6 +31,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private const int BlockingLineLimit = 5;
     private const int IgnoredLineLimit = 200;
     private const string ConfirmTitle = "확인이 필요한 오류가 있습니다";
+    private const string NoCaptureTimeText = "촬영 시각 없음 — 파일 수정 시각으로 대체";
     private const string NothingToTransferMessage = "옮길 파일이 없습니다 — 모두 보관 폴더에 있거나 중복입니다";
     private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
 
@@ -572,14 +573,17 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         Detail = new FileDetailViewModel(
             Path.GetFileName(info.Path),
             _aliases.Resolve(group.Primary) ?? "알 수 없음",
-            info.CaptureTime?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "촬영 시각 없음",
-            info.CaptureSource switch
-            {
-                CaptureTimeSource.Photo => "(사진 정보)",
-                CaptureTimeSource.Video => "(동영상 정보)",
-                CaptureTimeSource.FileName => "(파일 이름)",
-                _ => "(촬영일 없음 — 파일 수정 시각)",
-            },
+            // 촬영 시각이 없으면 한 문장으로 알리고 출처는 비운다.
+            info.CaptureTime?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? NoCaptureTimeText,
+            info.CaptureTime is null
+                ? ""
+                : info.CaptureSource switch
+                {
+                    CaptureTimeSource.Photo => "(사진 정보)",
+                    CaptureTimeSource.Video => "(동영상 정보)",
+                    CaptureTimeSource.FileName => "(파일 이름)",
+                    _ => "",
+                },
             destination,
             branch.Name,
             string.Join('\\', branch.Levels.Select(level => level.Template)),
