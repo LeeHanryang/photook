@@ -65,11 +65,15 @@ public sealed class FakeThumbnailProvider : IThumbnailProvider
 {
     public List<string> Requests { get; } = [];
 
+    /// <summary>요청마다 받은 취소 토큰(<see cref="Requests"/>와 같은 순서).</summary>
+    public List<CancellationToken> Tokens { get; } = [];
+
     public Task<ImageSource?> GetAsync(string path, int size, CancellationToken ct)
     {
         lock (Requests)
         {
             Requests.Add(path);
+            Tokens.Add(ct);
         }
 
         return Task.FromResult<ImageSource?>(null);

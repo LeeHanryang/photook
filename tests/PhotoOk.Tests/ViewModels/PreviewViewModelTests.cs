@@ -442,6 +442,21 @@ public class PreviewViewModelTests
     }
 
     [Fact]
+    public async Task ReturnHomeAfterError_CancelsPendingThumbnails()
+    {
+        AddStandardPhotos();
+        await CreateAsync();
+        Assert.NotEmpty(_thumbnails.Tokens);
+        Assert.All(_thumbnails.Tokens, t => Assert.False(t.IsCancellationRequested));
+        var home = new ScreenStub();
+
+        Assert.True(_shell.ReturnHomeAfterError(() => home));
+
+        Assert.Same(home, _shell.Current);
+        Assert.All(_thumbnails.Tokens, t => Assert.True(t.IsCancellationRequested));
+    }
+
+    [Fact]
     public async Task IgnoredFiles_None_HasNoNotice()
     {
         AddStandardPhotos();

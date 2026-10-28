@@ -22,7 +22,7 @@ namespace PhotoOk.ViewModels;
 /// 계획을 세우는 동안(<see cref="IsReplanning"/>)과 실행 전 점검 오류가 있을 때는 실행할 수 없다. 디스크는 읽기만 한다.
 /// 상태는 화면(UI) 스레드에서만 바꾼다.
 /// </summary>
-public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
+public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel, ILeavableScreen
 {
     private const string ReviewGroupId = "판단 필요";
     private const int ThumbnailLimit = 12;
@@ -313,6 +313,16 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         {
             _log.Error("계획 취소 중 오류", ex);
         }
+    }
+
+    /// <summary>
+    /// 다른 화면으로 바뀌었다(뒤로·정리 시작뿐 아니라 오류 뒤 시작 화면으로 돌아갈 때도). 남은 재계획과 썸네일 요청을 멈춘다.
+    /// 여러 번 불려도 안전하고 예외를 던지지 않는다.
+    /// </summary>
+    public void OnLeft()
+    {
+        Cancel();
+        Leave();
     }
 
     [RelayCommand(CanExecute = nameof(CanExecute))]
