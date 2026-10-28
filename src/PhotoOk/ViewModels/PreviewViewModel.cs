@@ -271,13 +271,16 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         {
             if (SetProperty(ref _isReplanning, value))
             {
-                OnPropertyChanged(nameof(IsBusy));
                 ExecuteCommand.NotifyCanExecuteChanged();
             }
         }
     }
 
-    public bool IsBusy => IsReplanning;
+    /// <summary>
+    /// 늘 false. 계획 세우기는 디스크를 읽기만 하므로 창을 닫을 때 "지금 파일까지 마치고 멈출까요?"를 묻지 않는다.
+    /// 재계획 중에 화면을 떠나면 <see cref="Cancel"/>로 멈추고, 끝나면 <see cref="BusyEnded"/>를 알린다.
+    /// </summary>
+    public bool IsBusy => false;
 
     /// <summary>가장 나중 계획 요청이 끝나면(반영·취소·실패) 완료된다.</summary>
     public Task WhenPlanned { get; private set; } = Task.CompletedTask;

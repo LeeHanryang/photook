@@ -243,6 +243,37 @@ public class PreviewViewModelTests
     }
 
     [Fact]
+    public async Task Close_DuringReplan_DoesNotAsk_BecausePlanningOnlyReads()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        using var slowStarted = new ManualResetEventSlim();
+        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        {
+            if (names.Values.Contains("a"))
+            {
+                slowStarted.Set();
+                gate.Wait(Wait);
+            }
+
+            return _workflow.BuildPlan(settings, scan, names);
+        });
+
+        vm.Sessions[0].EventName = "a";
+        Assert.True(slowStarted.Wait(Wait));
+        Assert.True(vm.IsReplanning);
+        Assert.False(vm.IsBusy);
+        Assert.False(_shell.IsBusy);
+
+        // 확인 창 없이 바로 닫을 수 있다(FakeDialogService는 예상하지 못한 확인 창에서 예외를 던진다).
+        Assert.True(_shell.ConfirmClose());
+        Assert.Empty(_dialogs.Confirms);
+
+        gate.Set();
+        await vm.WhenPlanned;
+    }
+
+    [Fact]
     public async Task Execute_IsBlocked_ByPreflightError()
     {
         AddStandardPhotos();
