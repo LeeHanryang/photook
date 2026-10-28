@@ -64,7 +64,9 @@ public sealed class PresetLibrary(IFileSystem fileSystem, string userPresetFolde
         return (presets, errors);
     }
 
-    /// <summary>프리셋 파일 하나를 읽는다. 읽기나 해석에 실패하면 한국어 메시지의 <see cref="PresetException"/>.</summary>
+    /// <summary>
+    /// 프리셋 파일 하나를 읽는다. 읽기나 해석에 실패하면(경로가 올바르지 않은 경우 포함) 한국어 메시지의 <see cref="PresetException"/>.
+    /// </summary>
     public PresetEntry LoadFile(string path)
     {
         string json;
@@ -74,13 +76,13 @@ public sealed class PresetLibrary(IFileSystem fileSystem, string userPresetFolde
             using var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true);
             json = reader.ReadToEnd();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
         {
             throw new PresetException($"프리셋 파일을 읽을 수 없습니다: {path}");
         }
 
         var preset = PresetSerializer.Deserialize(json);
         var name = string.IsNullOrWhiteSpace(preset.Name) ? Path.GetFileNameWithoutExtension(path) : preset.Name;
-        return new PresetEntry(name, preset with { Name = name }, "사용자 프리셋: " + Path.GetFileName(path), path);
+        return new PresetEntry(name, preset with { Name = name }, "사용자 프리셋: " + Path.GetFileNameWithoutExtension(path), path);
     }
 }

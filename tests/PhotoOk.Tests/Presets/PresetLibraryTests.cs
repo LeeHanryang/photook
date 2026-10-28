@@ -31,8 +31,30 @@ public class PresetLibraryTests
         Assert.Equal("카메라와 RAW/JPG별로 나뉩니다. 폴더가 깊어집니다.", presets[2].Description);
         Assert.Equal("폴더 수가 적습니다. 한 폴더에 사진이 많아집니다.", presets[3].Description);
         Assert.Equal(Path.Combine(Folder, "a.json"), presets[4].FilePath);
-        Assert.Equal("사용자 프리셋: a.json", presets[4].Description);
-        Assert.Equal("사용자 프리셋: b.json", presets[5].Description);
+        Assert.Equal("사용자 프리셋: a", presets[4].Description);
+        Assert.Equal("사용자 프리셋: b", presets[5].Description);
+    }
+
+    [Fact]
+    public void LoadAll_SkipsSubfolders_AndAcceptsUppercaseExtension()
+    {
+        var fs = new FakeFileSystem();
+        AddPreset(fs, "UPPER.JSON", BuiltInPresets.Monthly with { Name = "대문자" });
+        AddPreset(fs, Path.Combine("sub", "inner.json"), BuiltInPresets.DateOnly with { Name = "하위 폴더" });
+
+        var (presets, errors) = new PresetLibrary(fs, Folder).LoadAll();
+
+        Assert.Empty(errors);
+        Assert.Equal(["날짜 + 이벤트", "날짜만", "날짜·기기·포맷", "월 단위", "대문자"], presets.Select(p => p.Name));
+        Assert.Equal("사용자 프리셋: UPPER", presets[4].Description);
+    }
+
+    [Fact]
+    public void LoadFile_WrapsInvalidPath_AsPresetException()
+    {
+        var fs = new FakeFileSystem();
+
+        Assert.Throws<PresetException>(() => new PresetLibrary(fs, Folder).LoadFile("C:\\bad\0name.json"));
     }
 
     [Fact]
