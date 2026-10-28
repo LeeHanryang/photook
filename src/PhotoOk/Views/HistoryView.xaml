@@ -73,8 +73,10 @@
             <ItemsControl ItemsSource="{Binding LoadErrors}" Style="{StaticResource LineList}" Foreground="#FFB45309" />
         </StackPanel>
 
-        <Grid Grid.Row="2" MaxWidth="900" HorizontalAlignment="Stretch" Margin="0,12,0,0">
-            <TextBlock Text="{Binding RunsNotice}" Style="{StaticResource OptionalText}" Margin="0" Opacity="0.7" />
+        <!-- "읽는 중…/기록 없음" 안내는 목록 위 자기 줄에 둔다(목록과 같은 칸에 겹치면 목록 배경에 가려진다). -->
+        <DockPanel Grid.Row="2" MaxWidth="900" HorizontalAlignment="Stretch" Margin="0,12,0,0" LastChildFill="True">
+            <TextBlock DockPanel.Dock="Top" Text="{Binding RunsNotice}" Style="{StaticResource OptionalText}" Margin="0,0,0,6"
+                       Opacity="0.7" />
             <ListBox ItemsSource="{Binding Runs}" SelectedItem="{Binding Selected, Mode=TwoWay}"
                      HorizontalContentAlignment="Stretch"
                      IsEnabled="{Binding IsBusy, Converter={StaticResource InvertBool}}">
@@ -93,7 +95,7 @@
                     </DataTemplate>
                 </ListBox.ItemTemplate>
             </ListBox>
-        </Grid>
+        </DockPanel>
 
         <ScrollViewer Grid.Row="3" MaxWidth="900" HorizontalAlignment="Left" VerticalScrollBarVisibility="Auto"
                       MaxHeight="200">

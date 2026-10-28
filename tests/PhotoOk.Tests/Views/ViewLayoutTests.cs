@@ -70,6 +70,20 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void HistoryView_RunsNotice_IsOnItsOwnLineAboveTheList()
+    {
+        var notice = Load("Views", "HistoryView.xaml").Descendants(Wpf + "TextBlock")
+            .Single(t => (string?)t.Attribute("Text") == "{Binding RunsNotice}");
+        var host = notice.Parent!;
+
+        // 같은 Grid 칸에 겹치면 뒤에 그려지는 목록이 안내를 가린다. 목록 위에 따로 쌓여야 한다.
+        Assert.Equal(Wpf + "DockPanel", host.Name);
+        Assert.Equal("Top", (string?)notice.Attribute("DockPanel.Dock"));
+        var children = host.Elements().ToList();
+        Assert.True(children.IndexOf(notice) < children.FindIndex(e => e.Name == Wpf + "ListBox"));
+    }
+
+    [Fact]
     public void PreviewView_ShowsIgnoredFiles()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));
