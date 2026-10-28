@@ -45,8 +45,8 @@ public class RunViewModelTests
 
     private FileLog Log => new(_fs, LogFolder);
 
-    private RunViewModel ForPlan(Plan plan, int scanErrors = 0, Executor? executor = null) =>
-        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), _fs, Log, () => _home, () => _history, plan, scanErrors);
+    private RunViewModel ForPlan(Plan plan, int scanErrors = 0, Executor? executor = null, int ignored = 0) =>
+        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), _fs, Log, () => _home, () => _history, plan, scanErrors, ignored);
 
     private RunViewModel ForResume(string journalPath) =>
         RunViewModel.ForResume(_shell, NewExecutor(), _fs, Log, () => _home, () => _history, journalPath);
@@ -140,9 +140,13 @@ public class RunViewModelTests
     }
 
     [Theory]
-    [InlineData(1, false)] // 스캔 중 읽지 못한 파일이 있었다
-    [InlineData(0, true)]  // 복사 중 실패한 파일이 있다
-    public async Task SafeToClean_Hidden_WhenScanErrorsOrFailures(int scanErrors, bool failRead)
+    [InlineData(0, false, 0, true)]  // 스캔 오류·실패·가져오지 않은 파일 모두 없음
+    [InlineData(1, false, 0, false)] // 스캔 중 읽지 못한 파일이 있었다
+    [InlineData(0, true, 0, false)]  // 복사 중 실패한 파일이 있다
+    [InlineData(0, false, 3, false)] // 사진·동영상이 아닌 파일을 가져오지 않았다
+    [InlineData(2, false, 3, false)] // 둘 다
+    public async Task SafeToClean_OnlyWhenNoScanErrors_NoFailures_AndNoIgnoredFiles(int scanErrors, bool failRead, int ignored,
+        bool safe)
     {
         var plan = CopyPlan(2);
         if (failRead)
@@ -150,23 +154,43 @@ public class RunViewModelTests
             _fs.FailReadsOf(@"E:\DCIM\p1.jpg");
         }
 
-        var vm = ForPlan(plan, scanErrors);
+        var vm = ForPlan(plan, scanErrors, ignored: ignored);
 
         await vm.StartAsync();
 
-        Assert.Null(vm.SafeToCleanMessage);
+        Assert.Equal(safe ? SafeMessage : null, vm.SafeToCleanMessage);
         if (failRead)
         {
             Assert.Equal("일부 파일을 처리하지 못했습니다", vm.ResultTitle);
             var line = Assert.Single(vm.FailureLines);
             Assert.StartsWith(@"E:\DCIM\p1.jpg → D:\Archive\2026\p1.jpg: ", line);
             Assert.Null(vm.CautionMessage);
+            return;
         }
-        else
+
+        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
+        if (safe)
         {
-            Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
-            Assert.Contains("1개", vm.CautionMessage);
+            Assert.Null(vm.CautionMessage);
+            return;
         }
+
+        var caution = vm.CautionMessage!;
+        Assert.Equal(scanErrors > 0,
+            caution.Contains($"스캔할 때 읽지 못한 파일이 {scanErrors}개", StringComparison.Ordinal));
+        Assert.Equal(ignored > 0,
+            caution.Contains("사진·동영상이 아닌 파일 3개는 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Caution_IgnoredFilesOnly_IsExactText()
+    {
+        var vm = ForPlan(CopyPlan(1), ignored: 62);
+
+        await vm.StartAsync();
+
+        Assert.Null(vm.SafeToCleanMessage);
+        Assert.Equal("사진·동영상이 아닌 파일 62개는 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요", vm.CautionMessage);
     }
 
     [Fact]

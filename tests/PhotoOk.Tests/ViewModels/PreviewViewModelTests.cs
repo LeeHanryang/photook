@@ -29,7 +29,7 @@ public class PreviewViewModelTests
     private readonly ShellViewModel _shell;
     private readonly ObservableObject _runScreen = new ScreenStub();
     private readonly ObservableObject _backScreen = new ScreenStub();
-    private readonly List<(Plan Plan, int ScanErrors)> _runRequests = [];
+    private readonly List<(Plan Plan, int ScanErrors, int Ignored)> _runRequests = [];
     private readonly ImportSettings _settings = new([@"E:\DCIM"], true, Archive, BuiltInPresets.DateEvent, TransferMode.Copy);
     private readonly ImportWorkflow _workflow;
 
@@ -71,9 +71,9 @@ public class PreviewViewModelTests
         scan ??= await ScanAsync();
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, fileSystem ?? _fs, _thumbnails, _dialogs,
             new FileLog(_fs, LogFolder),
-            createRun: (plan, errors) =>
+            createRun: (plan, errors, ignored) =>
             {
-                _runRequests.Add((plan, errors));
+                _runRequests.Add((plan, errors, ignored));
                 return _runScreen;
             },
             createBack: () => _backScreen,
@@ -301,6 +301,55 @@ public class PreviewViewModelTests
         var run = Assert.Single(_runRequests);
         Assert.Equal(0, run.ScanErrors);
         Assert.Same(_runScreen, _shell.Current);
+    }
+
+    [Fact]
+    public async Task IgnoredFiles_AreShown_AndPassedToRun()
+    {
+        AddStandardPhotos();
+        _fs.AddFile(@"E:\DCIM\report.pptx", [9]);
+        _fs.AddFile(@"E:\DCIM\budget.xlsx", [8]);
+
+        var vm = await CreateAsync();
+
+        Assert.Equal(2, vm.IgnoredCount);
+        Assert.Equal("가져오지 않는 파일 2개", vm.IgnoredNotice);
+        Assert.Equal([@"E:\DCIM\budget.xlsx", @"E:\DCIM\report.pptx"], vm.IgnoredFiles);
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        var run = Assert.Single(_runRequests);
+        Assert.Equal(2, run.Ignored);
+        Assert.Equal(0, run.ScanErrors);
+    }
+
+    [Fact]
+    public async Task IgnoredFiles_None_HasNoNotice()
+    {
+        AddStandardPhotos();
+
+        var vm = await CreateAsync();
+
+        Assert.Equal(0, vm.IgnoredCount);
+        Assert.Null(vm.IgnoredNotice);
+        Assert.Empty(vm.IgnoredFiles);
+    }
+
+    [Fact]
+    public async Task IgnoredFiles_ListIsCappedAt200_WithRemainderCount()
+    {
+        AddStandardPhotos();
+        var scan = await ScanAsync();
+        var ignored = Enumerable.Range(0, 205).Select(i => $@"E:\DCIM\doc{i:000}.pdf").ToList();
+        scan = scan with { Ignored = ignored };
+
+        var vm = await CreateAsync(scan);
+
+        Assert.Equal(205, vm.IgnoredCount);
+        Assert.Equal("가져오지 않는 파일 205개", vm.IgnoredNotice);
+        Assert.Equal(201, vm.IgnoredFiles.Count);
+        Assert.Equal(ignored.Take(200), vm.IgnoredFiles.Take(200));
+        Assert.Equal("외 5건", vm.IgnoredFiles[^1]);
     }
 
     [Fact]

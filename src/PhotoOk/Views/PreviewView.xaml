@@ -90,6 +90,22 @@
                 <Expander.Style>
                     <Style TargetType="Expander">
                         <Style.Triggers>
+                            <DataTrigger Binding="{Binding IgnoredCount}" Value="0">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Expander.Style>
+                <Expander.Header>
+                    <TextBlock Text="{Binding IgnoredNotice}" Foreground="#8A5A00" />
+                </Expander.Header>
+                <ListBox ItemsSource="{Binding IgnoredFiles}" MaxHeight="120" Margin="0,4,0,0"
+                         VirtualizingPanel.IsVirtualizing="True" />
+            </Expander>
+            <Expander Margin="0,4,0,0">
+                <Expander.Style>
+                    <Style TargetType="Expander">
+                        <Style.Triggers>
                             <DataTrigger Binding="{Binding PlanNotes.Count}" Value="0">
                                 <Setter Property="Visibility" Value="Collapsed" />
                             </DataTrigger>

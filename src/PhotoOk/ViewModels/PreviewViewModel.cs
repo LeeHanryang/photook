@@ -29,6 +29,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private const int CardThumbnailSize = 96;
     private const int GridThumbnailSize = 160;
     private const int BlockingLineLimit = 5;
+    private const int IgnoredLineLimit = 200;
     private const string ConfirmTitle = "확인이 필요한 오류가 있습니다";
     private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
 
@@ -39,7 +40,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private readonly IThumbnailProvider _thumbnails;
     private readonly IDialogService _dialogs;
     private readonly FileLog _log;
-    private readonly Func<Plan, int, ObservableObject> _createRun;
+    private readonly Func<Plan, int, int, ObservableObject> _createRun;
     private readonly Func<ObservableObject> _createBack;
     private readonly TimeSpan _replanDelay;
     private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome> _buildPlan;
@@ -84,7 +85,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     /// <param name="buildPlan">계획을 세우는 함수. 생략하면 <paramref name="workflow"/>의 것을 쓴다(스캔과 같은 인스턴스여야 해시를 다시 쓴다).</param>
     public PreviewViewModel(ShellViewModel shell, ImportWorkflow workflow, ImportSettings settings, ScanOutcome scan,
         IFileSystem fileSystem, IThumbnailProvider thumbnails, IDialogService dialogs, FileLog log,
-        Func<Plan, int, ObservableObject> createRun, Func<ObservableObject> createBack, TimeSpan replanDelay,
+        Func<Plan, int, int, ObservableObject> createRun, Func<ObservableObject> createBack, TimeSpan replanDelay,
         Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null)
     {
         ArgumentNullException.ThrowIfNull(workflow);
@@ -117,6 +118,10 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
 
         ScanErrors = scan.Errors.Select(DescribeScanError).ToList();
+        IgnoredFiles = scan.Ignored.Count <= IgnoredLineLimit
+            ? [.. scan.Ignored]
+            : [.. scan.Ignored.Take(IgnoredLineLimit),
+                string.Create(CultureInfo.InvariantCulture, $"외 {scan.Ignored.Count - IgnoredLineLimit}건")];
 
         // 판단이 필요한 묶음은 날짜 카드에서 빼고 맨 끝 판단 필요 카드에만 보인다. 사유는 계획과 같은 함수(ReviewDetector)로
         // 구하므로 계획 작업에 붙는 사유와 같다. 이벤트 이름과 관계없으므로 첫 계획을 기다리지 않고 카드를 바로 만든다.
@@ -227,6 +232,17 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         ? null
         : string.Create(CultureInfo.InvariantCulture, $"오류 {ScanErrors.Count}건 확인 필요");
 
+    /// <summary>사진·동영상이 아니어서 가져오지 않는 파일 수.</summary>
+    public int IgnoredCount => _scan.Ignored.Count;
+
+    /// <summary>가져오지 않는 파일이 있으면 "가져오지 않는 파일 N개".</summary>
+    public string? IgnoredNotice => IgnoredCount == 0
+        ? null
+        : string.Create(CultureInfo.InvariantCulture, $"가져오지 않는 파일 {IgnoredCount}개");
+
+    /// <summary>가져오지 않는 파일의 경로. 최대 200줄 뒤에 "외 N건".</summary>
+    public IReadOnlyList<string> IgnoredFiles { get; }
+
     /// <summary>계획 메모와 실행 전 점검 경고.</summary>
     public IReadOnlyList<string> PlanNotes
     {
@@ -299,7 +315,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
 
         Leave();
-        _shell.Navigate(_createRun(plan, _scan.Errors.Count));
+        _shell.Navigate(_createRun(plan, _scan.Errors.Count, _scan.Ignored.Count));
         return Task.CompletedTask;
     }
 
