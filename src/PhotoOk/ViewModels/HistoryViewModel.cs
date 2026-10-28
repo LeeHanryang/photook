@@ -24,6 +24,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     private const string LoadingNotice = "작업 기록을 읽는 중…";
     private const string EmptyNotice = "아직 작업 기록이 없습니다.";
     private const string DetailSeparator = " — ";
+    private const string StoppedNote = " (중간에 멈춤 — 다시 되돌리면 이어서 처리합니다)";
     private const int LineLimit = 50;
 
     private readonly ShellViewModel _shell;
@@ -107,7 +108,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     /// <summary>"경로: 사유"(사유는 요약만; 원문은 로그). 최대 50줄 뒤에 "외 N건".</summary>
     public IReadOnlyList<string> UndoResultLines => _undoResultLines;
 
-    /// <summary>"되돌린 작업 N개, 남긴 항목 M개". 되돌리기를 마친 뒤에만 있고, 그 밖에는 null.</summary>
+    /// <summary>"되돌린 파일 N개, 남긴 항목 M개"(폴더는 세지 않는다). 되돌리기를 마친 뒤에만 있고, 그 밖에는 null.</summary>
     public string? UndoSummary => _undoSummary;
 
     /// <summary>되돌리기를 끝까지 하지 못했을 때의 한국어 안내(예외 원문은 로그에만). 그 밖에는 null.</summary>
@@ -245,7 +246,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         try
         {
             var result = await Task.Run(() => _undoer.Undo(run.JournalPath, cts.Token));
-            ShowUndoResult(run.RunId, result);
+            ShowUndoResult(run.RunId, result, stopped: cts.IsCancellationRequested);
         }
         catch (JournalUnavailableException ex)
         {
@@ -277,7 +278,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         }
     }
 
-    private void ShowUndoResult(string runId, UndoResult result)
+    /// <param name="stopped">취소해서 중간에 멈췄으면 true. 요약 뒤에 다시 되돌리면 이어서 처리한다는 안내를 붙인다.</param>
+    private void ShowUndoResult(string runId, UndoResult result, bool stopped)
     {
         // 화면에는 사유의 요약(" — " 앞)만 보인다. 운영체제 예외 원문은 뒤에 붙어 있을 수 있으므로 원문은 로그에만 남긴다.
         var full = result.Skipped.Select(s => $"{s.Path}: {s.Reason}").ToList();
@@ -287,7 +289,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         }
 
         var shown = result.Skipped.Select(s => $"{s.Path}: {Summary(s.Reason)}").ToList();
-        var summary = string.Create(CultureInfo.InvariantCulture, $"되돌린 작업 {result.Undone}개, 남긴 항목 {result.Skipped.Count}개");
+        var summary = string.Create(CultureInfo.InvariantCulture, $"되돌린 파일 {result.UndoneFiles}개, 남긴 항목 {result.Skipped.Count}개")
+            + (stopped ? StoppedNote : string.Empty);
         SetUndoResult(runId, Cap(shown), summary, null);
     }
 

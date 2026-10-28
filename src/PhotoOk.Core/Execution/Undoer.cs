@@ -5,8 +5,11 @@ namespace PhotoOk.Core.Execution;
 /// <summary>되돌리지 않고 남긴 작업. 실행 전체를 막는 문제(보관 드라이브 없음)는 <see cref="OpId"/>가 빈 문자열이다.</summary>
 public sealed record UndoSkip(string OpId, string Path, string Reason);
 
-/// <summary><see cref="Undone"/>은 이번 되돌리기에서 Undone으로 기록한 작업 수다.</summary>
-public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped);
+/// <summary>
+/// <see cref="Undone"/>은 이번 되돌리기에서 Undone으로 기록한 작업 수(폴더 포함), <see cref="UndoneFiles"/>는 그 가운데 파일 작업 수다
+/// (폴더 만들기와, 자리 바꾸기에서 원본을 임시 이름으로 옮긴 첫 다리는 세지 않는다).
+/// </summary>
+public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped, int UndoneFiles);
 
 /// <summary>
 /// 실행 하나를 기록만으로 되돌린다. 원본 보존이 최우선이다.
@@ -62,7 +65,7 @@ public sealed class Undoer(ExecutionContext context)
         // 보관 드라이브가 없으면 복사본은 "없음"으로 보인다. 그런 상태로 최종 판단을 기록하면 안 된다.
         if (!IsVolumePresent(state.ArchiveRoot))
         {
-            return new UndoResult(0, [new UndoSkip(string.Empty, state.ArchiveRoot, Executor.ArchiveVolumeMissingMessage)]);
+            return new UndoResult(0, [new UndoSkip(string.Empty, state.ArchiveRoot, Executor.ArchiveVolumeMissingMessage)], 0);
         }
 
         var run = new UndoRun(state.RunId, state.ArchiveRoot, new JournalWriter(fs, [path]),
@@ -86,7 +89,7 @@ public sealed class Undoer(ExecutionContext context)
                 RescueTempMoves(run, pending);
             }
 
-            return new UndoResult(run.Undone, run.Skipped.ToList());
+            return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles);
         }
 
         // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
@@ -136,7 +139,7 @@ public sealed class Undoer(ExecutionContext context)
         // 어떤 이유로 끝났든(끝까지 처리, 멈춤, 취소) 임시 이름에 남은 사진은 꺼낸다. 취소 토큰은 보지 않는다.
         RescueTempMoves(run, pending);
 
-        return new UndoResult(run.Undone, run.Skipped.ToList());
+        return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles);
     }
 
     /// <summary>
@@ -560,6 +563,11 @@ public sealed class Undoer(ExecutionContext context)
                 run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Undone, op.Id, op.Kind, Destination: outcome.Location,
                     TimestampUtc: context.UtcNow()));
                 run.Undone++;
+                if (op.Kind != OperationKind.CreateDirectory && !IsRunTempMove(op))
+                {
+                    run.UndoneFiles++;
+                }
+
                 if (outcome.Reason is not null)
                 {
                     run.Skipped.Add(new UndoSkip(op.Id, op.Destination, outcome.Reason));
@@ -683,6 +691,8 @@ public sealed class Undoer(ExecutionContext context)
         public List<UndoSkip> Skipped { get; } = [];
 
         public int Undone { get; set; }
+
+        public int UndoneFiles { get; set; }
 
         public bool HadTransient { get; set; }
     }

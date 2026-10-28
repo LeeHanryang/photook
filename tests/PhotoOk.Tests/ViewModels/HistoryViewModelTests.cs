@@ -40,15 +40,15 @@ public class HistoryViewModelTests
 
     private FileLog Log => new(_fs, LogFolder);
 
-    private async Task<HistoryViewModel> CreateAsync(string? selectRunId = null, IRunHistory? history = null)
+    private async Task<HistoryViewModel> CreateAsync(string? selectRunId = null, IRunHistory? history = null, Undoer? undoer = null)
     {
-        var vm = Create(selectRunId, history);
+        var vm = Create(selectRunId, history, undoer);
         await vm.WhenLoaded;
         return vm;
     }
 
-    private HistoryViewModel Create(string? selectRunId = null, IRunHistory? history = null) =>
-        new(_shell, history ?? new RunHistory(_fs, AppData), new Undoer(Context()), _dialogs, Log,
+    private HistoryViewModel Create(string? selectRunId = null, IRunHistory? history = null, Undoer? undoer = null) =>
+        new(_shell, history ?? new RunHistory(_fs, AppData), undoer ?? new Undoer(Context()), _dialogs, Log,
             createResume: path =>
             {
                 _resumeRequests.Add(path);
@@ -163,7 +163,7 @@ public class HistoryViewModelTests
         Assert.Empty(ArchiveFilesOutsidePhotook());
         Assert.True(_fs.FileExists(@"E:\DCIM\p1.jpg"));
         Assert.True(_fs.FileExists(@"E:\DCIM\p2.jpg"));
-        Assert.Equal("되돌린 작업 2개, 남긴 항목 0개", vm.UndoSummary);
+        Assert.Equal("되돌린 파일 2개, 남긴 항목 0개", vm.UndoSummary);
         Assert.Empty(vm.UndoResultLines);
         Assert.Null(vm.UndoFault);
         Assert.False(vm.IsBusy);
@@ -177,6 +177,95 @@ public class HistoryViewModelTests
     }
 
     [Fact]
+    public async Task UndoSummary_CountsFilesOnly_NotFolders()
+    {
+        var data = new byte[50];
+        new Random(9).NextBytes(data);
+        _fs.AddFile(@"E:\DCIM\new.jpg", data);
+        Run(new Plan(Archive,
+            [
+                new PlannedOperation("op1", OperationKind.CreateDirectory, null, @"D:\Archive\2027", 0, Array.Empty<ReviewReason>()),
+                Copy("op2", @"E:\DCIM\new.jpg", @"D:\Archive\2027\new.jpg", data.Length),
+            ],
+            Array.Empty<PlannedSkip>(), Array.Empty<string>()));
+        var vm = await CreateAsync();
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal("되돌린 파일 1개, 남긴 항목 0개", vm.UndoSummary);
+        Assert.False(_fs.DirectoryExists(@"D:\Archive\2027"));
+    }
+
+    [Fact]
+    public async Task Undo_Cancelled_SaysItStoppedHalfway()
+    {
+        Run(CopyPlan(3));
+        var hooked = new HookedFileSystem(_fs);
+        HistoryViewModel? vm = null;
+        hooked.AfterMove = (_, _) => vm!.Cancel(); // 첫 복사본을 치운 직후
+        vm = await CreateAsync(undoer: new Undoer(new ExecutionContext(hooked, new XxHasher(hooked), AppData, () => Now)));
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal("되돌린 파일 1개, 남긴 항목 0개 (중간에 멈춤 — 다시 되돌리면 이어서 처리합니다)", vm.UndoSummary);
+        Assert.Equal(RunStatus.UndoInProgress, vm.Selected!.Status);
+        Assert.True(vm.UndoCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Undo_ShowsOnlyReasonSummary_AndLogsFullReason()
+    {
+        Run(CopyPlan(1));
+        _fs.FailReadsOf(@"D:\Archive\2026\p1.jpg"); // 복사본을 원본과 비교할 수 없다
+        var vm = await CreateAsync();
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        var line = Assert.Single(vm.UndoResultLines);
+        Assert.StartsWith(@"D:\Archive\2026\p1.jpg: ", line);
+        Assert.DoesNotContain(" — ", line, StringComparison.Ordinal);
+        var log = LogText();
+        var full = log.Split('\n').Single(l => l.StartsWith(line, StringComparison.Ordinal)).TrimEnd('\r');
+        Assert.StartsWith(line + " — ", full, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Undo_JournalUnavailable_ShowsKoreanMessage_AndEndsBusy()
+    {
+        Run(CopyPlan(1));
+        var hooked = new HookedFileSystem(_fs)
+        {
+            BeforeAppend = path =>
+            {
+                if (path.Contains(@"\journal\", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new IOException("disk full");
+                }
+            },
+        };
+        var vm = await CreateAsync(undoer: new Undoer(new ExecutionContext(hooked, new XxHasher(hooked), AppData, () => Now)));
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+        var busyEnded = 0;
+        vm.BusyEnded += (_, _) => busyEnded++;
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal("기록을 남길 수 없어 되돌리기를 멈췄습니다. 기록 폴더를 확인한 뒤 다시 시도해 주세요.", vm.UndoFault);
+        Assert.Null(vm.UndoSummary);
+        Assert.False(vm.IsBusy);
+        Assert.Equal(1, busyEnded);
+        Assert.True(_fs.FileExists(@"D:\Archive\2026\p1.jpg")); // 기록 없이 파일을 건드리지 않는다
+        Assert.Contains("되돌리기 기록을 남길 수 없습니다", LogText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Undo_ShowsKeptItems_AndLogsThem()
     {
         Run(CopyPlan(1));
@@ -187,7 +276,7 @@ public class HistoryViewModelTests
 
         await vm.UndoCommand.ExecuteAsync(null);
 
-        Assert.Equal("되돌린 작업 0개, 남긴 항목 1개", vm.UndoSummary);
+        Assert.Equal("되돌린 파일 0개, 남긴 항목 1개", vm.UndoSummary);
         var line = Assert.Single(vm.UndoResultLines);
         Assert.StartsWith(@"D:\Archive\2026\p1.jpg: ", line);
         Assert.True(_fs.FileExists(@"D:\Archive\2026\p1.jpg"));

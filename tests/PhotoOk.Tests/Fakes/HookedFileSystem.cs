@@ -10,6 +10,9 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
 
     public Action<string, string>? AfterMove { get; set; }
 
+    /// <summary>덧붙이기(<see cref="AppendLine"/>, <see cref="AppendLines"/>) 직전에 경로를 받아 부른다. 예외를 던지면 덧붙이지 않는다.</summary>
+    public Action<string>? BeforeAppend { get; set; }
+
     /// <summary><see cref="CreateNew"/>로 만들려고 한 경로, 시도한 순서대로.</summary>
     public List<string> Created { get; } = [];
 
@@ -52,6 +55,7 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     public void AppendLine(string path, string line)
     {
         Appends.Add((path, 1));
+        BeforeAppend?.Invoke(path);
         inner.AppendLine(path, line);
     }
 
@@ -59,6 +63,7 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     {
         var list = lines.ToList();
         Appends.Add((path, list.Count));
+        BeforeAppend?.Invoke(path);
         inner.AppendLines(path, list);
     }
 
