@@ -29,15 +29,13 @@ public static partial class FileNameDate
         ArgumentNullException.ThrowIfNull(fileName);
 
         var limit = todayLocal.Date.AddDays(1);
+        // 형식마다 처음 맞는 곳 하나만 본다. 그것이 달력에 없는 날짜면 같은 형식의 뒤쪽 일치가 아니라 다음 형식으로 넘어간다.
         foreach (var regex in new[] { Dashed(), Compact(), DateOnlyKakao() })
         {
-            foreach (Match match in regex.Matches(fileName))
+            var match = regex.Match(fileName);
+            if (match.Success && ToDateTime(match, limit) is { } value)
             {
-                var value = ToDateTime(match, limit);
-                if (value is not null)
-                {
-                    return value;
-                }
+                return value;
             }
         }
 

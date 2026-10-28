@@ -58,4 +58,14 @@ public class FileNameDateTests
         Assert.Equal(new DateTime(2023, 12, 14, 16, 19, 19),
             FileNameDate.TryParse("2026-02-30_10-00-00_20231214_161919.jpg", Today));
     }
+
+    [Fact]
+    public void TryParse_UsesOnlyFirstMatchOfEachFormat()
+    {
+        // 같은 형식의 첫 일치가 달력에 없는 날짜면, 그 형식의 뒤쪽 일치는 보지 않는다.
+        Assert.Null(FileNameDate.TryParse("20231399_161919_20231214_161919.jpg", Today));
+
+        // 둘 다 올바르면 앞의 것.
+        Assert.Equal(new DateTime(2023, 12, 14, 16, 19, 19), FileNameDate.TryParse("20231214_161919_20240101_101010.jpg", Today));
+    }
 }
