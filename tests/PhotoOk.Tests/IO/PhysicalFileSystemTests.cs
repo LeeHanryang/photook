@@ -65,6 +65,58 @@ public sealed class PhysicalFileSystemTests : IDisposable
     }
 
     [Fact]
+    public void OpenReadShared_OpensWhileAppending_AndDoesNotBlockAppends()
+    {
+        var path = P("journal.jsonl");
+        _fs.AppendLine(path, "first");
+
+        // 덧붙이는 쪽(AppendLine/AppendLines)과 같은 공유 모드로 쓰기 핸들을 연 채로 읽는다.
+        using (var writer = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            using (var reader = new StreamReader(_fs.OpenReadShared(path)))
+            {
+                Assert.Equal("first", reader.ReadLine());
+            }
+
+            Assert.Throws<IOException>(() => _fs.OpenRead(path).Dispose()); // 사용자 파일용 읽기는 쓰는 중에 열지 않는다
+        }
+
+        // 읽는 동안에도 덧붙이기가 막히지 않는다.
+        using (var reader = _fs.OpenReadShared(path))
+        {
+            _fs.AppendLine(path, "second");
+            _fs.AppendLines(path, ["third"]);
+        }
+
+        Assert.Equal(["first", "second", "third"], File.ReadAllLines(path));
+    }
+
+    [Fact]
+    public void JournalReader_LoadsWhileJournalIsOpenForAppending()
+    {
+        const string runId = "20261027-103000-ab12";
+        var path = P("run.jsonl");
+        var journal = new PhotoOk.Core.Execution.JournalWriter(_fs, [path]);
+        journal.Write(new PhotoOk.Core.Execution.JournalEntry(runId, PhotoOk.Core.Execution.JournalEvent.RunStarted, Length: 0,
+            Destination: _root, TimestampUtc: DateTime.UtcNow));
+
+        using (new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read))
+        {
+            var state = PhotoOk.Core.Execution.JournalReader.Load(_fs, path);
+            Assert.Equal(runId, state.RunId);
+        }
+
+        // 읽기가 열려 있는 동안에도 기록을 덧붙일 수 있다.
+        using (_fs.OpenReadShared(path))
+        {
+            journal.Write(new PhotoOk.Core.Execution.JournalEntry(runId, PhotoOk.Core.Execution.JournalEvent.RunFinished,
+                TimestampUtc: DateTime.UtcNow));
+        }
+
+        Assert.True(PhotoOk.Core.Execution.JournalReader.Load(_fs, path).Finished);
+    }
+
+    [Fact]
     public void Move_Throws_AndKeepsBoth_WhenDestinationExists()
     {
         var src = P("src.txt");

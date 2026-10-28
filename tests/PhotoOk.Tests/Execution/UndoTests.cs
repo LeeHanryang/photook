@@ -1154,6 +1154,12 @@ public class UndoTests
             return inner.OpenRead(path);
         }
 
+        public Stream OpenReadShared(string path)
+        {
+            reads.Add(path);
+            return inner.OpenReadShared(path);
+        }
+
         public Stream CreateNew(string path) => inner.CreateNew(path);
 
         public void Move(string source, string destination) => inner.Move(source, destination);

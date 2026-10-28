@@ -122,6 +122,11 @@ public sealed class PhysicalFileSystem : IFileSystem
     public Stream OpenRead(string path) =>
         new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
 
+    // 기록을 덧붙이는 쪽(AppendLine/AppendLines)은 FileShare.Read로 연다. 그래서 이 읽기는 덧붙이는 중에도 열리고,
+    // 이 읽기가 열려 있는 동안에도 덧붙이기가 막히지 않는다.
+    public Stream OpenReadShared(string path) =>
+        new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+
     public Stream CreateNew(string path) =>
         new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, FileOptions.WriteThrough);
 

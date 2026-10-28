@@ -116,7 +116,7 @@ public sealed class JournalWriter(IFileSystem fileSystem, IReadOnlyList<string> 
         }
 
         var last = -1;
-        using (var stream = fileSystem.OpenRead(path))
+        using (var stream = fileSystem.OpenReadShared(path))
         {
             if (stream.CanSeek)
             {

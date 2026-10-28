@@ -660,6 +660,8 @@ public class ScannerTests
 
         public Stream OpenRead(string path) => inner.OpenRead(path);
 
+        public Stream OpenReadShared(string path) => inner.OpenReadShared(path);
+
         public Stream CreateNew(string path) => inner.CreateNew(path);
 
         public void Move(string source, string destination) => inner.Move(source, destination);

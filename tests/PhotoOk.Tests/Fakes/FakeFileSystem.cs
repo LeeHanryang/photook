@@ -406,7 +406,15 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
-    public Stream OpenRead(string path)
+    public Stream OpenRead(string path) => OpenReadCore(path, shared: false);
+
+    /// <summary>
+    /// <see cref="OpenRead"/>와 같은 고장 흉내를 따르되, 열려 있는 동안에도 덧붙이기(<see cref="AppendLine"/>·<see cref="AppendLines"/>)를
+    /// 막지 않는다(FileShare.ReadWrite). 옮기기는 여전히 막는다(실제 디스크에서도 삭제 공유 없이는 이름을 바꿀 수 없다).
+    /// </summary>
+    public Stream OpenReadShared(string path) => OpenReadCore(path, shared: true);
+
+    private Stream OpenReadCore(string path, bool shared)
     {
         lock (_gate)
         {
@@ -443,8 +451,16 @@ public sealed class FakeFileSystem : IFileSystem
                 throw new IOException($"다른 곳에서 쓰는 중인 파일입니다: {path}");
             }
 
-            var stream = new ReadStream(this, file, failOnRead: _failReadsAfterOpen.Contains(full));
-            file.Readers++;
+            var stream = new ReadStream(this, file, failOnRead: _failReadsAfterOpen.Contains(full), shared);
+            if (shared)
+            {
+                file.SharedReaders++;
+            }
+            else
+            {
+                file.Readers++;
+            }
+
             _handles.Add(stream);
             return stream;
         }
@@ -511,7 +527,7 @@ public sealed class FakeFileSystem : IFileSystem
                 throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {destination}");
             }
 
-            if (file.Writers > 0 || file.Readers > 0)
+            if (file.Writers > 0 || file.Readers > 0 || file.SharedReaders > 0)
             {
                 throw new IOException($"사용 중인 파일은 옮길 수 없습니다: {source}");
             }
@@ -860,6 +876,9 @@ public sealed class FakeFileSystem : IFileSystem
 
         public int Readers { get; set; }
 
+        /// <summary><see cref="OpenReadShared"/>로 연 읽기. 덧붙이기는 막지 않고 옮기기는 막는다.</summary>
+        public int SharedReaders { get; set; }
+
         public int Writers { get; set; }
 
         public ReadOnlySpan<byte> Content => _content.GetBuffer().AsSpan(0, (int)_content.Length);
@@ -882,14 +901,16 @@ public sealed class FakeFileSystem : IFileSystem
         private readonly FakeFileSystem _fs;
         private readonly FakeFile _file;
         private readonly bool _failOnRead;
+        private readonly bool _shared;
         private bool _released;
 
-        public ReadStream(FakeFileSystem fs, FakeFile file, bool failOnRead)
+        public ReadStream(FakeFileSystem fs, FakeFile file, bool failOnRead, bool shared)
             : base(file.Content.ToArray(), writable: false)
         {
             _fs = fs;
             _file = file;
             _failOnRead = failOnRead;
+            _shared = shared;
         }
 
         public override int Read(byte[] buffer, int offset, int count)
@@ -927,7 +948,15 @@ public sealed class FakeFileSystem : IFileSystem
             }
 
             _released = true;
-            _file.Readers--;
+            if (_shared)
+            {
+                _file.SharedReaders--;
+            }
+            else
+            {
+                _file.Readers--;
+            }
+
             _fs._handles.Remove(this);
         }
 

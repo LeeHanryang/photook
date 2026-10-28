@@ -190,7 +190,7 @@ public static class JournalReader
     private static (List<string> Lines, bool EndsWithNewline) ReadLines(IFileSystem fileSystem, string path)
     {
         string text;
-        using (var stream = fileSystem.OpenRead(path))
+        using (var stream = fileSystem.OpenReadShared(path))
         using (var reader = new StreamReader(stream, new UTF8Encoding(false), detectEncodingFromByteOrderMarks: true))
         {
             text = reader.ReadToEnd();

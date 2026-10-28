@@ -42,6 +42,13 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
         return inner.OpenRead(path);
     }
 
+    /// <summary><see cref="BeforeOpenRead"/>도 부른다.</summary>
+    public Stream OpenReadShared(string path)
+    {
+        BeforeOpenRead?.Invoke(path);
+        return inner.OpenReadShared(path);
+    }
+
     public Stream CreateNew(string path)
     {
         Created.Add(path);

@@ -29,6 +29,12 @@ public interface IFileSystem
     /// <summary>읽기 전용(FileShare.Read)으로 연다.</summary>
     Stream OpenRead(string path);
 
+    /// <summary>
+    /// 읽기 전용으로 열되, 읽는 동안 다른 핸들이 쓰기(덧붙이기)로 여는 것을 막지 않는다(FileShare.ReadWrite).
+    /// 앱이 덧붙이는 기록 파일을 읽을 때만 쓴다. 사용자 파일은 <see cref="OpenRead"/>로 연다(읽는 동안 바뀌지 않게).
+    /// </summary>
+    Stream OpenReadShared(string path);
+
     /// <summary>FileMode.CreateNew + FileOptions.WriteThrough. 이미 있으면 <see cref="IOException"/>.</summary>
     Stream CreateNew(string path);
 

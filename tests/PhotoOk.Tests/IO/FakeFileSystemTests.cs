@@ -38,6 +38,27 @@ public sealed class FakeFileSystemTests
     }
 
     [Fact]
+    public void OpenReadShared_DoesNotBlockAppends_ButOpenReadDoes()
+    {
+        var fs = new FakeFileSystem();
+        fs.AddDirectory(@"D:\j");
+        fs.AppendLine(@"D:\j\run.jsonl", "a");
+
+        using (fs.OpenReadShared(@"D:\j\run.jsonl"))
+        {
+            fs.AppendLine(@"D:\j\run.jsonl", "b");
+            Assert.Throws<IOException>(() => fs.Move(@"D:\j\run.jsonl", @"D:\j\moved.jsonl"));
+        }
+
+        using (fs.OpenRead(@"D:\j\run.jsonl"))
+        {
+            Assert.Throws<IOException>(() => fs.AppendLine(@"D:\j\run.jsonl", "c"));
+        }
+
+        Assert.Equal("a" + Environment.NewLine + "b" + Environment.NewLine, Encoding.UTF8.GetString(fs.ReadAllBytes(@"D:\j\run.jsonl")));
+    }
+
+    [Fact]
     public void Paths_AreCaseInsensitive()
     {
         var fs = new FakeFileSystem();
