@@ -217,6 +217,31 @@ public class HistoryViewModelTests
     }
 
     [Fact]
+    public async Task Undo_CancelledAfterLastFile_DoesNotSayItStopped()
+    {
+        Run(CopyPlan(3));
+        var hooked = new HookedFileSystem(_fs);
+        HistoryViewModel? vm = null;
+        var moves = 0;
+        hooked.AfterMove = (_, _) =>
+        {
+            if (++moves == 3)
+            {
+                vm!.Cancel(); // 마지막 복사본을 치운 직후: 남은 작업이 없다
+            }
+        };
+        vm = await CreateAsync(undoer: new Undoer(new ExecutionContext(hooked, new XxHasher(hooked), AppData, () => Now)));
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal(3, moves);
+        Assert.Equal("되돌린 파일 3개, 남긴 항목 0개", vm.UndoSummary);
+        Assert.Equal(RunStatus.Undone, vm.Selected!.Status);
+    }
+
+    [Fact]
     public async Task Undo_ShowsOnlyReasonSummary_AndLogsFullReason()
     {
         Run(CopyPlan(1));

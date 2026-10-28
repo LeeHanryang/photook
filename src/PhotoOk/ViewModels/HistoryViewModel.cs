@@ -246,7 +246,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         try
         {
             var result = await Task.Run(() => _undoer.Undo(run.JournalPath, cts.Token));
-            ShowUndoResult(run.RunId, result, stopped: cts.IsCancellationRequested);
+            ShowUndoResult(run.RunId, result);
         }
         catch (JournalUnavailableException ex)
         {
@@ -278,8 +278,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         }
     }
 
-    /// <param name="stopped">취소해서 중간에 멈췄으면 true. 요약 뒤에 다시 되돌리면 이어서 처리한다는 안내를 붙인다.</param>
-    private void ShowUndoResult(string runId, UndoResult result, bool stopped)
+    /// <summary>취소해서 남은 작업을 두고 멈췄으면(<see cref="UndoResult.Stopped"/>) 요약 뒤에 다시 되돌리면 이어서 처리한다는 안내를 붙인다.</summary>
+    private void ShowUndoResult(string runId, UndoResult result)
     {
         // 화면에는 사유의 요약(" — " 앞)만 보인다. 운영체제 예외 원문은 뒤에 붙어 있을 수 있으므로 원문은 로그에만 남긴다.
         var full = result.Skipped.Select(s => $"{s.Path}: {s.Reason}").ToList();
@@ -290,7 +290,7 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
 
         var shown = result.Skipped.Select(s => $"{s.Path}: {Summary(s.Reason)}").ToList();
         var summary = string.Create(CultureInfo.InvariantCulture, $"되돌린 파일 {result.UndoneFiles}개, 남긴 항목 {result.Skipped.Count}개")
-            + (stopped ? StoppedNote : string.Empty);
+            + (result.Stopped ? StoppedNote : string.Empty);
         SetUndoResult(runId, Cap(shown), summary, null);
     }
 

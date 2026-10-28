@@ -161,6 +161,38 @@ public class UndoTests
     }
 
     [Fact]
+    public void Undo_Stopped_OnlyWhenCancelledWithWorkLeft()
+    {
+        var a = AddFile(@"E:\DCIM\a.jpg", 100, 1);
+        var b = AddFile(@"E:\DCIM\b.jpg", 200, 2);
+        var run = Run(PlanOf(
+            Copy("op1", @"E:\DCIM\a.jpg", @"D:\Archive\a.jpg", a.Length),
+            Copy("op2", @"E:\DCIM\b.jpg", @"D:\Archive\b.jpg", b.Length)));
+
+        // 첫 작업을 마친 뒤 취소: 남은 작업이 있으므로 멈춘 것이다.
+        using (var cts = new CancellationTokenSource())
+        {
+            _hooked.AfterMove = (_, _) => cts.Cancel();
+            var stopped = NewUndoer().Undo(run.JournalPath!, cts.Token);
+            Assert.True(stopped.Stopped);
+            Assert.Equal(1, stopped.UndoneFiles);
+        }
+
+        // 마지막 작업을 마친 뒤 취소: 할 일이 남지 않았으므로 멈춘 것이 아니다.
+        using (var cts = new CancellationTokenSource())
+        {
+            _hooked.AfterMove = (_, _) => cts.Cancel();
+            var finished = NewUndoer().Undo(run.JournalPath!, cts.Token);
+            Assert.False(finished.Stopped);
+            Assert.Equal(1, finished.UndoneFiles);
+        }
+
+        _hooked.AfterMove = null;
+        Assert.All(JournalReader.Load(_fs, run.JournalPath!).Operations, o => Assert.Equal(OpStatus.Undone, o.Status));
+        Assert.False(NewUndoer().Undo(run.JournalPath!).Stopped);
+    }
+
+    [Fact]
     public void Undo_KeepsCopy_WhenSourceIsGone()
     {
         var a = AddFile(@"E:\DCIM\a.jpg", 100, 3);
