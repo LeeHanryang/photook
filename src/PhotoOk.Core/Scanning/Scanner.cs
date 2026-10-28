@@ -195,20 +195,30 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
             }
 
             // 규칙 5: 촬영일 빌리기. 빌린 값을 다시 빌려 주지 않도록 원래 값에서만 고른다.
+            // 사진·동영상 정보의 촬영일이 파일 이름에서 읽은 날짜보다 우선한다: 같은 이름 형제에 정보가 있으면 그것을 쓰고,
+            // 파일 이름 날짜뿐인 대표도 형제의 사진·동영상 정보 날짜로 바꾼다.
             var timeByKey = new Dictionary<string, (DateTime Time, CaptureTimeSource Source)>(StringComparer.OrdinalIgnoreCase);
             foreach (var primary in primaries)
             {
-                if (primary.CaptureTime is { } time)
+                if (primary.CaptureTime is not { } time)
                 {
-                    timeByKey.TryAdd(Path.GetFileNameWithoutExtension(primary.Path), (time, primary.CaptureSource));
+                    continue;
+                }
+
+                var key = Path.GetFileNameWithoutExtension(primary.Path);
+                if (!timeByKey.TryGetValue(key, out var existing)
+                    || (!IsMetadataSource(existing.Source) && IsMetadataSource(primary.CaptureSource)))
+                {
+                    timeByKey[key] = (time, primary.CaptureSource);
                 }
             }
 
             foreach (var primary in primaries)
             {
                 var finalPrimary = primary;
-                if (primary.CaptureTime is null
-                    && timeByKey.TryGetValue(Path.GetFileNameWithoutExtension(primary.Path), out var borrowed))
+                if ((primary.CaptureTime is null || primary.CaptureSource == CaptureTimeSource.FileName)
+                    && timeByKey.TryGetValue(Path.GetFileNameWithoutExtension(primary.Path), out var borrowed)
+                    && (primary.CaptureTime is null || IsMetadataSource(borrowed.Source)))
                 {
                     finalPrimary = primary with { CaptureTime = borrowed.Time, CaptureSource = borrowed.Source };
                 }
@@ -225,6 +235,9 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         groups.Sort((a, b) => StringComparer.OrdinalIgnoreCase.Compare(a.Primary.Path, b.Primary.Path));
         return groups;
     }
+
+    private static bool IsMetadataSource(CaptureTimeSource source) =>
+        source is CaptureTimeSource.Photo or CaptureTimeSource.Video;
 
     private static void AddCompanion(Dictionary<string, List<PhotoInfo>> companions, string ownerPath, PhotoInfo companion)
     {

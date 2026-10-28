@@ -161,6 +161,41 @@ public class ScannerTests
     }
 
     [Fact]
+    public void Scan_FileNameDate_IsReplacedBySiblingPhotoDate()
+    {
+        var exif = new DateTime(2023, 12, 14, 16, 19, 20);
+        var fromName = new DateTime(2023, 12, 14, 16, 19, 19);
+        Add($@"{Root}\20231214_161919.RAF");
+        Add($@"{Root}\20231214_161919.JPG");
+        _reader.Set($@"{Root}\20231214_161919.RAF", fromName, source: CaptureTimeSource.FileName);
+        _reader.Set($@"{Root}\20231214_161919.JPG", exif, "FUJIFILM", "X-T5");
+
+        var result = Scan();
+
+        var raf = result.Groups.Single(g => Name(g.Primary) == "20231214_161919.RAF").Primary;
+        Assert.Equal(exif, raf.CaptureTime);
+        Assert.Equal(CaptureTimeSource.Photo, raf.CaptureSource);
+        var jpg = result.Groups.Single(g => Name(g.Primary) == "20231214_161919.JPG").Primary;
+        Assert.Equal(exif, jpg.CaptureTime);
+    }
+
+    [Fact]
+    public void Scan_FileNameDate_IsKept_WhenSiblingHasNoMetadataDate()
+    {
+        var fromName = new DateTime(2023, 12, 14, 16, 19, 19);
+        var otherName = new DateTime(2023, 12, 15, 0, 0, 0);
+        Add($@"{Root}\20231214_161919.RAF");
+        Add($@"{Root}\20231214_161919.JPG");
+        _reader.Set($@"{Root}\20231214_161919.RAF", fromName, source: CaptureTimeSource.FileName);
+        _reader.Set($@"{Root}\20231214_161919.JPG", otherName, source: CaptureTimeSource.FileName);
+
+        var result = Scan();
+
+        Assert.Equal(fromName, result.Groups.Single(g => Name(g.Primary) == "20231214_161919.RAF").Primary.CaptureTime);
+        Assert.Equal(otherName, result.Groups.Single(g => Name(g.Primary) == "20231214_161919.JPG").Primary.CaptureTime);
+    }
+
+    [Fact]
     public void Scan_DoesNotBorrowCaptureTime_AcrossFolders_OrFromDifferentName()
     {
         var taken = new DateTime(2026, 10, 14, 10, 0, 0);
