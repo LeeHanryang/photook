@@ -77,6 +77,28 @@ public class LayoutRendererTests
     }
 
     [Fact]
+    public void Render_EventName_WithBackslash_StaysOneFolder()
+    {
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        // 이벤트 이름의 '\'는 폴더 구분자가 되지 않는다(다른 금지 문자와 같은 치환).
+        var result = Render(BuiltInPresets.DateEvent, group, eventName: @"여행\제주");
+
+        Assert.Equal(@"2026\2026-10-14 여행_제주", result);
+        Assert.Equal(2, result.Split('\\').Length);
+    }
+
+    [Fact]
+    public void Render_ReviewBranch_IgnoresEventName()
+    {
+        var group = Group(@"D:\Card\DCIM\a.jpg", null, null, null, new DateTime(2026, 10, 14, 0, 0, 0, DateTimeKind.Utc));
+
+        var result = Render(BuiltInPresets.DateEvent, group, [ReviewReason.NoCaptureDate], eventName: "결혼식");
+
+        Assert.Equal(@"판단 필요\촬영일 없음\DCIM", result);
+    }
+
+    [Fact]
     public void Render_BracketPeriodAndEvent()
     {
         var preset = OneBranch(new LevelTemplate("[{기간}] {이벤트}"));
