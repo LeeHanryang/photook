@@ -323,15 +323,19 @@ public class RunViewModelTests
         var plan = CopyPlan(3);
         var vm = ForPlan(plan);
         var cancelCalls = 0;
+        var cancellingShown = false;
         _hooked.AfterMove = (source, _) =>
         {
             if (source.EndsWith(".photook-tmp", StringComparison.OrdinalIgnoreCase) && cancelCalls++ == 0)
             {
                 vm.Cancel(); // 첫 파일의 마지막 단계 직후
+                cancellingShown = vm.IsCancelling && !vm.CancelCommand.CanExecute(null); // "취소하는 중…"
             }
         };
 
         await vm.StartAsync();
+
+        Assert.True(cancellingShown);
 
         Assert.Equal("취소했습니다. 이어 하거나 되돌릴 수 있습니다", vm.ResultTitle);
         Assert.Null(vm.SafeToCleanMessage);

@@ -52,6 +52,9 @@
                 <TextBlock Text="{Binding ProgressText}" FontSize="16" Margin="0,12,0,0" />
                 <TextBlock Text="{Binding CurrentFileName}" Opacity="0.7" TextTrimming="CharacterEllipsis"
                            Margin="0,4,0,0" />
+                <TextBlock Text="취소하는 중…" FontWeight="SemiBold" Foreground="#FFB45309"
+                           Margin="0,12,0,0"
+                           Visibility="{Binding IsCancelling, Converter={StaticResource BoolToVisibility}}" />
             </StackPanel>
 
             <!-- 끝난 뒤 -->
