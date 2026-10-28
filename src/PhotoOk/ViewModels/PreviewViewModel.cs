@@ -31,6 +31,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private const int BlockingLineLimit = 5;
     private const int IgnoredLineLimit = 200;
     private const string ConfirmTitle = "확인이 필요한 오류가 있습니다";
+    private const string NothingToTransferMessage = "옮길 파일이 없습니다 — 모두 보관 폴더에 있거나 중복입니다";
     private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
 
     private readonly ShellViewModel _shell;
@@ -55,6 +56,12 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
 
     private CancellationTokenSource _thumbnailCts = new();
     private CancellationTokenSource? _replanCts;
+
+    /// <summary>
+    /// 가장 나중 요청의 계획 세우기가 끝나면 완료된다. 새 요청은 이것을 기다린 뒤에 계획을 세운다(스레드 풀에 계획 세우기가
+    /// 여러 개 동시에 돌지 않게). 화면 스레드에서만 바꾼다.
+    /// </summary>
+    private Task _lastBuild = Task.CompletedTask;
     private int _generation;
     private int _appliedGeneration;
     private Plan? _plan;
@@ -368,7 +375,20 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     /// </summary>
     private void RequestReplan(TimeSpan delay)
     {
-        _replanCts?.Cancel();
+        if (_replanCts is { } previous)
+        {
+            try
+            {
+                previous.Cancel();
+            }
+            catch (AggregateException ex)
+            {
+                _log.Error("계획 취소 중 오류", ex);
+            }
+
+            previous.Dispose();
+        }
+
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _replanCts = cts;
         var generation = ++_generation;
@@ -380,12 +400,19 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
             .Where(card => !card.IsReviewGroup && !string.IsNullOrWhiteSpace(card.EventName))
             .ToDictionary(card => card.SessionId, card => card.EventName, StringComparer.Ordinal);
 
-        WhenPlanned = ReplanAsync(generation, eventNames, delay, cts.Token);
+        // 앞선 요청의 계획 세우기가 끝난 뒤에야 이 요청의 계획을 세운다. 이 요청이 계획을 세우지 못하고 취소되어도,
+        // 다음 요청은 앞선 계획 세우기가 끝나기를 기다린다.
+        var previousBuild = _lastBuild;
+        var buildDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _lastBuild = buildDone.Task;
+
+        WhenPlanned = ReplanAsync(generation, eventNames, delay, previousBuild, buildDone, cts.Token);
     }
 
     private async Task ReplanAsync(int generation, IReadOnlyDictionary<string, string> eventNames, TimeSpan delay,
-        CancellationToken ct)
+        Task previousBuild, TaskCompletionSource buildDone, CancellationToken ct)
     {
+        var ownBuild = previousBuild;
         try
         {
             if (delay > TimeSpan.Zero)
@@ -393,10 +420,12 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
                 await Task.Delay(delay, ct);
             }
 
+            await WaitQuietlyAsync(previousBuild, ct);
             ct.ThrowIfCancellationRequested();
             var fileSystem = _fileSystem;
             var build = Task.Run(() => PlanView.Create(_buildPlan(_settings, _scan, eventNames), fileSystem),
                 CancellationToken.None);
+            ownBuild = build;
 
             // 계획 세우기는 중간에 멈출 수 없다. 취소되면 기다리지 않고 결과만 버린다. 버린 작업의 오류도 관찰해 둔다.
             _ = build.ContinueWith(t => _ = t.Exception, CancellationToken.None,
@@ -423,11 +452,42 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
         finally
         {
+            _ = CompleteAfterAsync(ownBuild, buildDone);
             if (generation == _generation)
             {
                 IsReplanning = false;
                 BusyEnded?.Invoke(this, EventArgs.Empty);
             }
+        }
+    }
+
+    /// <summary>앞선 계획 세우기가 끝나기를 기다린다. 그 작업의 오류는 그 요청의 몫이므로 여기서는 무시한다. 취소되면 던진다.</summary>
+    private static async Task WaitQuietlyAsync(Task task, CancellationToken ct)
+    {
+        try
+        {
+            await task.WaitAsync(ct);
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // 앞선 요청의 실패는 그 요청이 다뤘다(또는 버려졌다).
+        }
+    }
+
+    /// <summary><paramref name="task"/>가 끝나면(성공·실패 상관없이) <paramref name="done"/>을 완료한다.</summary>
+    private static async Task CompleteAfterAsync(Task task, TaskCompletionSource done)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 오류는 계획을 요청한 쪽이 다룬다. 여기서는 끝났다는 것만 알린다.
+        }
+        finally
+        {
+            done.TrySetResult();
         }
     }
 
@@ -448,7 +508,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         FreeBytes = view.FreeBytes ?? 0;
         OnPropertyChanged(nameof(FreeSpaceText));
         PlanNotes = view.Notes;
-        BlockingReason = view.BlockingReason;
+        BlockingReason = view.BlockingReason ?? (TransferCount == 0 ? NothingToTransferMessage : null);
         FolderTree = view.Tree;
 
         UpdateDetail();

@@ -236,6 +236,15 @@
                 </ListBox>
 
                 <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,12,0,0">
+                    <ScrollViewer.Style>
+                        <Style TargetType="ScrollViewer">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Detail}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ScrollViewer.Style>
                     <StackPanel DataContext="{Binding Detail}">
                         <Grid>
                             <Grid.ColumnDefinitions>

@@ -194,18 +194,90 @@ public class PreviewViewModelTests
         Assert.True(vm.IsReplanning);
         Assert.False(vm.ExecuteCommand.CanExecute(null));
 
+        // 새 요청은 앞선 계획 세우기가 끝난 뒤에 계획을 세운다. 앞선 결과는 늦게 와도 버린다.
         vm.Sessions[0].EventName = "b";
-        await vm.WhenPlanned;
-        Assert.NotNull(Node(vm, "2026", "2026-10-14 b"));
+        var second = vm.WhenPlanned;
+        await first; // 앞선 요청은 취소되어 바로 끝난다(계획 세우기는 아직 돌고 있다)
+        Assert.True(vm.IsReplanning);
+        Assert.False(second.IsCompleted);
 
         gate.Set();
-        await first;
+        await second;
         await Task.Delay(50);
 
         Assert.NotNull(Node(vm, "2026", "2026-10-14 b"));
         Assert.DoesNotContain(Flatten(vm.FolderTree), n => n.Name == "2026-10-14 a");
         Assert.False(vm.IsReplanning);
         Assert.True(vm.ExecuteCommand.CanExecute(null));
+    }
+
+    [Fact]
+    public async Task Replan_DoesNotRunBuildsConcurrently_AndSkipsSupersededRequests()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        using var slowStarted = new ManualResetEventSlim();
+        var running = 0;
+        var maxRunning = 0;
+        var built = new List<string>();
+        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        {
+            var now = Interlocked.Increment(ref running);
+            lock (built)
+            {
+                maxRunning = Math.Max(maxRunning, now);
+                built.Add(string.Join(",", names.Values));
+            }
+
+            try
+            {
+                if (names.Values.Contains("a"))
+                {
+                    slowStarted.Set();
+                    gate.Wait(Wait);
+                }
+
+                return _workflow.BuildPlan(settings, scan, names);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref running);
+            }
+        });
+
+        vm.Sessions[0].EventName = "a";
+        Assert.True(slowStarted.Wait(Wait));
+        vm.Sessions[0].EventName = "b";
+        vm.Sessions[0].EventName = "c";
+        await Task.Delay(100);
+        lock (built)
+        {
+            Assert.Equal(["", "a"], built); // "a"가 끝나기 전에는 다음 계획을 세우지 않는다
+        }
+
+        gate.Set();
+        await vm.WhenPlanned;
+
+        Assert.Equal(1, maxRunning);
+        Assert.Equal(["", "a", "c"], built); // "b"는 차례가 오기 전에 더 새 요청으로 바뀌었다
+        Assert.NotNull(Node(vm, "2026", "2026-10-14 c"));
+        Assert.False(vm.IsReplanning);
+    }
+
+    [Fact]
+    public async Task Execute_IsBlocked_WhenNothingToTransfer()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1, 1, 1], Oct14);
+        _fs.AddFile(@"D:\Archive\2026\2026-10-14\A.JPG", [1, 1, 1]);
+
+        var vm = await CreateAsync();
+
+        Assert.Equal(0, vm.TransferCount);
+        Assert.Equal("옮길 파일이 없습니다 — 모두 보관 폴더에 있거나 중복입니다", vm.BlockingReason);
+        Assert.False(vm.ExecuteCommand.CanExecute(null));
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+        Assert.Empty(_runRequests);
     }
 
     [Fact]
