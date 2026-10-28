@@ -638,6 +638,7 @@ public class PreviewViewModelTests
         Assert.Equal([@"E:\DCIM\D.JPG"], review.Files);
         Assert.Single(vm.Sessions, s => s.IsReviewGroup);
         Assert.Equal(2, vm.DuplicateCount); // C.JPG와 D.JPG
+        Assert.Equal(2, vm.ReviewCount); // 위쪽 요약도 카드와 같은 수(중복이어도 센다)
 
         vm.SelectedSession = review;
         Assert.Equal("보관 폴더에 같은 파일이 있어 건너뜁니다", vm.Detail?.SkipNote);
@@ -675,6 +676,7 @@ public class PreviewViewModelTests
 
         Assert.Equal(["2026-10-14 · 2장", "2026-10-15 · 1장", "판단 필요 · 1장"], vm.Sessions.Select(c => c.Title));
         Assert.Same(vm.Sessions[0], vm.SelectedSession);
+        Assert.Equal(1, vm.ReviewCount);
 
         gate.Set();
         await vm.WhenPlanned;

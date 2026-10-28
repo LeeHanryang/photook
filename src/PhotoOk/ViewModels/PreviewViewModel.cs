@@ -150,6 +150,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             }
         }
 
+        // 위쪽 요약의 "판단 필요 N개"는 이 카드의 "N장"과 같은 수다(중복이라 건너뛰는 파일도 센다).
+        ReviewCount = FileCount(reviewGroups);
         if (reviewGroups.Count > 0)
         {
             Sessions.Add(new SessionItemViewModel(ReviewGroupId, CardTitle(ReviewGroupId, FileCount(reviewGroups)),
@@ -183,7 +185,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         private set => SetProperty(ref _detail, value);
     }
 
-    /// <summary>판단 필요 분기로 가는 파일 수.</summary>
+    /// <summary>판단 필요 카드의 파일 수(대표·딸린 파일, 중복이라 건너뛰는 파일 포함). 이벤트 이름과 관계없어 처음에 정한다.</summary>
     public int ReviewCount
     {
         get => _reviewCount;
@@ -510,7 +512,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         _placementBySource = view.Placements;
         _skipBySource = view.Skips;
 
-        ReviewCount = view.ReviewSources.Count;
         DuplicateCount = view.Duplicates;
         TransferCount = view.Copies + view.Moves;
         TransferBytes = view.Bytes;
@@ -728,7 +729,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         PlanOutcome Outcome,
         Dictionary<string, PlannedOperation> Placements,
         Dictionary<string, PlannedSkip> Skips,
-        IReadOnlyList<string> ReviewSources,
         int Copies,
         int Moves,
         long Bytes,
@@ -745,7 +745,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             // 자리 바꾸기에서는 원본을 먼저 임시 이름으로 옮긴 뒤 그 임시 파일을 최종 자리로 옮긴다. 원래 원본 경로로 찾게 한다.
             var originalOfTemp = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var placements = new Dictionary<string, PlannedOperation>(StringComparer.OrdinalIgnoreCase);
-            var reviewSources = new List<string>();
             var copies = 0;
             var moves = 0;
             long bytes = 0;
@@ -774,10 +773,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 }
 
                 bytes += op.Length;
-                if (op.Reasons.Count > 0)
-                {
-                    reviewSources.Add(source);
-                }
             }
 
             var skips = new Dictionary<string, PlannedSkip>(StringComparer.OrdinalIgnoreCase);
@@ -790,7 +785,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 .Concat(outcome.Issues.Where(i => i.Severity == Severity.Warning).Select(DescribeIssue))
                 .ToList();
 
-            return new PlanView(outcome, placements, skips, reviewSources, copies, moves, bytes,
+            return new PlanView(outcome, placements, skips, copies, moves, bytes,
                 plan.Skipped.Count(skip => skip.Reason is SkipReason.DuplicateAtDestination or SkipReason.DuplicateInPlan),
                 FreeSpace(fileSystem, plan.ArchiveRoot), notes,
                 DescribeBlocking(outcome.Issues.Where(i => i.Severity == Severity.Error).ToList()),
