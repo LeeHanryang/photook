@@ -23,7 +23,8 @@
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel MaxWidth="720" HorizontalAlignment="Left">
                 <TextBlock Text="가져올 폴더" Style="{StaticResource SectionTitle}" />
-                <ListBox ItemsSource="{Binding Sources}" MinHeight="64" MaxHeight="160">
+                <ListBox ItemsSource="{Binding Sources}" MinHeight="64" MaxHeight="160"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
                     <ListBox.ItemTemplate>
                         <DataTemplate>
                             <Grid>

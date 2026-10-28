@@ -61,12 +61,32 @@ public class ViewLayoutTests
     }
 
     [Fact]
-    public void HistoryView_Row_ShowsCompletedSkippedAndTotal()
+    public void HistoryView_Row_UsesCountsConverter()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "HistoryView.xaml"));
 
-        Assert.Contains("""<Run Text="완료 " /><Run Text="{Binding CompletedFiles, Mode=OneWay}" /><Run Text=" · 건너뜀 " /><Run Text="{Binding SkippedFiles, Mode=OneWay}" /><Run Text=" / 전체 " /><Run Text="{Binding FileOperations, Mode=OneWay}" />""",
-            xaml, StringComparison.Ordinal);
+        Assert.Contains("""Text="{Binding Converter={StaticResource CountsText}}""", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void SourceView_SourceList_TrimsLongPathsInsteadOfScrolling()
+    {
+        var list = Load("Views", "SourceView.xaml").Descendants(Wpf + "ListBox")
+            .Single(l => (string?)l.Attribute("ItemsSource") == "{Binding Sources}");
+
+        // 가로 스크롤을 허용하면 긴 경로가 줄을 넓혀 "빼기" 버튼이 화면 밖으로 밀린다.
+        Assert.Equal("Disabled", (string?)list.Attribute("ScrollViewer.HorizontalScrollBarVisibility"));
+        Assert.Equal("Stretch", (string?)list.Attribute("HorizontalContentAlignment"));
+    }
+
+    [Fact]
+    public void HistoryView_List_IsNotCenteredByMaxWidth()
+    {
+        var list = Load("Views", "HistoryView.xaml").Descendants(Wpf + "ListBox").Single();
+        var host = list.Parent!;
+
+        // 폭 제한(MaxWidth)과 늘이기(Stretch)를 함께 쓰면 넓은 창에서 목록이 가운데로 간다. 제목처럼 왼쪽에 붙어야 한다.
+        Assert.Null(host.Attribute("MaxWidth"));
     }
 
     [Fact]

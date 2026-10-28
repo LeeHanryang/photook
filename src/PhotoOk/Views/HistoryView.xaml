@@ -5,6 +5,7 @@
     <UserControl.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <views:HistoryStatusTextConverter x:Key="StatusText" />
+        <views:HistoryCountsTextConverter x:Key="CountsText" />
         <views:InvertBooleanConverter x:Key="InvertBool" />
 
         <!-- 줄이 없으면 숨기는 목록. -->
@@ -74,7 +75,7 @@
         </StackPanel>
 
         <!-- "읽는 중…/기록 없음" 안내는 목록 위 자기 줄에 둔다(목록과 같은 칸에 겹치면 목록 배경에 가려진다). -->
-        <DockPanel Grid.Row="2" MaxWidth="900" HorizontalAlignment="Stretch" Margin="0,12,0,0" LastChildFill="True">
+        <DockPanel Grid.Row="2" Margin="0,12,0,0" LastChildFill="True">
             <TextBlock DockPanel.Dock="Top" Text="{Binding RunsNotice}" Style="{StaticResource OptionalText}" Margin="0,0,0,6"
                        Opacity="0.7" />
             <ListBox ItemsSource="{Binding Runs}" SelectedItem="{Binding Selected, Mode=TwoWay}"
@@ -86,9 +87,7 @@
                             <TextBlock>
                                 <Run Text="{Binding StartedLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm}}" FontWeight="SemiBold" /><Run Text=" · " /><Run Text="{Binding Status, Mode=OneWay, Converter={StaticResource StatusText}}" />
                             </TextBlock>
-                            <TextBlock Opacity="0.8">
-                                <Run Text="완료 " /><Run Text="{Binding CompletedFiles, Mode=OneWay}" /><Run Text=" · 건너뜀 " /><Run Text="{Binding SkippedFiles, Mode=OneWay}" /><Run Text=" / 전체 " /><Run Text="{Binding FileOperations, Mode=OneWay}" />
-                            </TextBlock>
+                            <TextBlock Text="{Binding Converter={StaticResource CountsText}}" Opacity="0.8" />
                             <TextBlock Text="{Binding ArchiveRoot, Mode=OneWay}" Opacity="0.7"
                                        TextTrimming="CharacterEllipsis" />
                         </StackPanel>
