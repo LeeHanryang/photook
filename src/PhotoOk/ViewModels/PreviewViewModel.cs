@@ -33,6 +33,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private const string ConfirmTitle = "확인이 필요한 오류가 있습니다";
     private const string NoCaptureTimeText = "촬영 시각 없음 — 파일 수정 시각으로 대체";
     private const string NothingToTransferMessage = "옮길 파일이 없습니다 — 모두 보관 폴더에 있거나 중복입니다";
+    private const string PlanningMessage = "정리 계획을 세우는 중…";
     private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
 
     private readonly ShellViewModel _shell;
@@ -66,6 +67,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private int _generation;
     private int _appliedGeneration;
     private Plan? _plan;
+    private bool _hasPlan;
     private Dictionary<string, PlannedOperation> _placementBySource = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, PlannedSkip> _skipBySource = new(StringComparer.OrdinalIgnoreCase);
 
@@ -282,7 +284,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         }
     }
 
-    /// <summary>계획을 다시 세우는 중이면 true. 이때는 실행할 수 없다.</summary>
+    /// <summary>계획을 세우는 중이면 true(첫 계획과 다시 계획 모두). 이때는 실행할 수 없다.</summary>
     public bool IsReplanning
     {
         get => _isReplanning;
@@ -291,9 +293,23 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             if (SetProperty(ref _isReplanning, value))
             {
                 ExecuteCommand.NotifyCanExecuteChanged();
+                OnPropertyChanged(nameof(PlanningText));
             }
         }
     }
+
+    /// <summary>
+    /// 반영된 계획이 있으면 true. 첫 계획 전(또는 계획 실패 뒤)에는 중복·옮길 파일·용량·여유 공간 합계를 숨긴다
+    /// (값이 0이라 "용량 0 B · 여유 공간 알 수 없음"처럼 잘못 보이므로).
+    /// </summary>
+    public bool HasPlan
+    {
+        get => _hasPlan;
+        private set => SetProperty(ref _hasPlan, value);
+    }
+
+    /// <summary>계획을 세우는 동안 위쪽 요약에 보일 안내. 아니면 null.</summary>
+    public string? PlanningText => IsReplanning ? PlanningMessage : null;
 
     /// <summary>
     /// 늘 false. 계획 세우기는 디스크를 읽기만 하므로 창을 닫을 때 "지금 파일까지 마치고 멈출까요?"를 묻지 않는다.
@@ -522,6 +538,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         PlanNotes = view.Notes;
         BlockingReason = view.BlockingReason ?? (TransferCount == 0 ? NothingToTransferMessage : null);
         FolderTree = view.Tree;
+        HasPlan = true;
 
         UpdateDetail();
         ExecuteCommand.NotifyCanExecuteChanged();
@@ -530,6 +547,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private void ApplyFailure()
     {
         _plan = null;
+        HasPlan = false;
         FolderTree = [];
         Detail = null;
         BlockingReason = PlanFailedMessage;

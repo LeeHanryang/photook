@@ -3,6 +3,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:PhotoOk.ViewModels">
     <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <Style x:Key="PaneTitle" TargetType="TextBlock">
             <Setter Property="FontSize" Value="15" />
             <Setter Property="FontWeight" Value="SemiBold" />
@@ -58,15 +59,27 @@
                 <TextBlock Style="{StaticResource SummaryItem}">
                     <Run Text="판단 필요" /> <Run Text="{Binding ReviewCount, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="개" />
                 </TextBlock>
-                <TextBlock Style="{StaticResource SummaryItem}">
+                <TextBlock Style="{StaticResource SummaryItem}" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}">
                     <Run Text="중복" /> <Run Text="{Binding DuplicateCount, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="개" />
                 </TextBlock>
-                <TextBlock Style="{StaticResource SummaryItem}" Text="{Binding TransferText}" FontWeight="SemiBold" />
-                <TextBlock Style="{StaticResource SummaryItem}">
+                <TextBlock Style="{StaticResource SummaryItem}" Text="{Binding TransferText}" FontWeight="SemiBold" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}" />
+                <TextBlock Style="{StaticResource SummaryItem}" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}">
                     <Run Text="용량" /> <Run Text="{Binding TransferSizeText, Mode=OneWay}" FontWeight="SemiBold" />
                 </TextBlock>
-                <TextBlock Style="{StaticResource SummaryItem}">
+                <TextBlock Style="{StaticResource SummaryItem}" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}">
                     <Run Text="대상 여유 공간" /> <Run Text="{Binding FreeSpaceText, Mode=OneWay}" FontWeight="SemiBold" />
+                </TextBlock>
+                <!-- 계획을 세우는 동안만 보인다(값이 null이면 숨김). -->
+                <TextBlock Text="{Binding PlanningText}" Opacity="0.7">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource SummaryItem}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding PlanningText}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
                 </TextBlock>
             </WrapPanel>
             <Expander Margin="0,8,0,0">
@@ -302,18 +315,6 @@
             <Button Content="뒤로" Command="{Binding BackCommand}" Padding="24,8" VerticalAlignment="Center" />
             <StackPanel Grid.Column="1" Margin="16,0" VerticalAlignment="Center">
                 <TextBlock Text="{Binding BlockingReason}" Foreground="#B00020" TextWrapping="Wrap" />
-                <TextBlock Text="계획을 다시 세우는 중…" Opacity="0.7">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
-                            <Setter Property="Visibility" Value="Collapsed" />
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding IsReplanning}" Value="True">
-                                    <Setter Property="Visibility" Value="Visible" />
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </TextBlock.Style>
-                </TextBlock>
             </StackPanel>
             <TextBlock Grid.Column="2" Text="{Binding ScanErrorNotice}" Foreground="#B00020" FontWeight="SemiBold"
                        VerticalAlignment="Center" Margin="0,0,12,0" />

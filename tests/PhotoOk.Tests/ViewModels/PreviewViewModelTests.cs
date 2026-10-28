@@ -684,6 +684,32 @@ public class PreviewViewModelTests
     }
 
     [Fact]
+    public async Task FirstPlan_ShowsPlanningText_AndHidesTotalsUntilPlanned()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        var scan = await ScanAsync();
+
+        var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
+            createRun: (_, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
+            buildPlan: (settings, s, names) =>
+            {
+                gate.Wait(Wait);
+                return _workflow.BuildPlan(settings, s, names);
+            });
+
+        // 첫 계획 전에는 "용량 0 B · 여유 공간 알 수 없음" 같은 빈 합계 대신 계획 중이라고 보인다.
+        Assert.False(vm.HasPlan);
+        Assert.Equal("정리 계획을 세우는 중…", vm.PlanningText);
+
+        gate.Set();
+        await vm.WhenPlanned;
+
+        Assert.True(vm.HasPlan);
+        Assert.Null(vm.PlanningText);
+    }
+
+    [Fact]
     public async Task FreeSpace_Unknown_ShowsText()
     {
         AddStandardPhotos();

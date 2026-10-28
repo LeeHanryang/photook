@@ -147,6 +147,17 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void PreviewView_Totals_HiddenUntilPlanned()
+    {
+        var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));
+
+        Assert.Contains("{Binding PlanningText}", xaml, StringComparison.Ordinal);
+        // 계획 중 안내는 위쪽 요약 한 곳에만 둔다(첫 계획에 "다시"라고 보이던 아래쪽 줄은 없앴다).
+        Assert.DoesNotContain("다시 세우는 중", xaml, StringComparison.Ordinal);
+        Assert.Contains("Visibility=\"{Binding HasPlan, Converter={StaticResource BoolToVisibility}}\"", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PreviewView_ShowsIgnoredFiles()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));
