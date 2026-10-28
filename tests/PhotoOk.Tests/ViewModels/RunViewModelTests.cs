@@ -45,8 +45,10 @@ public class RunViewModelTests
 
     private FileLog Log => new(_fs, LogFolder);
 
-    private RunViewModel ForPlan(Plan plan, int scanErrors = 0, Executor? executor = null, int ignored = 0) =>
-        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), _fs, Log, () => _home, () => _history, plan, scanErrors, ignored);
+    private RunViewModel ForPlan(Plan plan, int scanErrors = 0, Executor? executor = null, int ignored = 0,
+        PhotoOk.Core.IO.IFileSystem? fileSystem = null) =>
+        RunViewModel.ForPlan(_shell, executor ?? NewExecutor(), fileSystem ?? _fs, Log, () => _home, () => _history, plan, scanErrors,
+            ignored);
 
     private RunViewModel ForResume(string journalPath) =>
         RunViewModel.ForResume(_shell, NewExecutor(), _fs, Log, () => _home, () => _history, journalPath);
@@ -416,7 +418,7 @@ public class RunViewModelTests
 
         await vm.StartAsync();
 
-        Assert.Equal("기록을 남길 수 없어 실행을 멈췄습니다", vm.ResultTitle);
+        Assert.Equal("기록을 남길 수 없어 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다", vm.ResultTitle);
         Assert.Null(vm.SafeToCleanMessage);
         Assert.False(vm.CanResume);
         Assert.False(vm.IsBusy);
@@ -588,6 +590,67 @@ public class RunViewModelTests
 
         Assert.Equal(3, vm.Done); // 진행률은 폴더 만들기도 센다
         Assert.Equal("처리한 파일 2개", vm.SucceededFilesText);
+    }
+
+    [Fact]
+    public async Task SucceededFilesText_IsHidden_WhenJournalCannotBeCounted_ForAnyError()
+    {
+        var reader = new HookedFileSystem(_fs)
+        {
+            BeforeOpenRead = path =>
+            {
+                if (path.Contains(@"\journal\", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new NotSupportedException("unexpected");
+                }
+            },
+        };
+        var vm = ForPlan(CopyPlan(1), fileSystem: reader);
+
+        await vm.StartAsync();
+
+        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle); // 결과는 그대로 보인다
+        Assert.Equal(SafeMessage, vm.SafeToCleanMessage);
+        Assert.Null(vm.SucceededFilesText);
+        Assert.Contains("처리한 파일 수를 기록에서 읽지 못했습니다", LogText(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("원본 날짜를 유지하지 못했습니다: D:\\Archive\\a.jpg", "원본 날짜를 유지하지 못했습니다: D:\\Archive\\a.jpg")]
+    [InlineData("원본 날짜를 유지하지 못했습니다: D:\\Archive\\여행 — 제주.jpg", "원본 날짜를 유지하지 못했습니다: D:\\Archive\\여행 — 제주.jpg")]
+    [InlineData("임시 파일을 치우지 못함 — Access is denied.", "임시 파일을 치우지 못함")]
+    [InlineData("기록을 남기지 못함 — disk full: D:\\Archive\\x.jsonl", "기록을 남기지 못함")]
+    public void WarningSummary_CutsOnlyTheDetail_NotPaths(string warning, string expected)
+    {
+        Assert.Equal(expected, RunViewModel.WarningSummary(warning));
+    }
+
+    [Fact]
+    public async Task InScreenResume_KeepsWarningsOfTheFirstPart()
+    {
+        var plan = CopyPlan(3);
+        _fs.FailSetTimeOf(@"D:\Archive\2026\p1.jpg.photook-tmp");
+        _fs.FailSetTimeOf(@"D:\Archive\2026\p3.jpg.photook-tmp");
+        var vm = ForPlan(plan);
+        var cancelCalls = 0;
+        _hooked.AfterMove = (source, _) =>
+        {
+            if (source.EndsWith(".photook-tmp", StringComparison.OrdinalIgnoreCase) && cancelCalls++ == 0)
+            {
+                vm.Cancel();
+            }
+        };
+        await vm.StartAsync();
+        Assert.True(vm.CanResume);
+        Assert.Equal([@"원본 날짜를 유지하지 못했습니다: D:\Archive\2026\p1.jpg"], vm.WarningLines);
+
+        _hooked.AfterMove = null;
+        await vm.ResumeCommand.ExecuteAsync(null);
+
+        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
+        Assert.Equal(
+            [@"원본 날짜를 유지하지 못했습니다: D:\Archive\2026\p1.jpg", @"원본 날짜를 유지하지 못했습니다: D:\Archive\2026\p3.jpg"],
+            vm.WarningLines);
     }
 
     [Fact]

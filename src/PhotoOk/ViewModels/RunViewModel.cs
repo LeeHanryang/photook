@@ -20,7 +20,7 @@ namespace PhotoOk.ViewModels;
 public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
 {
     private const string SafeMessage = "검증 완료 — 원본을 직접 정리해도 안전합니다";
-    private const string JournalUnavailableTitle = "기록을 남길 수 없어 실행을 멈췄습니다";
+    private const string JournalUnavailableTitle = "기록을 남길 수 없어 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다";
     private const string UnexpectedErrorTitle = "예기치 못한 오류로 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다";
     private const int LineLimit = 50;
     private const string FailureDetailSeparator = " — ";
@@ -46,6 +46,12 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     private string? _faultTitle;
     private IReadOnlyList<string> _failureLines = [];
     private IReadOnlyList<string> _warningLines = [];
+
+    /// <summary>지난 결과의 알림 전체(50줄로 자르기 전). 화면 안에서 이어 하면 앞부분의 알림을 잃지 않도록 새 알림 앞에 붙인다.</summary>
+    private IReadOnlyList<string> _allWarnings = [];
+
+    /// <summary>이번 실행이 이어받을 앞부분의 알림. 처음 실행에는 없다.</summary>
+    private IReadOnlyList<string> _carriedWarnings = [];
     private int? _succeededFiles;
 
     [ObservableProperty]
@@ -244,6 +250,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         }
 
         var journalPath = _result!.JournalPath!;
+        _carriedWarnings = _allWarnings;
         return RunAsync((ct, progress) => _executor.Resume(journalPath, ct, progress));
     }
 
@@ -309,6 +316,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         _faultTitle = null;
         _failureLines = [];
         _warningLines = [];
+        _allWarnings = [];
         _succeededFiles = null;
         NotifyResultChanged();
     }
@@ -328,8 +336,20 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         // 실행 전 점검은 막는 오류만 "처리하지 못한 항목"이다. 경고(긴 경로 등)는 실행을 막지 않으므로 알림으로 보인다.
         var blockers = result.PreflightIssues.Where(i => i.Severity == Severity.Error).Select(i => FormatIssue(i));
         var issueWarnings = result.PreflightIssues.Where(i => i.Severity == Severity.Warning).Select(i => FormatIssue(i));
+
+        // 실행기 알림도 실패처럼 요약만 보이고 원문은 로그에 남긴다(앞으로 예외 원문이 붙는 알림이 생겨도 화면에 새지 않게).
+        var executorWarnings = result.Warnings.Select(w => (Full: w, Shown: WarningSummary(w))).ToList();
+        if (executorWarnings.Any(w => !ReferenceEquals(w.Full, w.Shown)))
+        {
+            _log.Warning("실행 알림" + Environment.NewLine + string.Join(Environment.NewLine, executorWarnings.Select(w => w.Full)));
+        }
+
         _failureLines = Cap(failures.Select(f => f.Shown).Concat(blockers).ToList());
-        _warningLines = Cap(issueWarnings.Concat(result.Warnings).ToList());
+        _allWarnings = _carriedWarnings.Concat(issueWarnings).Concat(executorWarnings.Select(w => w.Shown))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        _carriedWarnings = [];
+        _warningLines = Cap(_allWarnings);
         NotifyResultChanged();
     }
 
@@ -343,6 +363,17 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     {
         var cut = message.IndexOf(FailureDetailSeparator, StringComparison.Ordinal);
         return cut < 0 ? message : message[..cut];
+    }
+
+    /// <summary>
+    /// 실행기 알림("한국어 요약: 경로" 또는 "한국어 요약 — 원문")의 요약. " — "가 첫 ": "보다 앞에 있을 때만 자른다
+    /// (경로에 " — "가 들어 있어도 경로는 자르지 않는다). 자를 것이 없으면 같은 문자열을 그대로 돌려준다.
+    /// </summary>
+    internal static string WarningSummary(string warning)
+    {
+        var cut = warning.IndexOf(FailureDetailSeparator, StringComparison.Ordinal);
+        var colon = warning.IndexOf(": ", StringComparison.Ordinal);
+        return cut >= 0 && (colon < 0 || cut < colon) ? warning[..cut] : warning;
     }
 
     /// <summary>
@@ -361,8 +392,9 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             return JournalReader.Load(_fileSystem, result.JournalPath).Operations
                 .Count(o => o.Operation.Kind != OperationKind.CreateDirectory && o.Status is OpStatus.Completed or OpStatus.Skipped);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        catch (Exception ex)
         {
+            // 어떤 오류든 이 줄만 숨긴다. 이미 끝난 실행의 결과를 통째로 버리지 않는다.
             _log.Error("처리한 파일 수를 기록에서 읽지 못했습니다", ex);
             return null;
         }
@@ -370,6 +402,10 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
 
     private void Fault(string title)
     {
+        // 이어 하다 멈췄어도 앞부분의 알림은 계속 보인다.
+        _allWarnings = _carriedWarnings;
+        _carriedWarnings = [];
+        _warningLines = Cap(_allWarnings);
         _faultTitle = title;
         NotifyResultChanged();
     }

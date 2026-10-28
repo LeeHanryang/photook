@@ -31,7 +31,14 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
 
     public FileEntry GetFile(string path) => inner.GetFile(path);
 
-    public Stream OpenRead(string path) => inner.OpenRead(path);
+    /// <summary><see cref="OpenRead"/> 직전에 경로를 받아 부른다. 예외를 던지면 열지 않는다.</summary>
+    public Action<string>? BeforeOpenRead { get; set; }
+
+    public Stream OpenRead(string path)
+    {
+        BeforeOpenRead?.Invoke(path);
+        return inner.OpenRead(path);
+    }
 
     public Stream CreateNew(string path)
     {
