@@ -50,6 +50,53 @@ public class ShellViewModelTests
         }
     }
 
+    private sealed class LeavableScreen : ObservableObject, ILeavableScreen
+    {
+        public int LeftCount { get; private set; }
+
+        public bool ThrowOnLeft { get; set; }
+
+        public void OnLeft()
+        {
+            LeftCount++;
+            if (ThrowOnLeft)
+            {
+                throw new InvalidOperationException("모의 정리 실패");
+            }
+        }
+    }
+
+    [Fact]
+    public void Navigate_TellsLeavingScreen_Once()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        var first = new LeavableScreen();
+        var second = new LeavableScreen();
+        shell.Navigate(first);
+
+        shell.Navigate(first); // 같은 화면이면 떠난 것이 아니다
+        Assert.Equal(0, first.LeftCount);
+
+        shell.Navigate(second);
+
+        Assert.Equal(1, first.LeftCount);
+        Assert.Equal(0, second.LeftCount);
+    }
+
+    [Fact]
+    public void Navigate_StillChangesScreen_WhenLeavingScreenThrows()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        var first = new LeavableScreen { ThrowOnLeft = true };
+        var home = new IdleScreen();
+        shell.Navigate(first);
+
+        Assert.True(shell.ReturnHomeAfterError(() => home));
+
+        Assert.Same(home, shell.Current);
+        Assert.Equal(1, first.LeftCount);
+    }
+
     [Fact]
     public void ReturnHomeAfterError_FromIdleScreen_GoesHome()
     {

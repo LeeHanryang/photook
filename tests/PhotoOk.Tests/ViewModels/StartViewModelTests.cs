@@ -297,4 +297,21 @@ public class StartViewModelTests
         Assert.Single(start.RecentRuns);
         Assert.False(start.IsLoadingHistory);
     }
+
+    [Fact]
+    public async Task LeavingScreen_CancelsHistoryRead()
+    {
+        var history = new FakeRunHistory { Gate = new ManualResetEventSlim() };
+        var start = Create(history);
+        _shell.Navigate(start);
+        Assert.True(history.Started.Wait(TimeSpan.FromSeconds(10)));
+
+        start.OpenHistoryCommand.Execute(null);
+        await start.WhenLoaded.WaitAsync(TimeSpan.FromSeconds(10)); // 게이트를 열지 않아도 끝난다
+
+        Assert.Same(_historyScreen, _shell.Current);
+        Assert.Equal(1, history.Cancelled);
+        Assert.Empty(start.RecentRuns);
+        Assert.DoesNotContain("작업 기록을 읽지 못했습니다", LogText(), StringComparison.Ordinal);
+    }
 }

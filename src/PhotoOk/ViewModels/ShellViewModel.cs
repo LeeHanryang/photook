@@ -7,6 +7,7 @@ namespace PhotoOk.ViewModels;
 /// <summary>
 /// 창 하나에 지금 화면(<see cref="Current"/>)을 바꿔 끼운다. 화면 ViewModel은 다음 화면을 직접 만들지 않고,
 /// 생성자로 받은 팩토리 델리게이트로 만든 화면을 <see cref="Navigate"/>에 넘긴다(조립은 App).
+/// 화면을 바꾸면 떠나는 화면이 <see cref="ILeavableScreen"/>일 때 <see cref="ILeavableScreen.OnLeft"/>를 부른다.
 /// </summary>
 public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableObject
 {
@@ -113,6 +114,18 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
         if (oldValue is IBusyViewModel and INotifyPropertyChanged oldScreen)
         {
             oldScreen.PropertyChanged -= OnScreenPropertyChanged;
+        }
+
+        if (oldValue is ILeavableScreen left)
+        {
+            try
+            {
+                left.OnLeft();
+            }
+            catch (Exception)
+            {
+                // 던지지 않는 약속이다(화면이 스스로 로그를 남긴다). 그래도 떠난 화면의 정리 실패가 화면 바꾸기를 막지 않게 한다.
+            }
         }
 
         if (newValue is IBusyViewModel and INotifyPropertyChanged newScreen)

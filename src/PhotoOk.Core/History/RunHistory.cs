@@ -20,8 +20,11 @@ public sealed record HistoryError(string JournalPath, string Message);
 /// <summary>지난 실행 목록을 읽는다. 기록 파일 수와 보관 폴더 위치에 따라 오래 걸릴 수 있으므로 화면 스레드에서 부르지 않는다.</summary>
 public interface IRunHistory
 {
-    /// <summary>실행 ID 내림차순(최근 실행이 먼저). 읽을 수 없는 기록은 목록에서 빼고 오류로 알린다.</summary>
-    (IReadOnlyList<RunSummary> Runs, IReadOnlyList<HistoryError> Errors) List();
+    /// <summary>
+    /// 실행 ID 내림차순(최근 실행이 먼저). 읽을 수 없는 기록은 목록에서 빼고 오류로 알린다.
+    /// 취소하면(화면을 떠남) 기록 파일 사이에서 <see cref="OperationCanceledException"/>을 던진다.
+    /// </summary>
+    (IReadOnlyList<RunSummary> Runs, IReadOnlyList<HistoryError> Errors) List(CancellationToken ct = default);
 }
 
 /// <summary>앱 데이터의 작업 기록 폴더를 읽어 지난 실행 목록을 만든다. 기록은 읽기만 한다.</summary>
@@ -30,8 +33,11 @@ public sealed class RunHistory(IFileSystem fileSystem, string appDataRoot) : IRu
     private const string Unreadable = "기록을 읽을 수 없습니다";
     private const string RunIdTimeFormat = "yyyyMMdd-HHmmss";
 
-    /// <summary>실행 ID 내림차순(최근 실행이 먼저). 읽을 수 없는 기록은 목록에서 빼고 오류로 알린다.</summary>
-    public (IReadOnlyList<RunSummary> Runs, IReadOnlyList<HistoryError> Errors) List()
+    /// <summary>
+    /// 실행 ID 내림차순(최근 실행이 먼저). 읽을 수 없는 기록은 목록에서 빼고 오류로 알린다.
+    /// 취소하면 기록 파일 사이에서 <see cref="OperationCanceledException"/>을 던진다(기록은 읽기만 하므로 언제 멈춰도 된다).
+    /// </summary>
+    public (IReadOnlyList<RunSummary> Runs, IReadOnlyList<HistoryError> Errors) List(CancellationToken ct = default)
     {
         var runs = new List<RunSummary>();
         var errors = new List<HistoryError>();
@@ -57,6 +63,7 @@ public sealed class RunHistory(IFileSystem fileSystem, string appDataRoot) : IRu
 
         foreach (var file in files)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 runs.Add(Summarize(file));

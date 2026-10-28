@@ -14,7 +14,7 @@ namespace PhotoOk.ViewModels;
 /// 작업 기록은 백그라운드에서 읽는다(기록이 많거나 보관 폴더가 꺼진 네트워크 경로여도 화면이 멈추지 않게).
 /// 드라이브나 기록을 읽지 못해도 예외를 밖으로 던지지 않는다(로그에 남기고 빈 목록을 보인다). 상태는 화면(UI) 스레드에서만 바꾼다.
 /// </summary>
-public sealed partial class StartViewModel : ObservableObject
+public sealed partial class StartViewModel : ObservableObject, ILeavableScreen
 {
     private const int RecentRunLimit = 5;
     private const string LoadingNotice = "작업 기록을 읽는 중…";
@@ -27,6 +27,9 @@ public sealed partial class StartViewModel : ObservableObject
     private readonly Func<string?, ObservableObject> _createSource;
     private readonly Func<string?, ObservableObject> _createHistory;
     private readonly Func<string, ObservableObject> _createResume;
+
+    /// <summary>화면을 떠나면 취소한다(남은 기록 읽기가 이어 하기·되돌리기의 기록 덧붙이기와 겹치지 않게).</summary>
+    private readonly CancellationTokenSource _lifetime = new();
 
     /// <summary>가장 나중 요청만 반영한다(늦게 끝난 앞선 읽기가 최신 목록을 덮지 않게).</summary>
     private int _loadGeneration;
@@ -98,13 +101,31 @@ public sealed partial class StartViewModel : ObservableObject
         }
     }
 
+    /// <summary>화면을 떠날 때 남은 기록 읽기를 멈춘다. 예외를 던지지 않는다.</summary>
+    public void OnLeft()
+    {
+        try
+        {
+            _lifetime.Cancel();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("시작 화면 정리 중 오류", ex);
+        }
+    }
+
     private async Task LoadHistoryAsync(int generation)
     {
         IReadOnlyList<RunSummary> runs;
+        var ct = _lifetime.Token;
         try
         {
             var history = _history;
-            (runs, _) = await Task.Run(history.List);
+            (runs, _) = await Task.Run(() => history.List(ct), ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return; // 화면을 떠났다
         }
         catch (Exception ex)
         {

@@ -15,7 +15,7 @@ namespace PhotoOk.ViewModels;
 /// 이어 하기 화면과 시작 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다. 상태는 화면(UI) 스레드에서만 바꾼다.
 /// 작업 기록은 백그라운드에서 읽는다(기록이 많거나 보관 폴더가 꺼진 네트워크 경로여도 화면이 멈추지 않게).
 /// </summary>
-public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
+public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel, ILeavableScreen
 {
     private const string UndoTitle = "되돌리기";
     private const string UndoFaultMessage = "예기치 못한 오류로 되돌리기를 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다. 기록이 남아 있어 다시 되돌릴 수 있습니다.";
@@ -34,6 +34,9 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
     private readonly FileLog _log;
     private readonly Func<string, ObservableObject> _createResume;
     private readonly Func<ObservableObject> _createHome;
+
+    /// <summary>화면을 떠나면 취소한다(남은 기록 읽기가 이어 하기·되돌리기의 기록 덧붙이기와 겹치지 않게).</summary>
+    private readonly CancellationTokenSource _lifetime = new();
 
     private CancellationTokenSource? _cts;
     private bool _refreshing;
@@ -145,16 +148,34 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel
         return WhenLoaded;
     }
 
+    /// <summary>화면을 떠날 때 남은 기록 읽기를 멈춘다. 되돌리기는 바쁜 동안 화면을 떠날 수 없으므로 여기서 다루지 않는다. 예외를 던지지 않는다.</summary>
+    public void OnLeft()
+    {
+        try
+        {
+            _lifetime.Cancel();
+        }
+        catch (Exception ex)
+        {
+            _log.Error("작업 기록 화면 정리 중 오류", ex);
+        }
+    }
+
     private async Task LoadAsync(int generation, string? keepRunId)
     {
         IReadOnlyList<RunSummary> runs;
         IReadOnlyList<string> errorLines;
+        var ct = _lifetime.Token;
         try
         {
             var history = _history;
-            var (found, errors) = await Task.Run(history.List);
+            var (found, errors) = await Task.Run(() => history.List(ct), ct);
             runs = found;
             errorLines = errors.Select(e => $"{e.JournalPath}: {e.Message}").ToList();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return; // 화면을 떠났다
         }
         catch (Exception ex)
         {

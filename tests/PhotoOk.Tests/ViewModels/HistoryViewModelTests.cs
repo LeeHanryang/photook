@@ -518,4 +518,21 @@ public class HistoryViewModelTests
         Assert.Equal("아직 작업 기록이 없습니다.", vm.RunsNotice);
         Assert.Contains("bad archive root", LogText(), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public async Task LeavingScreen_CancelsHistoryRead()
+    {
+        var history = new FakeRunHistory { Gate = new ManualResetEventSlim() };
+        var vm = Create(history: history);
+        _shell.Navigate(vm);
+        Assert.True(history.Started.Wait(TimeSpan.FromSeconds(10)));
+
+        vm.HomeCommand.Execute(null);
+        await vm.WhenLoaded.WaitAsync(TimeSpan.FromSeconds(10)); // 게이트를 열지 않아도 끝난다
+
+        Assert.Same(_home, _shell.Current);
+        Assert.Equal(1, history.Cancelled);
+        Assert.Empty(vm.LoadErrors);
+        Assert.DoesNotContain("작업 기록을 읽지 못했습니다", LogText(), StringComparison.Ordinal);
+    }
 }
