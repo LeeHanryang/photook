@@ -75,6 +75,17 @@
                     <RadioButton Content="이동" GroupName="Mode"
                                  IsChecked="{Binding Mode, Converter={StaticResource EnumEquals}, ConverterParameter=Move}" />
                 </StackPanel>
+                <TextBlock Text="{Binding MoveHint}" TextWrapping="Wrap" Foreground="#555555" Margin="0,6,0,0">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding MoveHint}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
                 <TextBlock Text="{Binding MoveNotice}" TextWrapping="Wrap" Foreground="#8A5A00" Margin="0,6,0,0" />
             </StackPanel>
         </ScrollViewer>

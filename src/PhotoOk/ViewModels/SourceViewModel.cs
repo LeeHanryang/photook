@@ -23,6 +23,8 @@ public sealed partial class SourceViewModel : ObservableObject
     private const string FirstBuiltInName = "날짜 + 이벤트";
     private const string PresetFileFilter = "프리셋 파일 (*.json)|*.json";
     private const string CheckingArchiveMessage = "보관 폴더를 확인하는 중…";
+    private const string MoveHintText = "같은 드라이브에서는 원본을 보관 폴더로 옮깁니다. 다른 드라이브에서는 이동을 골라도 복사합니다.";
+    private const string CrossDriveMoveNoticeText = "가져올 폴더 중 보관 폴더와 다른 드라이브에 있는 곳은 복사합니다";
 
     private readonly ShellViewModel _shell;
     private readonly IFileSystem _fileSystem;
@@ -57,6 +59,7 @@ public sealed partial class SourceViewModel : ObservableObject
     private PresetEntry? selectedPreset;
 
     [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(MoveHint))]
     [NotifyPropertyChangedFor(nameof(MoveNotice))]
     private TransferMode mode;
 
@@ -151,7 +154,13 @@ public sealed partial class SourceViewModel : ObservableObject
         }
     }
 
-    /// <summary>이동을 골랐는데 가져올 폴더가 보관 폴더와 다른 드라이브면 알린다(그 파일은 복사로 처리된다).</summary>
+    /// <summary>이동을 고르면 이동이 무엇을 하는지 알린다. 복사를 고르면 null.</summary>
+    public string? MoveHint => Mode == TransferMode.Move ? MoveHintText : null;
+
+    /// <summary>
+    /// 이동을 골랐는데 가져올 폴더 중 보관 폴더와 다른 드라이브에 있는 것이 있으면 알린다(그 파일은 복사로 처리된다).
+    /// 일반 안내는 <see cref="MoveHint"/>가 하고, 이것은 지금 고른 폴더에 해당할 때만 보인다.
+    /// </summary>
     public string? MoveNotice
     {
         get
@@ -169,7 +178,7 @@ public sealed partial class SourceViewModel : ObservableObject
 
             var crossDrive = Sources.Any(source =>
                 VolumeOf(source) is { } volume && !string.Equals(volume, archiveVolume, StringComparison.OrdinalIgnoreCase));
-            return crossDrive ? "다른 드라이브에서는 이동을 골라도 복사합니다" : null;
+            return crossDrive ? CrossDriveMoveNoticeText : null;
         }
     }
 

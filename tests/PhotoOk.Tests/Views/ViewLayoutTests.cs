@@ -80,6 +80,18 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void SourceView_MoveHint_IsRightUnderModeButtons()
+    {
+        var hint = Load("Views", "SourceView.xaml").Descendants(Wpf + "TextBlock")
+            .Single(t => (string?)t.Attribute("Text") == "{Binding MoveHint}");
+
+        // 바로 앞 형제가 "복사/이동" 단추 줄이어야 한다.
+        var radios = hint.ElementsBeforeSelf().Last();
+        Assert.Equal(2, radios.Elements(Wpf + "RadioButton").Count());
+        Assert.Equal("Wrap", (string?)hint.Attribute("TextWrapping"));
+    }
+
+    [Fact]
     public void HistoryView_List_IsNotCenteredByMaxWidth()
     {
         var list = Load("Views", "HistoryView.xaml").Descendants(Wpf + "ListBox").Single();

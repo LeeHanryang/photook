@@ -19,7 +19,8 @@ public class SourceViewModelTests
     private const string NoArchive = "보관 폴더를 고르세요";
     private const string Overlap = "보관 폴더와 가져올 폴더가 겹칩니다. 서로 다른 폴더를 고르세요";
     private const string NoPreset = "정리 방식을 고르세요";
-    private const string MoveNoticeText = "다른 드라이브에서는 이동을 골라도 복사합니다";
+    private const string MoveNoticeText = "가져올 폴더 중 보관 폴더와 다른 드라이브에 있는 곳은 복사합니다";
+    private const string MoveHintText = "같은 드라이브에서는 원본을 보관 폴더로 옮깁니다. 다른 드라이브에서는 이동을 골라도 복사합니다.";
     private const string PresetErrorTitle = "프리셋을 열 수 없습니다";
     private const string LogFolder = @"L:\PhotoOk\logs";
 
@@ -467,6 +468,23 @@ public class SourceViewModelTests
     }
 
     // ----- 이동 안내 -----
+
+    [Fact]
+    public void MoveHint_ShownOnlyWhenMoveIsSelected()
+    {
+        var vm = Create(Settings([@"D:\Photos"], @"D:\Archive"));
+        Assert.Null(vm.MoveHint);
+
+        var changed = new List<string?>();
+        vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+        vm.Mode = TransferMode.Move;
+        Assert.Equal(MoveHintText, vm.MoveHint);
+        Assert.Contains(nameof(SourceViewModel.MoveHint), changed);
+        Assert.Null(vm.MoveNotice); // 같은 드라이브면 따로 경고하지 않는다
+
+        vm.Mode = TransferMode.Copy;
+        Assert.Null(vm.MoveHint);
+    }
 
     [Fact]
     public void MoveNotice_AppearsForCrossDriveMove()
