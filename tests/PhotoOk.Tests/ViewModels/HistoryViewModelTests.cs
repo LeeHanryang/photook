@@ -405,7 +405,7 @@ public class HistoryViewModelTests
     }
 
     private static RunSummary Summary(string runId, RunStatus status) =>
-        new(runId, @"C:\j\" + runId + ".jsonl", Archive, new DateTime(2026, 10, 27, 9, 0, 0), status, 1, 1, 0,
+        new(runId, @"C:\j\" + runId + ".jsonl", Archive, new DateTime(2026, 10, 27, 9, 0, 0), status, 1, 1, 0, 0,
             CanResume: status == RunStatus.Unfinished, CanUndo: true);
 
     [Fact]

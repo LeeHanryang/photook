@@ -85,7 +85,7 @@
                                 <Run Text="{Binding StartedLocal, Mode=OneWay, StringFormat={}{0:yyyy-MM-dd HH:mm}}" FontWeight="SemiBold" /><Run Text=" · " /><Run Text="{Binding Status, Mode=OneWay, Converter={StaticResource StatusText}}" />
                             </TextBlock>
                             <TextBlock Opacity="0.8">
-                                <Run Text="완료 " /><Run Text="{Binding CompletedFiles, Mode=OneWay}" /><Run Text=" / 전체 " /><Run Text="{Binding FileOperations, Mode=OneWay}" />
+                                <Run Text="완료 " /><Run Text="{Binding CompletedFiles, Mode=OneWay}" /><Run Text=" · 건너뜀 " /><Run Text="{Binding SkippedFiles, Mode=OneWay}" /><Run Text=" / 전체 " /><Run Text="{Binding FileOperations, Mode=OneWay}" />
                             </TextBlock>
                             <TextBlock Text="{Binding ArchiveRoot, Mode=OneWay}" Opacity="0.7"
                                        TextTrimming="CharacterEllipsis" />

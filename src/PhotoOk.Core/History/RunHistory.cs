@@ -8,11 +8,12 @@ namespace PhotoOk.Core.History;
 public enum RunStatus { Completed, CompletedWithFailures, Unfinished, PlanIncomplete, UndoInProgress, Undone }
 
 /// <summary>
-/// 지난 실행 하나의 요약. <paramref name="FileOperations"/>는 폴더 만들기를 뺀 작업 수, <paramref name="CompletedFiles"/>와
-/// <paramref name="FailedFiles"/>는 그 가운데 완료·실패한 수다. <paramref name="JournalPath"/>는 읽어 낸 항목이 가장 많은 사본이다.
+/// 지난 실행 하나의 요약. <paramref name="FileOperations"/>는 폴더 만들기를 뺀 작업 수, <paramref name="CompletedFiles"/>,
+/// <paramref name="SkippedFiles"/>(이미 같은 파일이 있어 건너뜀), <paramref name="FailedFiles"/>는 그 가운데 완료·건너뜀·실패한 수다.
+/// <paramref name="JournalPath"/>는 읽어 낸 항목이 가장 많은 사본이다.
 /// </summary>
 public sealed record RunSummary(string RunId, string JournalPath, string ArchiveRoot, DateTime StartedLocal, RunStatus Status,
-    int FileOperations, int CompletedFiles, int FailedFiles, bool CanResume, bool CanUndo);
+    int FileOperations, int CompletedFiles, int SkippedFiles, int FailedFiles, bool CanResume, bool CanUndo);
 
 public sealed record HistoryError(string JournalPath, string Message);
 
@@ -76,12 +77,13 @@ public sealed class RunHistory(IFileSystem fileSystem, string appDataRoot) : IRu
         var started = ParseStart(state.RunId);
         var fileOps = state.Operations.Where(o => o.Operation.Kind != OperationKind.CreateDirectory).ToList();
         var completed = fileOps.Count(o => o.Status == OpStatus.Completed);
+        var skipped = fileOps.Count(o => o.Status == OpStatus.Skipped);
         var failed = fileOps.Count(o => o.Status == OpStatus.Failed);
         var status = Judge(state, failed);
         var canResume = status == RunStatus.Unfinished;
         var canUndo = status is RunStatus.Completed or RunStatus.CompletedWithFailures or RunStatus.Unfinished
             or RunStatus.UndoInProgress;
-        return new RunSummary(state.RunId, path, state.ArchiveRoot, started, status, fileOps.Count, completed, failed,
+        return new RunSummary(state.RunId, path, state.ArchiveRoot, started, status, fileOps.Count, completed, skipped, failed,
             canResume, canUndo);
     }
 

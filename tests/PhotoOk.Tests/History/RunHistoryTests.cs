@@ -88,9 +88,73 @@ public class RunHistoryTests
         Assert.Equal(Archive, run.ArchiveRoot);
         Assert.Equal(2, run.FileOperations);
         Assert.Equal(2, run.CompletedFiles);
+        Assert.Equal(0, run.SkippedFiles);
         Assert.Equal(0, run.FailedFiles);
         Assert.False(run.CanResume);
         Assert.True(run.CanUndo);
+    }
+
+    [Fact]
+    public void SkippedFiles_AreCountedSeparately()
+    {
+        const string runId = "20261027-103000-ab12";
+        var writer = new JournalWriter(_fs, [JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: 3, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op0", OperationKind.CreateDirectory, null, @"D:\Archive\2026", 0,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op1", OperationKind.Copy, @"E:\a.jpg", @"D:\Archive\2026\a.jpg", 5,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op2", OperationKind.Copy, @"E:\b.jpg", @"D:\Archive\2026\b.jpg", 5,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Skipped, "op0", TimestampUtc: Now)); // 폴더는 세지 않는다
+        writer.Write(new JournalEntry(runId, JournalEvent.Skipped, "op1", TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Completed, "op2", TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.RunFinished, TimestampUtc: Now));
+
+        var run = Single();
+        Assert.Equal(RunStatus.Completed, run.Status);
+        Assert.Equal(2, run.FileOperations);
+        Assert.Equal(1, run.CompletedFiles);
+        Assert.Equal(1, run.SkippedFiles);
+        Assert.Equal(0, run.FailedFiles);
+    }
+
+    [Fact]
+    public void Status_Unfinished_WithStartedOperation()
+    {
+        const string runId = "20261027-103000-ab12";
+        var writer = new JournalWriter(_fs, [JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: 1, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op1", OperationKind.Copy, @"E:\a.jpg", @"D:\Archive\a.jpg", 5,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Started, "op1", TimestampUtc: Now)); // 파일 도중에 꺼졌다
+
+        var run = Single();
+
+        Assert.Equal(RunStatus.Unfinished, run.Status);
+        Assert.Equal(0, run.CompletedFiles);
+        Assert.True(run.CanResume);
+        Assert.True(run.CanUndo);
+    }
+
+    [Fact]
+    public void Status_Undone_WhenRemainingOperationsWereUndoSkipped()
+    {
+        const string runId = "20261027-103000-ab12";
+        var writer = new JournalWriter(_fs, [JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: 1, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Planned, "op1", OperationKind.Copy, @"E:\a.jpg", @"D:\Archive\a.jpg", 5,
+            TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Completed, "op1", TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.RunFinished, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.UndoStarted, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.UndoSkipped, "op1", Message: "원본이 없어 복사본을 남김", TimestampUtc: Now));
+
+        var run = Single();
+
+        Assert.Equal(RunStatus.Undone, run.Status);
+        Assert.False(run.CanResume);
+        Assert.False(run.CanUndo);
     }
 
     [Fact]

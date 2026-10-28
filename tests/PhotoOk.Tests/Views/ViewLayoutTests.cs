@@ -61,6 +61,15 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void HistoryView_Row_ShowsCompletedSkippedAndTotal()
+    {
+        var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "HistoryView.xaml"));
+
+        Assert.Contains("""<Run Text="완료 " /><Run Text="{Binding CompletedFiles, Mode=OneWay}" /><Run Text=" · 건너뜀 " /><Run Text="{Binding SkippedFiles, Mode=OneWay}" /><Run Text=" / 전체 " /><Run Text="{Binding FileOperations, Mode=OneWay}" />""",
+            xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void PreviewView_ShowsIgnoredFiles()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));

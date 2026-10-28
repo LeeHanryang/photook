@@ -24,9 +24,9 @@ public sealed class SystemRemovableDrives : IRemovableDrives
                         string.IsNullOrWhiteSpace(d.VolumeLabel) ? "이동식 디스크" : d.VolumeLabel));
                 }
             }
-            catch (IOException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // 목록을 만드는 사이에 뽑힌 드라이브는 건너뛴다.
+                // 목록을 만드는 사이에 뽑힌 드라이브나 정보를 읽을 권한이 없는 드라이브는 건너뛴다.
             }
         }
 

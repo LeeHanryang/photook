@@ -218,7 +218,7 @@ public class StartViewModelTests
     {
         var history = new FakeRunHistory { Gate = new ManualResetEventSlim() };
         history.Runs.Add(new RunSummary("20261027-090000-bbbb", @"C:\j.jsonl", Archive, new DateTime(2026, 10, 27, 9, 0, 0),
-            RunStatus.Unfinished, 1, 0, 0, CanResume: true, CanUndo: true));
+            RunStatus.Unfinished, 1, 0, 0, 0, CanResume: true, CanUndo: true));
         _drives.Choices.Add(new DriveChoice(@"E:\", "EOS_DIGITAL"));
         var uiThread = Environment.CurrentManagedThreadId;
 
@@ -289,7 +289,7 @@ public class StartViewModelTests
         Assert.True(history.Started.Wait(TimeSpan.FromSeconds(10)));
 
         history.Runs.Add(new RunSummary("20261027-090000-bbbb", @"C:\j.jsonl", Archive, new DateTime(2026, 10, 27, 9, 0, 0),
-            RunStatus.Completed, 1, 1, 0, CanResume: false, CanUndo: true));
+            RunStatus.Completed, 1, 1, 0, 0, CanResume: false, CanUndo: true));
         var second = start.RefreshAsync();
         history.Gate.Set();
         await Task.WhenAll(first, second);
