@@ -57,7 +57,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private CancellationTokenSource? _replanCts;
     private int _generation;
     private int _appliedGeneration;
-    private bool _reviewCardAdded;
     private Plan? _plan;
     private Dictionary<string, PlannedOperation> _placementBySource = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, PlannedSkip> _skipBySource = new(StringComparer.OrdinalIgnoreCase);
@@ -124,20 +123,30 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
                 string.Create(CultureInfo.InvariantCulture, $"외 {scan.Ignored.Count - IgnoredLineLimit}건")];
 
         // 판단이 필요한 묶음은 날짜 카드에서 빼고 맨 끝 판단 필요 카드에만 보인다. 사유는 계획과 같은 함수(ReviewDetector)로
-        // 구하므로 계획 작업에 붙는 사유와 같다. 이벤트 이름과 관계없으므로 첫 계획을 기다리지 않고 카드를 바로 만든다.
+        // 구하므로 계획 작업에 붙는 사유와 같다. 이벤트 이름과 관계없으므로 첫 계획을 기다리지 않고 두 갈래 카드를 함께 만든다.
+        // 중복이라 건너뛰는 파일도 사유가 있으면 판단 필요 카드에 보인다. 카드의 "N장"은 대표·딸린 파일을 모두 센다.
+        var reviewGroups = new List<FileGroup>();
         foreach (var session in scan.Sessions)
         {
-            var groups = session.Groups
-                .Where(group => ReviewDetector.Detect(group, settings.Preset, _aliases).Count == 0)
-                .ToList();
-            if (groups.Count == 0)
+            var dateGroups = new List<FileGroup>();
+            foreach (var group in session.Groups)
             {
-                continue;
+                (ReviewDetector.Detect(group, settings.Preset, _aliases).Count == 0 ? dateGroups : reviewGroups).Add(group);
             }
 
-            AddCard(new SessionItemViewModel(session.Id, CardTitle(session.Id, groups.Sum(g => g.AllFiles.Count())),
-                DevicesOf(groups), isReviewGroup: false, groups.Select(g => g.Primary.Path).ToList(), OnEventNameChanged,
-                RequestCardThumbnail));
+            if (dateGroups.Count > 0)
+            {
+                Sessions.Add(new SessionItemViewModel(session.Id, CardTitle(session.Id, FileCount(dateGroups)),
+                    DevicesOf(dateGroups), isReviewGroup: false, dateGroups.Select(g => g.Primary.Path).ToList(), OnEventNameChanged,
+                    RequestCardThumbnail));
+            }
+        }
+
+        if (reviewGroups.Count > 0)
+        {
+            Sessions.Add(new SessionItemViewModel(ReviewGroupId, CardTitle(ReviewGroupId, FileCount(reviewGroups)),
+                DevicesOf(reviewGroups), isReviewGroup: true, reviewGroups.Select(g => g.Primary.Path).ToList(),
+                eventNameChanged: null, RequestCardThumbnail));
         }
 
         SelectedSession = Sessions.FirstOrDefault();
@@ -442,13 +451,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         BlockingReason = view.BlockingReason;
         FolderTree = view.Tree;
 
-        // 판단 필요 사유는 이벤트 이름과 관계없으므로 묶음 카드는 첫 계획으로 한 번만 만든다.
-        if (!_reviewCardAdded)
-        {
-            _reviewCardAdded = true;
-            AddReviewCard(view.ReviewSources);
-        }
-
         UpdateDetail();
         ExecuteCommand.NotifyCanExecuteChanged();
     }
@@ -461,30 +463,6 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         BlockingReason = PlanFailedMessage;
         ExecuteCommand.NotifyCanExecuteChanged();
     }
-
-    /// <param name="sources">판단 필요 분기로 가는 작업의 원본 경로(계획 순서).</param>
-    private void AddReviewCard(IEnumerable<string> sources)
-    {
-        var groups = new List<FileGroup>();
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var source in sources)
-        {
-            if (_files.TryGetValue(FullPath(source), out var entry) && seen.Add(entry.Group.Primary.Path))
-            {
-                groups.Add(entry.Group);
-            }
-        }
-
-        if (groups.Count == 0)
-        {
-            return;
-        }
-
-        AddCard(new SessionItemViewModel(ReviewGroupId, CardTitle(ReviewGroupId, groups.Count), DevicesOf(groups),
-            isReviewGroup: true, groups.Select(g => g.Primary.Path).ToList(), eventNameChanged: null, RequestCardThumbnail));
-    }
-
-    private void AddCard(SessionItemViewModel card) => Sessions.Add(card);
 
     /// <summary>카드가 처음 그려질 때(썸네일을 처음 읽을 때) 대표 한 장을 요청한다. 보이지 않는 카드는 요청하지 않는다.</summary>
     private void RequestCardThumbnail(SessionItemViewModel card)
@@ -601,6 +579,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
             .Select(g => _aliases.Resolve(g.Primary))
             .OfType<string>()
             .Distinct(StringComparer.OrdinalIgnoreCase));
+
+    private static int FileCount(IEnumerable<FileGroup> groups) => groups.Sum(g => g.AllFiles.Count());
 
     private static string CardTitle(string label, int count) =>
         string.Create(CultureInfo.InvariantCulture, $"{label} · {count}장");

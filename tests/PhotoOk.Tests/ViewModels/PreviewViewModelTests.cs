@@ -520,6 +520,65 @@ public class PreviewViewModelTests
     }
 
     [Fact]
+    public async Task ReviewCard_IncludesDuplicateSkippedFiles_AndCountsAllFiles()
+    {
+        AddStandardPhotos();
+        // 촬영일 없는 D.JPG(판단 필요)가 판단 필요 분기에 이미 있다 → 중복으로 건너뛰어도 판단 필요 카드에 보인다.
+        _fs.AddFile(@"D:\Archive\판단 필요\촬영일 없음\DCIM\D.JPG", [4, 4, 4, 4]);
+        _fs.AddFile(@"E:\DCIM\D.xmp", [7]); // D.JPG에 딸린 사이드카
+
+        var vm = await CreateAsync();
+
+        var review = vm.Sessions[^1];
+        Assert.True(review.IsReviewGroup);
+        Assert.Equal("판단 필요 · 2장", review.Title); // 대표와 딸린 파일을 모두 센다
+        Assert.Equal([@"E:\DCIM\D.JPG"], review.Files);
+        Assert.Single(vm.Sessions, s => s.IsReviewGroup);
+        Assert.Equal(2, vm.DuplicateCount); // C.JPG와 D.JPG
+
+        vm.SelectedSession = review;
+        Assert.Equal("보관 폴더에 같은 파일이 있어 건너뜁니다", vm.Detail?.SkipNote);
+    }
+
+    [Fact]
+    public async Task AllReview_Import_SelectsReviewCard_AndShowsDetail()
+    {
+        _fs.AddFile(@"E:\DCIM\D.JPG", [4, 4, 4, 4]);
+        _reader.Set(@"E:\DCIM\D.JPG", null);
+
+        var vm = await CreateAsync();
+
+        var review = Assert.Single(vm.Sessions);
+        Assert.True(review.IsReviewGroup);
+        Assert.Same(review, vm.SelectedSession);
+        Assert.Equal("D.JPG", vm.Detail?.FileName);
+        Assert.Equal([@"E:\DCIM\D.JPG"], vm.Thumbnails.Select(t => t.Path));
+    }
+
+    [Fact]
+    public async Task Cards_AreBuiltBeforeFirstPlan()
+    {
+        AddStandardPhotos();
+        using var gate = new ManualResetEventSlim();
+        var scan = await ScanAsync();
+
+        var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
+            createRun: (_, _, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
+            buildPlan: (settings, s, names) =>
+            {
+                gate.Wait(Wait);
+                return _workflow.BuildPlan(settings, s, names);
+            });
+
+        Assert.Equal(["2026-10-14 · 2장", "2026-10-15 · 1장", "판단 필요 · 1장"], vm.Sessions.Select(c => c.Title));
+        Assert.Same(vm.Sessions[0], vm.SelectedSession);
+
+        gate.Set();
+        await vm.WhenPlanned;
+        Assert.Equal(3, vm.Sessions.Count);
+    }
+
+    [Fact]
     public async Task FreeSpace_Unknown_ShowsText()
     {
         AddStandardPhotos();
