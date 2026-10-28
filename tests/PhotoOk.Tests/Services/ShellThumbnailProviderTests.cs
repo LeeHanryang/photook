@@ -5,7 +5,11 @@ using PhotoOk.Tests.Fakes;
 
 namespace PhotoOk.Tests.Services;
 
-/// <summary>실제 Windows 셸을 쓰는 검사. 임시 폴더의 파일만 읽는다.</summary>
+/// <summary>
+/// 실제 Windows 셸을 쓰는 검사. 임시 폴더의 파일만 읽는다. 셸 상태에 따라 불안정할 수 있어 "Shell" 분류로 묶는다
+/// (<c>dotnet test --filter "Category!=Shell"</c>로 뺄 수 있다).
+/// </summary>
+[Trait("Category", "Shell")]
 public sealed class ShellThumbnailProviderTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "photook-tests", Guid.NewGuid().ToString("N"));
@@ -18,6 +22,7 @@ public sealed class ShellThumbnailProviderTests : IDisposable
 
     public void Dispose()
     {
+        _provider.Dispose();
         try
         {
             if (Directory.Exists(_root))
@@ -61,6 +66,23 @@ public sealed class ShellThumbnailProviderTests : IDisposable
 
         var image = await _provider.GetAsync(path, 96, new CancellationToken(canceled: true));
 
+        Assert.Null(image);
+    }
+}
+
+/// <summary>닫기 동작. 셸을 부르지 않는다.</summary>
+public sealed class ShellThumbnailProviderDisposeTests
+{
+    [Fact]
+    public async Task Dispose_StopsWorkers_AndLaterRequestsGiveNull()
+    {
+        var provider = new ShellThumbnailProvider(workerCount: 2);
+
+        provider.Dispose();
+        provider.Dispose(); // 두 번 불러도 된다
+
+        Assert.True(provider.IsStopped);
+        var image = await provider.GetAsync(@"C:\없음\a.jpg", 96, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Null(image);
     }
 }

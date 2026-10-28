@@ -51,6 +51,48 @@ public class ShellViewModelTests
     }
 
     [Fact]
+    public void ReturnHomeAfterError_FromIdleScreen_GoesHome()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        var idle = new FakeBusyScreen { IsBusy = false };
+        shell.Navigate(idle);
+        var home = new IdleScreen();
+
+        Assert.True(shell.ReturnHomeAfterError(() => home));
+
+        Assert.Same(home, shell.Current);
+        Assert.Equal(1, idle.CancelCount); // 남은 백그라운드 일을 멈춘다
+    }
+
+    [Fact]
+    public void ReturnHomeAfterError_LeavesBusyScreen()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        var busy = new FakeBusyScreen();
+        shell.Navigate(busy);
+
+        Assert.False(shell.ReturnHomeAfterError(() => throw new InvalidOperationException("부르면 안 됨")));
+
+        Assert.Same(busy, shell.Current);
+        Assert.Equal(0, busy.CancelCount);
+    }
+
+    [Fact]
+    public void ReturnHomeAfterError_DoesNothing_OnStartScreenOrWithoutScreen()
+    {
+        var shell = new ShellViewModel(_dialogs);
+        Assert.False(shell.ReturnHomeAfterError(() => throw new InvalidOperationException("부르면 안 됨")));
+
+        var start = new StartViewModel(shell, new FakeDrives(), new FakeRunHistory(),
+            new PhotoOk.Services.FileLog(new FakeFileSystem(), @"L:\logs"), _ => new IdleScreen(), _ => new IdleScreen(),
+            _ => new IdleScreen());
+        shell.Navigate(start);
+
+        Assert.False(shell.ReturnHomeAfterError(() => throw new InvalidOperationException("부르면 안 됨")));
+        Assert.Same(start, shell.Current);
+    }
+
+    [Fact]
     public void Navigate_SetsCurrent()
     {
         var shell = new ShellViewModel(_dialogs);

@@ -12,12 +12,15 @@ public sealed class FileLog(IFileSystem fileSystem, string logFolder)
 {
     private readonly object _gate = new();
 
-    public void Error(string message, Exception ex) => Write("오류", $"{message}{Environment.NewLine}{ex}");
+    public void Error(string message, Exception ex) => TryError(message, ex);
+
+    /// <summary><see cref="Error"/>와 같고, 로그에 실제로 남겼으면 true(안내 문구가 "로그에 남겼다"고 말해도 되는지).</summary>
+    public bool TryError(string message, Exception ex) => Write("오류", $"{message}{Environment.NewLine}{ex}");
 
     /// <summary>예외는 없지만 나중에 확인할 수 있게 남겨 둘 일(예: 화면에는 요약만 보이는 파일별 실패 원문).</summary>
     public void Warning(string message) => Write("경고", message);
 
-    private void Write(string level, string text)
+    private bool Write(string level, string text)
     {
         try
         {
@@ -29,10 +32,13 @@ public sealed class FileLog(IFileSystem fileSystem, string logFolder)
                 fileSystem.CreateDirectory(logFolder);
                 fileSystem.AppendLine(path, line);
             }
+
+            return true;
         }
         catch (Exception)
         {
             // 로그를 쓰지 못해도 원래 오류 처리(안내 창)는 계속해야 한다.
+            return false;
         }
     }
 }

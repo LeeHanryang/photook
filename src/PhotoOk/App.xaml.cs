@@ -1,4 +1,5 @@
-﻿using System.Windows;
+﻿using System.IO;
+using System.Windows;
 using System.Windows.Threading;
 using PhotoOk.Core.Execution;
 using PhotoOk.Core.Hashing;
@@ -23,13 +24,16 @@ public partial class App : Application
 {
     private const string ErrorTitle = "문제가 생겼습니다";
     private const string ErrorMessage = "예기치 못한 오류가 생겨 작업을 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
+    private const string ErrorMessageWithoutLog = "예기치 못한 오류가 생겨 작업을 멈췄습니다.";
     private const string StartFailedMessage = "PhotoOK를 시작하지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
+    private const string StartFailedMessageWithoutLog = "PhotoOK를 시작하지 못했습니다.";
 
     /// <summary>이벤트 이름 입력이 멈춘 뒤 다시 계획하기까지 기다리는 시간.</summary>
     private static readonly TimeSpan ReplanDelay = TimeSpan.FromSeconds(0.5);
 
     private readonly IDialogService _dialogs = new WpfDialogService();
     private FileLog? _log;
+    private ShellViewModel? _shell;
     private bool _showingError;
 
     internal AppServices? Services { get; private set; }
@@ -42,10 +46,15 @@ public partial class App : Application
         TaskScheduler.UnobservedTaskException += OnUnobservedTaskException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
+        // 로그는 다른 무엇보다 먼저 만든다(조립 중 오류도 남기도록). 로그 위치조차 알 수 없으면 로그 없이 간다.
+        IFileSystem fileSystem = new PhysicalFileSystem();
+        _log = TryCreateLog(fileSystem);
+
         try
         {
-            Services = Compose();
+            Services = Compose(fileSystem);
             var shell = new ShellViewModel(Services.Dialogs);
+            _shell = shell;
             shell.Navigate(CreateStartScreen(Services, shell));
 
             var window = new MainWindow(shell);
@@ -54,17 +63,43 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            _log?.Error("앱을 시작하지 못했습니다", ex);
-            TryShowError(StartFailedMessage);
+            var logged = _log?.TryError("앱을 시작하지 못했습니다", ex) ?? false;
+            TryShowError(logged ? StartFailedMessage : StartFailedMessageWithoutLog);
             Shutdown(1);
         }
     }
 
-    private AppServices Compose()
+    protected override void OnExit(ExitEventArgs e)
+    {
+        // 미리보기 작업 스레드를 멈춘다(남은 요청은 만들지 않는다).
+        try
+        {
+            (Services?.Thumbnails as IDisposable)?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            _log?.Error("미리보기 작업을 멈추지 못했습니다", ex);
+        }
+
+        base.OnExit(e);
+    }
+
+    private static FileLog? TryCreateLog(IFileSystem fileSystem)
+    {
+        try
+        {
+            return new FileLog(fileSystem, AppPaths.ForCurrentUser().LogFolder);
+        }
+        catch (Exception ex) when (ex is ArgumentException or PlatformNotSupportedException or IOException)
+        {
+            return null;
+        }
+    }
+
+    private AppServices Compose(IFileSystem fileSystem)
     {
         var paths = AppPaths.ForCurrentUser();
-        IFileSystem fileSystem = new PhysicalFileSystem();
-        _log = new FileLog(fileSystem, paths.LogFolder);
+        _log ??= new FileLog(fileSystem, paths.LogFolder);
 
         IHasher hasher = new XxHasher(fileSystem);
         return new AppServices(
@@ -157,18 +192,31 @@ public partial class App : Application
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        _log?.Error("화면 스레드에서 처리하지 못한 오류", e.Exception);
-        TryShowError(ErrorMessage);
+        var logged = _log?.TryError("화면 스레드에서 처리하지 못한 오류", e.Exception) ?? false;
+        TryShowError(logged ? ErrorMessage : ErrorMessageWithoutLog);
         e.Handled = true;
+
+        // 작업 중이 아닌 화면은 오류 뒤 상태를 알 수 없으므로 시작 화면으로 돌아간다. 작업 중인 화면은 그 작업이 스스로 정리한다.
+        if (_shell is { } shell && Services is { } services)
+        {
+            try
+            {
+                shell.ReturnHomeAfterError(() => CreateStartScreen(services, shell));
+            }
+            catch (Exception ex)
+            {
+                _log?.Error("오류 뒤 시작 화면으로 돌아가지 못했습니다", ex);
+            }
+        }
     }
 
     private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
     {
-        _log?.Error("관찰되지 않은 작업 오류", e.Exception);
+        var logged = _log?.TryError("관찰되지 않은 작업 오류", e.Exception) ?? false;
         e.SetObserved();
 
         // 종료자 스레드에서 불리므로 안내 창은 화면 스레드에서 띄운다.
-        Dispatcher.BeginInvoke(new Action(() => TryShowError(ErrorMessage)));
+        Dispatcher.BeginInvoke(new Action(() => TryShowError(logged ? ErrorMessage : ErrorMessageWithoutLog)));
     }
 
     private void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)

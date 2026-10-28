@@ -75,6 +75,28 @@ public sealed partial class ShellViewModel(IDialogService dialogs) : ObservableO
         return false;
     }
 
+    /// <summary>
+    /// 화면 스레드에서 처리하지 못한 오류 뒤에 부른다. 지금 화면이 작업 중이 아니면(상태를 알 수 없으므로) 시작 화면으로 돌아간다.
+    /// 작업 중인 화면은 그 작업이 끝날 때 스스로 상태를 되돌리므로 그대로 둔다. 이미 시작 화면이면 아무것도 하지 않는다
+    /// (시작 화면에서 오류가 되풀이될 때 되돌아가기를 반복하지 않게). 돌아갔으면 true. 시작 화면을 만들다 난 오류는 던진다.
+    /// </summary>
+    public bool ReturnHomeAfterError(Func<ObservableObject> createHome)
+    {
+        ArgumentNullException.ThrowIfNull(createHome);
+        if (IsBusy || Current is null or StartViewModel)
+        {
+            return false;
+        }
+
+        if (Current is IBusyViewModel idle)
+        {
+            idle.Cancel(); // 미리보기의 재계획처럼 바쁜 화면으로 치지 않는 백그라운드 일을 멈춘다. 던지지 않는 약속이다.
+        }
+
+        Navigate(createHome());
+        return true;
+    }
+
     private void OnClosingScreenStopped(object? sender, EventArgs e)
     {
         if (sender is IBusyViewModel busy)

@@ -41,6 +41,18 @@ public class FileLogTests
     }
 
     [Fact]
+    public void TryError_TellsWhetherTheLogWasWritten()
+    {
+        var fs = new FakeFileSystem();
+        var log = new FileLog(fs, LogFolder);
+
+        Assert.True(log.TryError("남김", new InvalidOperationException("원인")));
+
+        fs.CrashAfter(0);
+        Assert.False(log.TryError("못 남김", new InvalidOperationException("원인")));
+    }
+
+    [Fact]
     public void AppPaths_ForCurrentUser_UsesAppDataFolders()
     {
         var paths = AppPaths.ForCurrentUser();

@@ -11,10 +11,16 @@ namespace PhotoOk.Services;
 /// Windows 셸(탐색기)이 만드는 미리보기를 쓴다. 셸 개체는 STA 스레드에서만 다루므로
 /// 전용 STA 작업 스레드 몇 개가 요청을 차례로 처리한다. 파일은 셸이 읽기만 한다.
 /// 미리보기를 만들 수 없으면 아이콘을 쓰고, 그것도 안 되면 null.
+/// <see cref="Dispose"/>하면 새 요청을 받지 않고, 남은 요청은 만들지 않고 null로 끝낸 뒤 작업 스레드를 멈춘다.
 /// </summary>
-public sealed class ShellThumbnailProvider : IThumbnailProvider
+public sealed class ShellThumbnailProvider : IThumbnailProvider, IDisposable
 {
+    /// <summary>앱을 닫을 때 작업 스레드가 지금 그림을 마치기를 기다리는 최대 시간.</summary>
+    private static readonly TimeSpan StopTimeout = TimeSpan.FromSeconds(2);
+
     private readonly BlockingCollection<Request> _queue = new();
+    private readonly List<Thread> _workers = [];
+    private volatile bool _disposed;
 
     public ShellThumbnailProvider(int workerCount = 2)
     {
@@ -23,20 +29,56 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider
         {
             var thread = new Thread(Work) { IsBackground = true, Name = $"PhotoOk 미리보기 {i + 1}" };
             thread.SetApartmentState(ApartmentState.STA);
+            _workers.Add(thread);
             thread.Start();
         }
     }
 
+    /// <summary>작업 스레드가 모두 멈췄으면 true(<see cref="Dispose"/> 뒤에만).</summary>
+    public bool IsStopped => _disposed && _workers.All(w => !w.IsAlive);
+
     public Task<ImageSource?> GetAsync(string path, int size, CancellationToken ct)
     {
-        if (ct.IsCancellationRequested || string.IsNullOrEmpty(path) || size <= 0)
+        if (_disposed || ct.IsCancellationRequested || string.IsNullOrEmpty(path) || size <= 0)
         {
             return Task.FromResult<ImageSource?>(null);
         }
 
         var request = new Request(path, size, ct, new TaskCompletionSource<ImageSource?>(TaskCreationOptions.RunContinuationsAsynchronously));
-        _queue.Add(request, CancellationToken.None);
+        try
+        {
+            _queue.Add(request, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            // 그사이 닫혔다.
+            return Task.FromResult<ImageSource?>(null);
+        }
+
         return request.Result.Task;
+    }
+
+    /// <summary>새 요청을 받지 않고, 남은 요청은 null로 끝내고, 작업 스레드가 멈추기를 잠시 기다린다. 여러 번 불러도 된다.</summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _queue.CompleteAdding();
+        var stopped = true;
+        foreach (var worker in _workers)
+        {
+            stopped &= worker.Join(StopTimeout);
+        }
+
+        // 아직 셸 호출 중인 스레드가 있으면 대기열을 그 스레드가 다 쓸 때까지 남겨 둔다(배경 스레드라 앱 종료를 막지 않는다).
+        if (stopped)
+        {
+            _queue.Dispose();
+        }
     }
 
     private void Work()
@@ -44,7 +86,7 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider
         foreach (var request in _queue.GetConsumingEnumerable())
         {
             ImageSource? image = null;
-            if (!request.Ct.IsCancellationRequested)
+            if (!_disposed && !request.Ct.IsCancellationRequested)
             {
                 try
                 {
@@ -57,7 +99,7 @@ public sealed class ShellThumbnailProvider : IThumbnailProvider
                 }
             }
 
-            request.Result.TrySetResult(request.Ct.IsCancellationRequested ? null : image);
+            request.Result.TrySetResult(_disposed || request.Ct.IsCancellationRequested ? null : image);
         }
     }
 
