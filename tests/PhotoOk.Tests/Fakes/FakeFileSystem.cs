@@ -348,6 +348,31 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
+    /// <summary>바로 아래 폴더(표시 경로, 이름 순). 거부 폴더(<see cref="DenyDirectory"/>)는 목록을 볼 수 없어 던진다.</summary>
+    public IEnumerable<string> EnumerateDirectories(string directory)
+    {
+        lock (_gate)
+        {
+            var dir = Normalize(directory);
+            EnsureVolumePresent(dir);
+            if (!_dirs.ContainsKey(dir))
+            {
+                throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {directory}");
+            }
+
+            if (_deniedDirs.Contains(dir))
+            {
+                throw new UnauthorizedAccessException($"폴더를 열 수 없습니다: {_dirs[dir]}");
+            }
+
+            return _dirs
+                .Where(kv => PathEquals(Path.GetDirectoryName(kv.Key), dir))
+                .Select(kv => kv.Value)
+                .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+    }
+
     public bool FileExists(string path)
     {
         lock (_gate)

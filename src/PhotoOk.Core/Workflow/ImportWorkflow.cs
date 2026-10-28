@@ -8,12 +8,16 @@ using PhotoOk.Core.Sessions;
 
 namespace PhotoOk.Core.Workflow;
 
-/// <summary>스캔 결과: 날짜별 세션과 스캔 중 생긴 오류, 무시한 파일.</summary>
+/// <summary>
+/// 스캔 결과: 날짜별 세션과 스캔 중 생긴 오류, 무시한 파일. <see cref="SubfoldersNotScanned"/>는 하위 폴더를 포함하지 않았는데
+/// 소스 폴더에 하위 폴더가 있었다(또는 확인하지 못했다)는 뜻이다(<see cref="ScanResult.SubfoldersNotScanned"/>).
+/// </summary>
 public sealed record ScanOutcome(
     IReadOnlyList<Session> Sessions,
     IReadOnlyList<ScanError> Errors,
     IReadOnlyList<string> Ignored,
-    int FileCount);
+    int FileCount,
+    bool SubfoldersNotScanned);
 
 /// <summary>계획과 실행 전 점검 결과.</summary>
 public sealed record PlanOutcome(Plan Plan, IReadOnlyList<PreflightIssue> Issues)
@@ -39,7 +43,7 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
             var result = scanner.Scan(settings.Sources, settings.IncludeSubfolders, ct, filesRead);
             var sessions = SessionGrouper.GroupByDay(result.Groups, settings.Preset.DayStart, zone);
             var fileCount = result.Groups.Sum(g => g.AllFiles.Count());
-            return new ScanOutcome(sessions, result.Errors, result.Ignored, fileCount);
+            return new ScanOutcome(sessions, result.Errors, result.Ignored, fileCount, result.SubfoldersNotScanned);
         }, ct);
     }
 

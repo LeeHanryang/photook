@@ -13,6 +13,12 @@ public interface IFileSystem
     /// </summary>
     IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null);
 
+    /// <summary>
+    /// 디렉터리 바로 아래 폴더의 전체 경로를 나열한다(한 단계만, 숨김·시스템 폴더 포함). 디렉터리가 없으면
+    /// <see cref="DirectoryNotFoundException"/>, 목록을 볼 수 없으면 그 예외를 그대로 던진다.
+    /// </summary>
+    IEnumerable<string> EnumerateDirectories(string directory);
+
     bool FileExists(string path);
 
     bool DirectoryExists(string path);

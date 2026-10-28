@@ -42,7 +42,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     private readonly IThumbnailProvider _thumbnails;
     private readonly IDialogService _dialogs;
     private readonly FileLog _log;
-    private readonly Func<Plan, int, int, ObservableObject> _createRun;
+    private readonly Func<Plan, ScanFacts, ObservableObject> _createRun;
     private readonly Func<ObservableObject> _createBack;
     private readonly TimeSpan _replanDelay;
     private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome> _buildPlan;
@@ -92,7 +92,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
     /// <param name="buildPlan">계획을 세우는 함수. 생략하면 <paramref name="workflow"/>의 것을 쓴다(스캔과 같은 인스턴스여야 해시를 다시 쓴다).</param>
     public PreviewViewModel(ShellViewModel shell, ImportWorkflow workflow, ImportSettings settings, ScanOutcome scan,
         IFileSystem fileSystem, IThumbnailProvider thumbnails, IDialogService dialogs, FileLog log,
-        Func<Plan, int, int, ObservableObject> createRun, Func<ObservableObject> createBack, TimeSpan replanDelay,
+        Func<Plan, ScanFacts, ObservableObject> createRun, Func<ObservableObject> createBack, TimeSpan replanDelay,
         Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null)
     {
         ArgumentNullException.ThrowIfNull(workflow);
@@ -335,7 +335,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel
         }
 
         Leave();
-        _shell.Navigate(_createRun(plan, _scan.Errors.Count, _scan.Ignored.Count));
+        _shell.Navigate(_createRun(plan, ScanFacts.From(_scan)));
         return Task.CompletedTask;
     }
 

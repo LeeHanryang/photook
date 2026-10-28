@@ -13,13 +13,14 @@ namespace PhotoOk.ViewModels;
 /// 계획을 실행하고(또는 끝나지 않은 실행을 이어 하고) 진행률과 결과를 보여 주는 화면.
 /// 파일은 <see cref="Executor"/>만 건드린다. 이 화면은 실행기를 백그라운드에서 부르고 결과를 한국어로 풀어 줄 뿐이다.
 /// "검증 완료 — 원본을 직접 정리해도 안전합니다"는 실행이 실패 없이 끝까지 마쳤고(<see cref="RunOutcome.Completed"/>, 실패 0)
-/// 스캔 때 읽지 못한 파일도, 가져오지 않은 파일(사진·동영상이 아닌 파일)도 없다고 알 때만 보인다.
-/// 그 수를 모르는 경우(기록에서 이어 하기)에는 보이지 않는다.
+/// 스캔 때 읽지 못한 파일도, 가져오지 않은 파일(사진·동영상이 아닌 파일)도, 가져오지 않은 하위 폴더도 없다고 알 때만 보인다.
+/// 그것을 모르는 경우(기록에서 이어 하기)에는 보이지 않는다.
 /// 상태는 화면(UI) 스레드에서만 바꾼다.
 /// </summary>
 public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
 {
     private const string SafeMessage = "검증 완료 — 원본을 직접 정리해도 안전합니다";
+    private const string SubfoldersNotImportedMessage = "하위 폴더의 파일은 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요";
     private const string JournalUnavailableTitle = "기록을 남길 수 없어 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다";
     private const string UnexpectedErrorTitle = "예기치 못한 오류로 실행을 멈췄습니다. 작업 기록에서 이어 하거나 되돌릴 수 있습니다";
     private const int LineLimit = 50;
@@ -34,11 +35,8 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     private readonly Plan? _plan;
     private readonly string? _journalPath;
 
-    /// <summary>스캔 때 읽지 못한 파일 수. 기록에서 이어 하는 화면은 모른다(null).</summary>
-    private readonly int? _scanErrorCount;
-
-    /// <summary>스캔 때 사진·동영상이 아니어서 가져오지 않은 파일 수. 기록에서 이어 하는 화면은 모른다(null).</summary>
-    private readonly int? _ignoredCount;
+    /// <summary>스캔 때 읽지 못한 파일 수, 가져오지 않은 파일 수, 가져오지 않은 하위 폴더가 있는지. 기록에서 이어 하는 화면은 모른다(null).</summary>
+    private readonly ScanFacts? _scan;
 
     private CancellationTokenSource? _cts;
     private bool _started;
@@ -80,7 +78,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     private bool isCancelling;
 
     private RunViewModel(ShellViewModel shell, Executor executor, IFileSystem fileSystem, FileLog log, Func<ObservableObject> createHome,
-        Func<ObservableObject> createHistory, Plan? plan, string? journalPath, int? scanErrorCount, int? ignoredCount)
+        Func<ObservableObject> createHistory, Plan? plan, string? journalPath, ScanFacts? scan)
     {
         _shell = shell;
         _executor = executor;
@@ -90,8 +88,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         _createHistory = createHistory;
         _plan = plan;
         _journalPath = journalPath;
-        _scanErrorCount = scanErrorCount;
-        _ignoredCount = ignoredCount;
+        _scan = scan;
 
         StartCommand = new AsyncRelayCommand(StartAsync, () => !_started && !IsBusy);
         ResumeCommand = new AsyncRelayCommand(ResumeAsync, () => CanResume);
@@ -101,15 +98,15 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     }
 
     /// <summary>
-    /// 미리보기에서 만든 계획을 실행하는 화면. <paramref name="scanErrorCount"/>는 스캔 때 읽지 못한 파일 수,
-    /// <paramref name="ignoredCount"/>는 사진·동영상이 아니어서 가져오지 않은 파일 수.
+    /// 미리보기에서 만든 계획을 실행하는 화면. <paramref name="scan"/>은 그 계획을 세운 스캔의 사실(읽지 못한 파일 수,
+    /// 사진·동영상이 아니어서 가져오지 않은 파일 수, 가져오지 않은 하위 폴더가 있는지).
     /// </summary>
     public static RunViewModel ForPlan(ShellViewModel shell, Executor executor, IFileSystem fileSystem, FileLog log, Func<ObservableObject> createHome,
-        Func<ObservableObject> createHistory, Plan plan, int scanErrorCount, int ignoredCount)
+        Func<ObservableObject> createHistory, Plan plan, ScanFacts scan)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan, journalPath: null, scanErrorCount,
-            ignoredCount);
+        ArgumentNullException.ThrowIfNull(scan);
+        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan, journalPath: null, scan);
     }
 
     /// <summary>끝나지 않은 실행을 작업 기록으로 이어 하는 화면. 스캔 때 읽지 못한 파일 수를 모르므로 "안전" 문구는 보이지 않는다.</summary>
@@ -117,8 +114,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         Func<ObservableObject> createHistory, string journalPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(journalPath);
-        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan: null, journalPath, scanErrorCount: null,
-            ignoredCount: null);
+        return new RunViewModel(shell, executor, fileSystem, log, createHome, createHistory, plan: null, journalPath, scan: null);
     }
 
     public event EventHandler? BusyEnded;
@@ -142,12 +138,13 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     /// <summary>끝나기 전에는 null.</summary>
     public string? ResultTitle => _faultTitle ?? (_result is null ? null : TitleOf(_result.Outcome));
 
-    /// <summary>실패 없이 끝까지 마쳤고 스캔 오류도, 가져오지 않은 파일도 없다고 알 때만 문구가 있고, 아니면 null.</summary>
-    public string? SafeToCleanMessage => CompletedWithoutFailures && _scanErrorCount == 0 && _ignoredCount == 0 ? SafeMessage : null;
+    /// <summary>실패 없이 끝까지 마쳤고 스캔 오류도, 가져오지 않은 파일도, 가져오지 않은 하위 폴더도 없다고 알 때만 문구가 있고, 아니면 null.</summary>
+    public string? SafeToCleanMessage =>
+        CompletedWithoutFailures && _scan is { ScanErrors: 0, IgnoredFiles: 0, SubfoldersNotImported: false } ? SafeMessage : null;
 
     /// <summary>
-    /// 실패 없이 끝났는데도 "안전" 문구를 못 보이는 까닭(스캔 때 읽지 못한 파일이나 가져오지 않은 파일이 있거나, 있었는지 모른다).
-    /// 까닭이 둘이면 줄을 바꿔 둘 다 보인다. 그 밖에는 null.
+    /// 실패 없이 끝났는데도 "안전" 문구를 못 보이는 까닭(스캔 때 읽지 못한 파일이나 가져오지 않은 파일·하위 폴더가 있거나, 있었는지 모른다).
+    /// 까닭이 여럿이면 줄을 바꿔 모두 보인다. 그 밖에는 null.
     /// </summary>
     public string? CautionMessage
     {
@@ -158,22 +155,27 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
                 return null;
             }
 
-            if (_scanErrorCount is null || _ignoredCount is null)
+            if (_scan is null)
             {
                 return "이 기록은 스캔할 때 읽지 못한 파일이나 가져오지 않은 파일이 있었는지 알 수 없습니다. 원본을 직접 정리하기 전에 확인해 주세요";
             }
 
             var lines = new List<string>();
-            if (_scanErrorCount is > 0 and var errors)
+            if (_scan.ScanErrors is > 0 and var errors)
             {
                 lines.Add(string.Create(CultureInfo.InvariantCulture,
                     $"스캔할 때 읽지 못한 파일이 {errors}개 있습니다. 원본을 직접 정리하기 전에 그 파일을 확인해 주세요"));
             }
 
-            if (_ignoredCount is > 0 and var ignored)
+            if (_scan.IgnoredFiles is > 0 and var ignored)
             {
                 lines.Add(string.Create(CultureInfo.InvariantCulture,
                     $"사진·동영상이 아닌 파일 {ignored}개는 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요"));
+            }
+
+            if (_scan.SubfoldersNotImported)
+            {
+                lines.Add(SubfoldersNotImportedMessage);
             }
 
             return lines.Count == 0 ? null : string.Join(Environment.NewLine, lines);

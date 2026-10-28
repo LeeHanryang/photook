@@ -53,6 +53,18 @@ public sealed class PhysicalFileSystemTests : IDisposable
     }
 
     [Fact]
+    public void EnumerateDirectories_ListsOnlyDirectSubfolders()
+    {
+        Directory.CreateDirectory(Path.Combine(_root, "a", "deep"));
+        Directory.CreateDirectory(P("b"));
+        File.WriteAllText(P("file.txt"), "x");
+
+        Assert.Equal([P("a"), P("b")], _fs.EnumerateDirectories(_root).Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Empty(_fs.EnumerateDirectories(P("b")));
+        Assert.Throws<DirectoryNotFoundException>(() => _fs.EnumerateDirectories(P("missing")));
+    }
+
+    [Fact]
     public void Move_Throws_AndKeepsBoth_WhenDestinationExists()
     {
         var src = P("src.txt");

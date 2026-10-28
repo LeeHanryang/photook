@@ -263,6 +263,62 @@ public class ScannerTests
     }
 
     [Fact]
+    public void Scan_NonRecursive_WithSubfolder_SaysSubfoldersWereNotScanned()
+    {
+        Add($@"{Root}\TOP.JPG");
+        _fs.AddDirectory($@"{Root}\empty-but-present");
+
+        Assert.True(Scan(recursive: false).SubfoldersNotScanned);
+        Assert.False(Scan(recursive: true).SubfoldersNotScanned);
+    }
+
+    [Fact]
+    public void Scan_NonRecursive_WithoutSubfolder_DoesNotFlagSubfolders()
+    {
+        Add($@"{Root}\TOP.JPG");
+        _fs.AddDirectory($@"{Root}\.photook"); // 앱 폴더는 하위 폴더까지 스캔해도 보지 않는다
+
+        Assert.False(Scan(recursive: false).SubfoldersNotScanned);
+    }
+
+    [Fact]
+    public void Scan_NonRecursive_AnySourceWithSubfolder_FlagsSubfolders()
+    {
+        Add($@"{Root}\TOP.JPG");
+        Add(@"E:\Other\sub\DEEP.JPG");
+        Add(@"E:\Other\ONE.JPG");
+
+        var result = CreateScanner().Scan([Root, @"E:\Other"], recursive: false);
+
+        Assert.True(result.SubfoldersNotScanned);
+    }
+
+    [Fact]
+    public void Scan_NonRecursive_SubfolderCheckFails_AssumesSubfolders()
+    {
+        Add($@"{Root}\TOP.JPG");
+        var fs = new FailingDirectoryListFileSystem(_fs);
+
+        var result = CreateScanner(fs).Scan([Root], recursive: false);
+
+        Assert.True(result.SubfoldersNotScanned);
+        Assert.Equal(["TOP.JPG"], result.Groups.Select(g => Name(g.Primary)));
+        Assert.Empty(result.Errors);
+    }
+
+    [Fact]
+    public void Scan_NonRecursive_DeniedRoot_AssumesSubfolders()
+    {
+        _fs.AddDirectory(Root);
+        _fs.DenyDirectory(Root);
+
+        var result = Scan(recursive: false);
+
+        Assert.True(result.SubfoldersNotScanned);
+        Assert.Single(result.Errors);
+    }
+
+    [Fact]
     public void Scan_SameNameInDifferentFolders_StaysSeparate()
     {
         Add($@"{Root}\A\IMG.RW2");
@@ -582,10 +638,19 @@ public class ScannerTests
         }
     }
 
+    /// <summary>하위 폴더 목록을 볼 수 없다(파일 목록은 볼 수 있다).</summary>
+    private sealed class FailingDirectoryListFileSystem(FakeFileSystem inner) : DelegatingFileSystem(inner)
+    {
+        public override IEnumerable<string> EnumerateDirectories(string directory) =>
+            throw new IOException("네트워크 이름을 더 이상 사용할 수 없습니다");
+    }
+
     private abstract class DelegatingFileSystem(IFileSystem inner) : IFileSystem
     {
         public virtual IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
             inner.EnumerateFiles(directory, recursive, onInaccessible);
+
+        public virtual IEnumerable<string> EnumerateDirectories(string directory) => inner.EnumerateDirectories(directory);
 
         public bool FileExists(string path) => inner.FileExists(path);
 

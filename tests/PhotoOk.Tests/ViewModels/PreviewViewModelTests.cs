@@ -29,7 +29,7 @@ public class PreviewViewModelTests
     private readonly ShellViewModel _shell;
     private readonly ObservableObject _runScreen = new ScreenStub();
     private readonly ObservableObject _backScreen = new ScreenStub();
-    private readonly List<(Plan Plan, int ScanErrors, int Ignored)> _runRequests = [];
+    private readonly List<(Plan Plan, int ScanErrors, int Ignored, bool SubfoldersNotImported)> _runRequests = [];
     private readonly ImportSettings _settings = new([@"E:\DCIM"], true, Archive, BuiltInPresets.DateEvent, TransferMode.Copy);
     private readonly ImportWorkflow _workflow;
 
@@ -71,9 +71,9 @@ public class PreviewViewModelTests
         scan ??= await ScanAsync();
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, fileSystem ?? _fs, _thumbnails, _dialogs,
             new FileLog(_fs, LogFolder),
-            createRun: (plan, errors, ignored) =>
+            createRun: (plan, scan) =>
             {
-                _runRequests.Add((plan, errors, ignored));
+                _runRequests.Add((plan, scan.ScanErrors, scan.IgnoredFiles, scan.SubfoldersNotImported));
                 return _runScreen;
             },
             createBack: () => _backScreen,
@@ -426,6 +426,21 @@ public class PreviewViewModelTests
         Assert.Equal(0, run.ScanErrors);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SubfoldersLeftOut_IsPassedToRun(bool leftOut)
+    {
+        AddStandardPhotos();
+        var scan = await ScanAsync() with { SubfoldersNotScanned = leftOut };
+        var vm = await CreateAsync(scan);
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        var run = Assert.Single(_runRequests);
+        Assert.Equal(leftOut, run.SubfoldersNotImported);
+    }
+
     [Fact]
     public async Task IgnoredFiles_None_HasNoNotice()
     {
@@ -636,7 +651,7 @@ public class PreviewViewModelTests
         var scan = await ScanAsync();
 
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
-            createRun: (_, _, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
+            createRun: (_, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
             buildPlan: (settings, s, names) =>
             {
                 gate.Wait(Wait);

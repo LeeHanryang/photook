@@ -129,6 +129,21 @@ public class ImportWorkflowTests
         Assert.True(outcome.HasBlockingIssue);
     }
 
+    [Theory]
+    [InlineData(false, true)] // 하위 폴더를 포함하지 않았는데 하위 폴더가 있다
+    [InlineData(true, false)] // 하위 폴더까지 스캔했다
+    public async Task Scan_CarriesWhetherSubfoldersWereLeftOut(bool includeSubfolders, bool expected)
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1], Oct14);
+        AddPhoto(@"E:\DCIM\100CANON\B.JPG", [2], Oct14);
+        var settings = Settings() with { IncludeSubfolders = includeSubfolders };
+
+        var scan = await Workflow().ScanAsync(settings, null, CancellationToken.None);
+
+        Assert.Equal(expected, scan.SubfoldersNotScanned);
+        Assert.Equal(includeSubfolders ? 2 : 1, scan.FileCount);
+    }
+
     [Fact]
     public async Task Scan_IsCancellable()
     {

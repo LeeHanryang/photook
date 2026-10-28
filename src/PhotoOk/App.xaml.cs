@@ -151,7 +151,7 @@ public partial class App : Application
     private static PreviewViewModel CreatePreviewScreen(AppServices services, ShellViewModel shell, ImportWorkflow workflow,
         ImportSettings settings, ScanOutcome outcome) =>
         new(shell, workflow, settings, outcome, services.FileSystem, services.Thumbnails, services.Dialogs, services.Log,
-            createRun: (plan, scanErrorCount, ignoredCount) => CreateRunScreen(services, shell, plan, scanErrorCount, ignoredCount),
+            createRun: (plan, scan) => CreateRunScreen(services, shell, plan, scan),
             createBack: () => CreateSourceScreen(services, shell, driveRoot: null),
             replanDelay: ReplanDelay);
 
@@ -159,13 +159,12 @@ public partial class App : Application
     /// 실행 화면. 미리보기에서 "정리 시작"을 눌러 온 것이므로 화면을 만들자마자 실행한다(<see cref="RunViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).
     /// "작업 기록"은 작업 기록 화면으로 간다.
     /// </summary>
-    private static RunViewModel CreateRunScreen(AppServices services, ShellViewModel shell, Plan plan, int scanErrorCount,
-        int ignoredCount)
+    private static RunViewModel CreateRunScreen(AppServices services, ShellViewModel shell, Plan plan, ScanFacts scan)
     {
         var run = RunViewModel.ForPlan(shell, new Executor(services.Execution), services.FileSystem, services.Log,
             createHome: () => CreateStartScreen(services, shell),
             createHistory: () => CreateHistoryScreen(services, shell, selectRunId: null),
-            plan, scanErrorCount, ignoredCount);
+            plan, scan);
         run.StartCommand.Execute(null);
         return run;
     }

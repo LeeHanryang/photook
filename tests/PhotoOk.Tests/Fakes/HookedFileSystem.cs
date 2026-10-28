@@ -25,6 +25,8 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
         inner.EnumerateFiles(directory, recursive, onInaccessible);
 
+    public IEnumerable<string> EnumerateDirectories(string directory) => inner.EnumerateDirectories(directory);
+
     public bool FileExists(string path) => inner.FileExists(path);
 
     public bool DirectoryExists(string path) => inner.DirectoryExists(path);

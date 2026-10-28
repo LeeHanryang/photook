@@ -94,6 +94,16 @@ public sealed class PhysicalFileSystem : IFileSystem
         }
     }
 
+    public IEnumerable<string> EnumerateDirectories(string directory)
+    {
+        if (!Directory.Exists(directory))
+        {
+            throw new DirectoryNotFoundException($"폴더를 찾을 수 없습니다: {directory}");
+        }
+
+        return Directory.EnumerateDirectories(directory, "*", OneLevel);
+    }
+
     public bool FileExists(string path) => File.Exists(path);
 
     public bool DirectoryExists(string path) => Directory.Exists(path);

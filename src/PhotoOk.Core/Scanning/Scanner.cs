@@ -24,9 +24,15 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var skippedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var filesDone = 0;
+        var subfoldersNotScanned = false;
 
         foreach (var root in sourceRoots)
         {
+            if (!recursive && !subfoldersNotScanned)
+            {
+                subfoldersNotScanned = HasSubfolders(root);
+            }
+
             foreach (var path in Enumerate(root, recursive, errors, skippedFolders, ct))
             {
                 ct.ThrowIfCancellationRequested();
@@ -58,7 +64,24 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         ct.ThrowIfCancellationRequested();
 
         ignored.Sort(StringComparer.OrdinalIgnoreCase);
-        return new ScanResult(BuildGroups(infos), ignored, errors);
+        return new ScanResult(BuildGroups(infos), ignored, errors, subfoldersNotScanned);
+    }
+
+    /// <summary>
+    /// 소스 폴더 바로 아래에 폴더가 하나라도 있으면 true(앱의 .photook 폴더는 하위 폴더까지 스캔해도 보지 않으므로 세지 않는다).
+    /// 확인할 수 없으면(폴더를 열 수 없음, 드라이브 분리 등) 있다고 본다: 틀려도 주의 문구가 하나 더 보일 뿐이다.
+    /// </summary>
+    private bool HasSubfolders(string root)
+    {
+        try
+        {
+            return fileSystem.EnumerateDirectories(root)
+                .Any(d => !string.Equals(Path.GetFileName(d.TrimEnd('\\', '/')), PhotookFolder, StringComparison.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return true;
+        }
     }
 
     /// <summary>
