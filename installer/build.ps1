@@ -9,6 +9,8 @@ $publish = Join-Path $PSScriptRoot 'publish'
 [xml]$props = Get-Content (Join-Path $root 'Directory.Build.props') -Encoding UTF8
 $version = ($props.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1).Version
 if (-not $version) { throw 'Directory.Build.props에서 버전을 찾지 못했습니다.' }
+# 설치 파일의 낮은 버전 막기는 숫자 세 자리만 읽는다. 0.4.0-beta 같은 값이면 막기가 듣지 않으므로 여기서 멈춘다.
+if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "버전은 숫자.숫자.숫자여야 합니다: $version" }
 
 $iscc = @(
     (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),

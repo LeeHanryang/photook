@@ -4,7 +4,7 @@
 ; 제거는 프로그램 파일만 지운다. 설정·작업 기록·프리셋·제외 단어·사진은 건드리지 않는다.
 
 #ifndef AppVersion
-  #define AppVersion "0.3.0"
+  #error 버전이 없습니다. installer\build.ps1로 빌드해 주세요.
 #endif
 #ifndef PublishDir
   #define PublishDir "publish"
@@ -40,7 +40,9 @@ WizardStyle=modern
 SetupMutex=PhotoOkSetupMutex
 UninstallDisplayName={#AppName}
 UninstallDisplayIcon={app}\{#AppExe}
-; 앱을 끄거나 다시 시작하는 일은 하지 않는다. 실행 중인지는 아래 [Code]에서 직접 확인한다.
+; 앱이 수명 동안 쥐고 있는 뮤텍스(Local\PhotoOkRunning). 실행 중이면 Setup과 제거가 표준 안내로 막는다.
+AppMutex=PhotoOkRunning
+; 앱을 끄거나 다시 시작하는 일은 하지 않는다. 뮤텍스가 없는 이전 버전을 위해 아래 [Code]에서 프로세스도 확인한다.
 CloseApplications=no
 RestartApplications=no
 
@@ -49,6 +51,14 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "바탕 화면에 바로 가기 만들기"; Flags: unchecked
+
+[InstallDelete]
+; 덮어 설치할 때 이전 버전에만 있던 런타임 파일과 언어 폴더를 치운다. 앱 폴더 안의 앱 파일만 대상이다:
+; 언인스톨러(unins*)와 사용자 데이터(앱 폴더 밖)는 건드리지 않고, 이전 설치가 쓰던 바로 그 폴더가 아니면 아무것도 지우지 않는다.
+Type: files; Name: "{app}\*.dll"; Check: IsOverPreviousInstall
+Type: files; Name: "{app}\*.json"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\??"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\??-*"; Check: IsOverPreviousInstall
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -70,6 +80,9 @@ Filename: "{app}\{#AppExe}"; Description: "PhotoOK 실행"; Flags: nowait postin
 const
   UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{{#AppGuid}}_is1';
   ProcessImage = '{#AppExe}';
+
+var
+  AskedAboutUnknown, ContinueWhenUnknown: Boolean;
 
 { 설치 중에는 UninstallSilent를, 제거 중에는 WizardSilent를 부를 수 없다 }
 function IsSilent(): Boolean;
@@ -118,7 +131,8 @@ begin
   end;
 end;
 
-{ 어느 폴더의 PhotoOk.exe든 실행 중이면 True. 확인 방법이 모두 막혔을 때만 False(그때는 사용 중인 파일을 Setup이 직접 막는다). }
+{ 어느 폴더의 PhotoOk.exe든 실행 중이면 True. 뮤텍스가 없는 이전 버전을 위한 확인이다(새 버전은 AppMutex로도 막힌다).
+  확인 방법이 모두 막히면 한 번만 묻고, 조용한 설치는 사용 중인 파일을 Setup이 직접 막도록 그대로 간다. }
 function IsAppRunning(): Boolean;
 var
   Found: Boolean;
@@ -129,7 +143,29 @@ begin
   else if WmiFindsApp(Found) then
     Result := Found
   else
+  begin
     Log('실행 중인지 확인하지 못했습니다.');
+    if not IsSilent() then
+    begin
+      if not AskedAboutUnknown then
+      begin
+        AskedAboutUnknown := True;
+        ContinueWhenUnknown := MsgBox('실행 중인지 확인하지 못했습니다. PhotoOK가 꺼져 있는지 확인한 뒤 계속하세요.' + #13#10 + '계속할까요?',
+          mbConfirmation, MB_YESNO) = IDYES;
+      end;
+      Result := not ContinueWhenUnknown;
+    end;
+  end;
+end;
+
+{ 이전 설치가 쓰던 바로 그 폴더에 덮어 설치하는가. 설치 명령에서 다른 폴더를 고른 경우 그 폴더의 파일은 우리 것이 아니다. }
+function IsOverPreviousInstall(): Boolean;
+var
+  Previous: String;
+begin
+  Result := RegQueryStringValue(HKCU, UninstallKey, 'InstallLocation', Previous)
+    and (Previous <> '')
+    and (CompareText(RemoveBackslashUnlessRoot(Previous), RemoveBackslashUnlessRoot(ExpandConstant('{app}'))) = 0);
 end;
 
 function InitializeSetup(): Boolean;
@@ -152,7 +188,14 @@ begin
   Previous := '';
   if not RegQueryStringValue(HKCU, UninstallKey, 'DisplayVersion', Previous) then
     RegQueryStringValue(HKLM, UninstallKey, 'DisplayVersion', Previous);
-  if (Previous <> '') and StrToVersion(Previous, PreviousVersion) and StrToVersion('{#AppVersion}', NewVersion) then
+  if not StrToVersion('{#AppVersion}', NewVersion) then
+  begin
+    { build.ps1이 형식을 검사하므로 여기까지 오지 않는다. 낮은 버전 막기가 조용히 꺼지지 않게 멈춘다. }
+    Log('설치 파일의 버전을 읽지 못했습니다: {#AppVersion}');
+    Result := False;
+    Exit;
+  end;
+  if (Previous <> '') and StrToVersion(Previous, PreviousVersion) then
     if ComparePackedVersion(PreviousVersion, NewVersion) > 0 then
     begin
       Log('설치된 ' + Previous + '보다 낮은 {#AppVersion}으로는 설치하지 않습니다.');
