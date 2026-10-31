@@ -73,6 +73,32 @@ public class InstallerScriptTests
     }
 
     [Fact]
+    public void InstallDelete_NamesEachLanguageFolder_NoWildcardFolders()
+    {
+        var folders = Section("InstallDelete")
+            .Where(entry => entry.StartsWith("Type: filesandordirs", StringComparison.Ordinal))
+            .Select(entry => Regex.Match(entry, @"Name:\s*""\{app\}\\([^""]+)""").Groups[1].Value)
+            .ToList();
+
+        Assert.Equal(["cs", "de", "es", "fr", "it", "ja", "ko", "pl", "pt-BR", "ru", "tr", "zh-Hans", "zh-Hant"], folders);
+    }
+
+    [Fact]
+    public void InstallDelete_CoversThePublishedLanguageFolders_WhenPublishOutputExists()
+    {
+        var publish = Path.Combine(RepoRoot(), "installer", "publish");
+        if (!Directory.Exists(publish))
+        {
+            return; // 게시 결과는 저장소에 없다. build.ps1을 돌린 뒤에만 맞춰 본다.
+        }
+
+        foreach (var folder in Directory.GetDirectories(publish).Select(path => Path.GetFileName(path)!))
+        {
+            Assert.Contains($@"Name: ""{{app}}\{folder}""", Script, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void Uninstall_DeletesNothingButAnEmptyAppFolder()
     {
         Assert.Equal(["Type: dirifempty; Name: \"{app}\""], Section("UninstallDelete"));

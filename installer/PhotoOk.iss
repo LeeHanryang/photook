@@ -57,8 +57,20 @@ Name: "desktopicon"; Description: "바탕 화면에 바로 가기 만들기"; Fl
 ; 언인스톨러(unins*)와 사용자 데이터(앱 폴더 밖)는 건드리지 않고, 이전 설치가 쓰던 바로 그 폴더가 아니면 아무것도 지우지 않는다.
 Type: files; Name: "{app}\*.dll"; Check: IsOverPreviousInstall
 Type: files; Name: "{app}\*.json"; Check: IsOverPreviousInstall
-Type: filesandordirs; Name: "{app}\??"; Check: IsOverPreviousInstall
-Type: filesandordirs; Name: "{app}\??-*"; Check: IsOverPreviousInstall
+; 게시 결과의 언어 폴더를 하나씩 적는다. 글자 수로 고르면 앱 폴더의 다른 이름까지 걸릴 수 있다.
+Type: filesandordirs; Name: "{app}\cs"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\de"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\es"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\fr"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\it"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\ja"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\ko"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\pl"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\pt-BR"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\ru"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\tr"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\zh-Hans"; Check: IsOverPreviousInstall
+Type: filesandordirs; Name: "{app}\zh-Hant"; Check: IsOverPreviousInstall
 
 [Files]
 Source: "{#PublishDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs

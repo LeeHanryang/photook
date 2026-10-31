@@ -31,6 +31,15 @@ public class ThirdPartyNoticesTests
     }
 
     [Fact]
+    public void XmpCore_SaysWhereTheWordingComesFrom_AndThatItMayDiffer()
+    {
+        Assert.Contains("프로젝트 설정(csproj)", Notices, StringComparison.Ordinal);
+        Assert.DoesNotContain("패키지 표기", Notices, StringComparison.Ordinal);
+        Assert.Contains("라이선스 링크는 읽을 수 없", Notices, StringComparison.Ordinal);
+        Assert.Contains("문구와 연도는 XmpCore가 따른 것과 다를 수 있습니다", Notices, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Mit_StaysForTheOthers()
     {
         Assert.Contains("Permission is hereby granted, free of charge", Notices, StringComparison.Ordinal);

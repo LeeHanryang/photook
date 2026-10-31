@@ -295,9 +295,10 @@ MetadataExtractor 저장소의 고지:
 
 BSD 3-Clause License (위 2번 XmpCore)
 -------------------------------------
-XmpCore는 Adobe XMP SDK와 같은 BSD 라이선스를 따른다고 밝히며(프로젝트 README, 패키지 표기 BSD-3-Clause),
-저장소에 별도의 라이선스 파일을 두지 않습니다. 아래 조건문은 Adobe가 XMP SDK 저장소
-(https://github.com/adobe/XMP-Toolkit-SDK)의 LICENSE에 공개한 문구입니다.
+XmpCore는 Adobe XMP SDK와 같은 BSD 라이선스를 따른다고 밝히며(프로젝트 README, 프로젝트 설정(csproj)의 BSD-3-Clause),
+저장소에 별도의 라이선스 파일을 두지 않습니다. 패키지가 가리키는 라이선스 링크는 읽을 수 없어, 아래 조건문은
+Adobe가 XMP SDK 저장소(https://github.com/adobe/XMP-Toolkit-SDK)의 LICENSE에 공개한 문구를 옮겼습니다.
+문구와 연도는 XmpCore가 따른 것과 다를 수 있습니다.
 
 XmpCore
 Copyright Drew Noakes 2015-2021
