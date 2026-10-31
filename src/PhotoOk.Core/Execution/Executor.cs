@@ -33,6 +33,7 @@ public sealed class Executor(ExecutionContext context)
     internal const string JournalCopiesDifferMessage = "기록 사본이 서로 달라 더 긴 기록을 사용했습니다";
     internal const string TimestampNotKeptMessage = "원본 날짜를 유지하지 못했습니다";
     internal const string FolderNotRemovedMessage = "빈 폴더를 치우지 못함";
+    internal const string ExistingTempMovedMessage = "임시 이름 파일을 되돌림 폴더로 옮김";
 
     private const int BufferSize = 1024 * 1024;
 
@@ -370,6 +371,7 @@ public sealed class Executor(ExecutionContext context)
     /// 진짜 이름으로 옮긴다(촬영 정보가 없는 파일은 이 시각으로 날짜를 정하므로, 다시 정리해도 같은 날짜에 놓이게 한다).
     /// 실패한 임시 파일은 격리 폴더로 치운다. 이어 하기가 다시 복사할 때도 이 경로를 쓴다.
     /// 시각을 넣지 못해도(파일 시스템·권한) 내용 검증은 이미 끝났으므로 실패로 만들지 않고, 이름까지 붙였을 때 경고로 남긴다.
+    /// 일반 실행에서 임시 이름이 이미 있으면 이번 실행이 만든 것이 아니므로(사용자 파일일 수 있다) 되돌림 폴더로 옮기고 알린다.
     /// </summary>
     private StepResult Copy(Run run, PlannedOperation op)
     {
@@ -387,7 +389,7 @@ public sealed class Executor(ExecutionContext context)
         var temp = op.Destination + TempSuffix;
         if (fs.FileExists(temp))
         {
-            run.SafeDelete.Quarantine(temp);
+            QuarantineExistingTemp(run, temp);
         }
 
         var sourceTime = fs.GetFile(op.Source).LastWriteTimeUtc;
@@ -512,6 +514,8 @@ public sealed class Executor(ExecutionContext context)
     /// 이때 대상의 시각이 원본과 <see cref="TimestampTolerance"/>보다 많이 다르면 시각을 넣지 못한 채 이름을 붙이고 경고를 기록하기 전에
     /// 끊긴 것일 수 있으므로 경고한다.
     /// 아니면 남은 임시 파일을 격리하고 일반 복사를 한다(대상에 다른 파일이 있으면 덮어쓰지 않고 실패로 기록한다).
+    /// 대상이 없을 때의 임시 파일은 끊긴 복사가 남긴 것으로 보고 알리지 않는다. 대상이 있으면 복사가 임시 파일을 만들기 전에 실패했거나
+    /// 이름까지 붙인 것이어서 끊긴 복사가 남긴 것이 아니므로 알린다.
     /// </summary>
     private StepResult ReconcileCopy(Run run, PlannedOperation op)
     {
@@ -528,7 +532,7 @@ public sealed class Executor(ExecutionContext context)
             var destinationHash = context.Hasher.Hash(op.Destination);
             if (string.Equals(sourceHash, destinationHash, StringComparison.Ordinal))
             {
-                TryQuarantine(run, temp);
+                TryQuarantine(run, temp, notOurs: true);
                 var timeGap = fs.GetFile(op.Destination).LastWriteTimeUtc - fs.GetFile(op.Source).LastWriteTimeUtc;
                 if (timeGap.Duration() > TimestampTolerance)
                 {
@@ -537,9 +541,13 @@ public sealed class Executor(ExecutionContext context)
 
                 return StepResult.Completed(sourceHash);
             }
-        }
 
-        if (fs.FileExists(temp))
+            if (fs.FileExists(temp))
+            {
+                QuarantineExistingTemp(run, temp);
+            }
+        }
+        else if (fs.FileExists(temp))
         {
             run.SafeDelete.Quarantine(temp);
         }
@@ -655,14 +663,38 @@ public sealed class Executor(ExecutionContext context)
         }
     }
 
+    /// <summary>
+    /// 이번 실행이 만들지 않은 임시 이름 파일을 되돌림 폴더로 옮기고 결과에 알린다. 옮기기 전에 기록부터 남긴다: 옮긴 직후 끊겨도 사용자 파일이
+    /// 말없이 사라져 보이지 않게 한다(이어 하기가 기록에서 다시 싣는다). 옮기지 못하면 이번 결과의 알림에는 넣지 않는다(그 작업의 실패로 보인다).
+    /// </summary>
+    private void QuarantineExistingTemp(Run run, string temp)
+    {
+        var warning = $"{ExistingTempMovedMessage}: {temp}";
+        if (!run.HasWarning(warning))
+        {
+            run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Warning, Message: warning, TimestampUtc: context.UtcNow()));
+        }
+
+        run.SafeDelete.Quarantine(temp);
+        run.AddWarning(warning);
+    }
+
     /// <summary>실패한 복사가 남긴 임시 파일을 격리한다. 그마저 안 되면 경고로 남기고 이어 하기·되돌리기에 맡긴다.</summary>
-    private void TryQuarantine(Run run, string temp)
+    /// <param name="notOurs">이번 실행이 만든 파일이 아니므로 결과에 알린다.</param>
+    private void TryQuarantine(Run run, string temp, bool notOurs = false)
     {
         try
         {
             if (context.FileSystem.FileExists(temp))
             {
-                run.SafeDelete.Quarantine(temp);
+                if (notOurs)
+                {
+                    QuarantineExistingTemp(run, temp);
+                }
+                else
+                {
+                    run.SafeDelete.Quarantine(temp);
+                }
             }
         }
         catch (Exception ex) when (IsFileOperationFailure(ex))
@@ -705,6 +737,8 @@ public sealed class Executor(ExecutionContext context)
         public List<OperationFailure> Failures { get; } = [];
 
         public List<string> Warnings { get; } = [];
+
+        public bool HasWarning(string warning) => _seenWarnings.Contains(warning);
 
         /// <summary>경고를 한 번만 더한다. 새 경고면 true.</summary>
         public bool AddWarning(string warning)
