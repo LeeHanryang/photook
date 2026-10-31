@@ -570,7 +570,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
 
     /// <summary>
     /// 카드의 체크박스를 눌렀다. 켜져 있던 카드는 묶음을 모두 빼고, 꺼졌거나 일부만 켜진 카드는 모두 포함한다. 바꿔 끼워 버려진 카드는 무시한다.
-    /// 지금 옵션으로 어차피 제자리인 묶음(여러 날 폴더 등)은 체크박스와 상관없으므로 건드리지 않는다.
+    /// 지금 옵션으로 어차피 제자리인 묶음(여러 날 폴더 등)도 모두 빼기처럼 함께 기억해, 옵션을 바꿔도 사용자가 고른 대로 남는다. 제자리인 동안에는 뺀 수에 들지 않는다.
+    /// 날짜를 맞춰 본 적 없는 그 묶음은 기본 제외 판단을 남겨 둔다.
     /// </summary>
     private void OnIncludeToggled(SessionItemViewModel card)
     {
@@ -579,15 +580,14 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             return;
         }
 
-        var movable = card.Files.Where(id => !_shown.Staying.Contains(id)).ToList();
         if (card.IsIncluded == true)
         {
-            _excluded.UnionWith(movable);
+            _excluded.UnionWith(card.Files);
         }
         else
         {
-            _excluded.ExceptWith(movable);
-            _noDefaultExclusion.UnionWith(movable);
+            _excluded.ExceptWith(card.Files);
+            _noDefaultExclusion.UnionWith(card.Files.Where(id => !_shown.Staying.Contains(id)));
         }
 
         ExclusionsChanged();
@@ -595,13 +595,14 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
 
     /// <summary>
     /// 모두 옮기기: 폴더 날짜가 달라 기본으로 뺀 묶음까지 모두 포함한다. 그 뒤로 기본으로 빼는 일은 없다.
+    /// 다만 지금 어차피 제자리인 묶음은 날짜를 맞춰 본 적이 없으므로 제외한다: 옵션을 바꿔 옮길 수 있게 되면 그때 한 번 맞춰 본다.
     /// 뺀 묶음이 없어도 돌고 있는 계획이 있으면 다시 세운다: 그 계획은 이 명령 전의 값으로 새로 날짜가 달라진 묶음을 빼고 있을 수 있다.
     /// 세대가 올라가면 그 계획은 반영되지 않으므로 화면과 실행이 어긋나지 않는다.
     /// </summary>
     [RelayCommand]
     private void IncludeAll()
     {
-        _noDefaultExclusion.UnionWith(_groups.Keys);
+        _noDefaultExclusion.UnionWith(_groups.Keys.Where(id => !_shown.Staying.Contains(id)));
         if (_excluded.Count > 0 || _appliedGeneration != _generation)
         {
             _excluded.Clear();

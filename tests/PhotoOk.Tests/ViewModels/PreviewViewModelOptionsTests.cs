@@ -5,6 +5,7 @@ using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Media;
 using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using PhotoOk.Core.Hashing;
@@ -1216,6 +1217,116 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
         var split = Descendants(view).OfType<CheckBox>().Single(c => c.Content as string == "여러 날 폴더도 날짜별로 나누기");
 
         Assert.Equal(Visibility.Collapsed, ((FrameworkElement)split.Parent).Visibility);
+    });
+
+    private static IEnumerable<T> VisualDescendants<T>(DependencyObject root)
+        where T : DependencyObject
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T found)
+            {
+                yield return found;
+            }
+
+            foreach (var inner in VisualDescendants<T>(child))
+            {
+                yield return inner;
+            }
+        }
+    }
+
+    private static HashSet<string> ExcludedOf(PreviewViewModel vm) =>
+        ((HashSet<string>)typeof(PreviewViewModel).GetField("_excluded", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm)!)
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static void DoLayout(FrameworkElement view)
+    {
+        view.Measure(new Size(1200, 800));
+        view.Arrange(new Rect(0, 0, 1200, 800));
+        view.UpdateLayout();
+    }
+
+    /// <summary>재사용 가상화로 그려진 체크박스가 지금 묶인 카드의 값을 그대로 보이는가.</summary>
+    private static void AssertRealizedBoxesMatchTheirCards(ListBox cards)
+    {
+        var boxes = VisualDescendants<CheckBox>(cards).Where(box => box.DataContext is SessionItemViewModel).ToList();
+        Assert.NotEmpty(boxes);
+        Assert.All(boxes, box => Assert.Equal(((SessionItemViewModel)box.DataContext).IsIncluded, box.IsChecked));
+    }
+
+    [Fact]
+    public void View_RecyclingList_RebuildsAndScrolling_NeverWriteBackToTheCards() => OnUiThread(async () =>
+    {
+        // 이틀에 하나꼴로 같은 날 이름이 다른 촬영을 더 두어, 이름을 끄면 합쳐져 일부만 빠진 카드가 나오게 한다.
+        for (var i = 0; i < 60; i++)
+        {
+            var day = Oct14.AddDays(i);
+            Add($@"{Trip}\a{i}.jpg", day, fill: (byte)(i + 1));
+            if (i % 2 == 0)
+            {
+                Add($@"{Walk}\b{i}.jpg", day, fill: (byte)(i + 101));
+            }
+        }
+
+        var vm = await CreateAsync();
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        DoLayout(view);
+        var list = Descendants(view).OfType<ListBox>().Single(box => ReferenceEquals(box.ItemsSource, vm.Sessions));
+        Assert.Equal(VirtualizationMode.Recycling, VirtualizingPanel.GetVirtualizationMode(list));
+
+        // 켜짐과 꺼짐이 섞이게 뺀다(같은 날 두 촬영 가운데 하나만).
+        foreach (var card in vm.Sessions.Where(card => card.SessionId.Contains(Walk, StringComparison.Ordinal)).ToList())
+        {
+            card.ToggleIncludedCommand.Execute(null);
+        }
+
+        await vm.WhenPlanned;
+        await SettleAsync();
+        var excluded = ExcludedOf(vm);
+        Assert.NotEmpty(excluded);
+
+        for (var round = 0; round < 4; round++)
+        {
+            var before = vm.Sessions[0];
+            var plans = _plans.Count;
+
+            vm.UseFolderNames = !vm.UseFolderNames;
+            await vm.WhenPlanned;
+            await SettleAsync();
+            DoLayout(view);
+            await SettleAsync();
+
+            Assert.NotSame(before, vm.Sessions[0]); // 카드를 새로 만들었다
+            Assert.Equal(plans + 1, _plans.Count); // 값이 되쓰였다면 계획이 더 세워진다
+            Assert.True(excluded.SetEquals(ExcludedOf(vm)));
+            AssertRealizedBoxesMatchTheirCards(list);
+            Assert.True(VisualDescendants<CheckBox>(list).Count() < vm.Sessions.Count); // 정말 일부만 그려 재사용한다
+            Assert.Equal(
+                vm.UseFolderNames ? [true, false] : new bool?[] { null, true },
+                vm.Sessions.Select(card => card.IsIncluded).Distinct().Order(Comparer<bool?>.Create((a, b) => Rank(a).CompareTo(Rank(b)))).ToArray());
+
+            // 끝까지 내렸다 올리며 재사용되는 칸마다 맞춰 본다.
+            var viewer = VisualDescendants<ScrollViewer>(list).First();
+            for (double offset = 0; offset < vm.Sessions.Count; offset += 3)
+            {
+                viewer.ScrollToVerticalOffset(offset);
+                DoLayout(view);
+                await SettleAsync();
+                AssertRealizedBoxesMatchTheirCards(list);
+            }
+
+            viewer.ScrollToVerticalOffset(0);
+            DoLayout(view);
+            await SettleAsync();
+
+            Assert.Equal(plans + 1, _plans.Count);
+            Assert.True(excluded.SetEquals(ExcludedOf(vm)));
+        }
+
+        static int Rank(bool? value) => value switch { null => 0, true => 1, false => 2 };
     });
 
     // ----- 프리셋 목록 -----

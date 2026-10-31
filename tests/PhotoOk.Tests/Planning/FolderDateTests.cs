@@ -102,6 +102,13 @@ public class FolderDateTests
     [InlineData("2026-07-08~07-09-소풍")]
     [InlineData("2026-07-08~09")]
     [InlineData("2026-07-08~09_소풍")]
+    [InlineData("2026-07-08~07-09여행")] // 끝이 MM-dd나 yyyy-MM-dd이면 숫자만 아니면 무엇이 와도 된다
+    [InlineData("2026-07-08~2026-07-09여행")]
+    [InlineData("2026-07-08~07-09(여행)")]
+    [InlineData("2026-07-08~07-09,소풍")]
+    [InlineData("2026-07-08~07-09.소풍")]
+    [InlineData("2026-07-08~09일 여행")] // 끝이 dd이면 일까지만 받는다
+    [InlineData("2026-07-08~09일")]
     public void IsMultiDaySegment_True(string segment)
     {
         Assert.True(FolderDate.IsMultiDaySegment(segment));
@@ -120,6 +127,11 @@ public class FolderDateTests
     [InlineData("2024-06-15~2026")]
     [InlineData("2024-06-15~16-17시")]
     [InlineData("2024-06-15~16.모임")]
+    [InlineData("2024-06-15~13-01여행")] // 13월은 없으므로 MM-dd가 아니다
+    [InlineData("2024-06-15~00-01여행")]
+    [InlineData("2024-06-15~2026-13-01여행")]
+    [InlineData("2024-06-15~12-345")] // 끝 뒤에 숫자가 이어진다
+    [InlineData("2024-06-15~16여행")] // 끝이 dd이면 글자가 바로 붙을 수 없다
     [InlineData("2024-06-15-16")] // 구분 표시가 없다
     public void IsMultiDaySegment_False(string segment)
     {

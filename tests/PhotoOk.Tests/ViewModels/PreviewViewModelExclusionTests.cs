@@ -1158,21 +1158,85 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
     }
 
     [Fact]
-    public async Task MultiDay_MixedCardUnchecked_ThenSplit_KeptFileIsStillIncluded()
+    public async Task MultiDay_MixedCardUnchecked_ThenSplit_KeptFileStaysOutToo()
     {
         var kept = Add($@"{TripFolder}\a.jpg", Oct14);
         var movable = Add($@"{Old}\b.jpg", Oct14);
         var vm = await CreateAsync(Settings() with { UseFolderNames = false });
         await ToggleAsync(vm, Assert.Single(vm.Sessions));
+        Assert.Equal("제외 1개", vm.ExcludedText); // 제자리인 동안에는 그대로 수에 든다
 
         vm.SplitMultiDayFolders = true;
         await vm.WhenPlanned;
 
+        // 모두 빼기와 같이 카드의 묶음을 모두 기억한다. 옵션을 켜도 다시 포함되지 않는다.
         var card = Assert.Single(vm.Sessions);
-        Assert.Null(card.IsIncluded);
-        Assert.Equal("뺀 파일 1개", card.ExcludedNote);
-        Assert.Equal([kept], Sources(LastPlan));
-        AssertNoOperationOn(LastPlan, movable);
+        Assert.False(card.IsIncluded);
+        Assert.Equal("제외 2개", vm.ExcludedText);
+        Assert.Empty(LastPlan.Operations);
+        AssertNoOperationOn(LastPlan, kept, movable);
+
+        await ToggleAsync(vm, card);
+
+        Assert.True(card.IsIncluded);
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Equal(new[] { kept, movable }.Order(StringComparer.Ordinal), Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task MultiDay_MixedCardUncheckedAndChecked_WhileKept_ThenSplit_MovesBoth()
+    {
+        var kept = Add($@"{TripFolder}\a.jpg", Oct14);
+        var movable = Add($@"{Old}\b.jpg", Oct14);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+        await ToggleAsync(vm, Assert.Single(vm.Sessions));
+        await ToggleAsync(vm, Assert.Single(vm.Sessions));
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        Assert.True(Assert.Single(vm.Sessions).IsIncluded);
+        Assert.Equal(new[] { kept, movable }.Order(StringComparer.Ordinal), Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task IncludeAll_WhileStaying_ThenSplit_DateCheckStillExcludesOnce()
+    {
+        // 제자리인 동안에는 날짜를 맞춰 본 적이 없다. 모두 옮기기가 그 판단까지 없애면, 옵션을 켰을 때 다른 날짜로 말없이 옮겨진다.
+        var path = Add($@"{TripFolder}\2026-10-14\a.jpg", Oct15);
+        var vm = await CreateAsync();
+
+        vm.IncludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        var card = Assert.Single(vm.Sessions);
+        Assert.NotNull(card.DateMismatch);
+        Assert.False(card.IsIncluded);
+        AssertNoOperationOn(LastPlan, path);
+
+        // 이제는 맞춰 본 뒤이므로 모두 옮기기가 그대로 듣는다.
+        vm.IncludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+
+        Assert.True(vm.Sessions[0].IsIncluded);
+        Assert.Contains(path, Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task IncludeAll_WhileReviewKept_ThenReviewFolder_DateCheckStillExcludesOnce()
+    {
+        var path = Add(@"D:\Archive\2026-10-14\scan.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
+        var vm = await CreateAsync();
+
+        vm.IncludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+        vm.KeepReviewInPlace = false;
+        await vm.WhenPlanned;
+
+        Assert.False(Assert.Single(vm.Sessions).IsIncluded);
+        AssertNoOperationOn(LastPlan, path);
     }
 
     [Fact]

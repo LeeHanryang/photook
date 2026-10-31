@@ -241,6 +241,8 @@ public class ExclusionPlanTests
     [InlineData(@"D:\Archive\2026\2026-10-14~10-15 소풍\a.jpg")] // 대괄호 없는 이름
     [InlineData(@"D:\Archive\[2026-10-14~2026-10-15]\a.jpg")]
     [InlineData(@"D:\Archive\[2026-10-14～10-15]\a.jpg")]
+    [InlineData(@"D:\Archive\2026-10-14~10-15여행\a.jpg")] // 이름이 붙어 있어도 말없이 나뉘면 안 된다
+    [InlineData(@"D:\Archive\2026-10-14~15일 여행\a.jpg")]
     public void MultiDay_StaysInPlace(string path)
     {
         var photo = Add(path, [1], Oct14);
