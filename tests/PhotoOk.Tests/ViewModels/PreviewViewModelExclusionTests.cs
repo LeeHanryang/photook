@@ -208,6 +208,32 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
         Assert.Equal(SkipReason.ExcludedByUser, Assert.Single(LastPlan.Skipped).Reason);
     }
 
+    [Fact]
+    public async Task ReviewCard_KeptInPlace_HidesCheckBox_UntilTheOptionMovesIt()
+    {
+        Add($@"{Old}\x.jpg", null);
+        Add($@"{Old}\a.jpg", Oct14);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+
+        Assert.False(vm.Sessions.Single(c => c.IsReviewGroup).ShowIncludeCheckBox);
+        Assert.True(vm.Sessions.Single(c => !c.IsReviewGroup).ShowIncludeCheckBox);
+
+        vm.KeepReviewInPlace = false;
+        await vm.WhenPlanned;
+
+        Assert.True(vm.Sessions.Single(c => c.IsReviewGroup).ShowIncludeCheckBox);
+    }
+
+    [Fact]
+    public void Card_HiddenCheckBox_GivesNoExcludedNote()
+    {
+        var card = new SessionItemViewModel("판단 필요", "판단 필요 · 2장 (그대로 둠)", "", true, [@"D:\a.jpg", @"D:\b.jpg"], null, null, showIncludeCheckBox: false);
+
+        card.SetExclusion(1, 1);
+
+        Assert.Null(card.ExcludedNote);
+    }
+
     [Theory]
     [InlineData(JobKind.Import)]
     [InlineData(JobKind.Absorb)]

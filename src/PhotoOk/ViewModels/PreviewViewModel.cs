@@ -696,7 +696,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         {
             var card = new SessionItemViewModel(spec.Id, spec.Title, spec.Devices, spec.IsReview, spec.Files, spec.SuggestedName,
                 spec.IsReview ? null : OnEventNameChanged, RequestCardThumbnail, spec.IsReview ? null : OnNeverUseName, spec.Note,
-                spec.SuggestedFromFormat, OnIncludeToggled, spec.DateMismatch);
+                spec.SuggestedFromFormat, OnIncludeToggled, spec.DateMismatch, !spec.StaysByOption);
             if (!spec.IsReview && _edits.TryGetValue(spec.FilesKey, out var edited))
             {
                 card.SetEventNameSilently(edited);
@@ -1147,7 +1147,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
 
     /// <summary>카드 한 장의 내용. 백그라운드에서 만들고, 화면 스레드에서 이것으로 카드를 만든다.</summary>
     private sealed record CardSpec(string Id, string Title, string Devices, bool IsReview, IReadOnlyList<string> Files,
-        string? SuggestedName, string? Note, bool SuggestedFromFormat = false, string? DateMismatch = null)
+        string? SuggestedName, string? Note, bool SuggestedFromFormat = false, string? DateMismatch = null, bool StaysByOption = false)
     {
         public string FilesKey { get; } = SessionItemViewModel.KeyOf(Files);
 
@@ -1211,7 +1211,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 var kept = settings.Kind == JobKind.Reorganize && settings.KeepReviewInPlace;
                 cards.Add(new CardSpec(ReviewGroupId, CardTitle(ReviewGroupId, reviewCount) + (kept ? " (그대로 둠)" : ""),
                     DevicesOf(reviewGroups, aliases), IsReview: true, reviewGroups.Select(g => g.Primary.Path).ToList(),
-                    SuggestedName: null, kept ? ReviewKeptNote : null, DateMismatch: DateCheck.CardText(reviewChecks)));
+                    SuggestedName: null, kept ? ReviewKeptNote : null, DateMismatch: DateCheck.CardText(reviewChecks), StaysByOption: kept));
             }
 
             return new Grouping(settings, scan, cards, reviewCount, new LayoutRenderer(settings.Preset), aliases,
