@@ -6,6 +6,7 @@ namespace PhotoOk.Core.Workflow;
 /// <summary>
 /// 가져오기 화면에서 사용자가 고른 값. 미리보기에서 옵션을 바꾸면 고쳐 쓴 새 값이 된다.
 /// <paramref name="PresetFile"/>은 <paramref name="Preset"/>을 읽은 파일이다(내장 프리셋은 null). 같은 이름의 사용자 프리셋을 가려 낸다.
+/// <paramref name="SplitMultiDayFolders"/>는 재정리 미리보기에서 그때그때 고르는 값이며 저장하지 않는다(실행마다 다시 고른다).
 /// </summary>
 public sealed record ImportSettings(
     IReadOnlyList<string> Sources,
@@ -18,4 +19,5 @@ public sealed record ImportSettings(
     bool SplitUnderscores = false,
     SubfolderPolicy Subfolders = SubfolderPolicy.Keep,
     bool KeepReviewInPlace = true,
-    string? PresetFile = null);
+    string? PresetFile = null,
+    bool SplitMultiDayFolders = false);

@@ -10,7 +10,11 @@ public sealed record UndoSkip(string OpId, string Path, string Reason);
 /// (폴더 만들기와, 자리 바꾸기에서 원본을 임시 이름으로 옮긴 첫 다리는 세지 않는다).
 /// <see cref="Stopped"/>는 취소 요청으로 남은 작업을 두고 멈췄을 때만 true다(마지막 작업까지 마친 뒤에 들어온 취소는 멈춘 것이 아니다).
 /// </summary>
-public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped, int UndoneFiles, bool Stopped);
+public sealed record UndoResult(int Undone, IReadOnlyList<UndoSkip> Skipped, int UndoneFiles, bool Stopped)
+{
+    /// <summary>되돌리기 중에 알릴 일(이번 실행이 만들었다고 볼 수 없는 임시 이름 파일을 되돌림 폴더로 옮겼다).</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
 
 /// <summary>
 /// 실행 하나를 기록만으로 되돌린다. 원본 보존이 최우선이다.
@@ -72,7 +76,10 @@ public sealed class Undoer(ExecutionContext context)
         }
 
         var run = new UndoRun(state.RunId, state.ArchiveRoot, new JournalWriter(fs, [path]),
-            new SafeDelete(fs, state.ArchiveRoot, state.RunId), state.Operations);
+            new SafeDelete(fs, state.ArchiveRoot, state.RunId), state.Operations)
+        {
+            RecordedWarnings = state.Warnings,
+        };
 
         // 기록에 나중에 나온 작업부터. 앞 작업의 대상을 뒤 작업이 원본으로 쓴 경우(자리 바꾸기)에도 역순이면 맞게 풀린다.
         var pending = state.Operations
@@ -92,7 +99,7 @@ public sealed class Undoer(ExecutionContext context)
                 RescueTempMoves(run, pending);
             }
 
-            return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles, Stopped: false);
+            return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles, Stopped: false) { Warnings = run.Warnings.ToList() };
         }
 
         // 이어 하기가 이 기록으로 작업을 다시 하지 않도록, 파일을 건드리기 전에 표시한다.
@@ -143,7 +150,7 @@ public sealed class Undoer(ExecutionContext context)
         // 어떤 이유로 끝났든(끝까지 처리, 멈춤, 취소) 임시 이름에 남은 사진은 꺼낸다. 취소 토큰은 보지 않는다.
         RescueTempMoves(run, pending);
 
-        return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles, run.Stopped);
+        return new UndoResult(run.Undone, run.Skipped.ToList(), run.UndoneFiles, run.Stopped) { Warnings = run.Warnings.ToList() };
     }
 
     /// <summary>
@@ -321,6 +328,8 @@ public sealed class Undoer(ExecutionContext context)
     /// <summary>
     /// 끊긴 복사가 남긴 임시 파일을 격리하고, 대상에 지금 원본과 내용이 같은 파일이 있으면 완료된 복사처럼 격리한다.
     /// 내용이 다른 파일은 이번 실행이 만든 것이 아닐 수 있으므로 손대지 않는다.
+    /// 임시 파일이 실행 전에 있었다고 기록되어 있거나 대상이 이미 있으면(복사는 대상이 있으면 임시 파일을 만들지 않고, 이름을 붙이면 임시 파일이 없어진다)
+    /// 이번 실행이 만들었다고 볼 수 없으므로, 옮기면서 결과에 알린다.
     /// </summary>
     private Outcome UndoUnrecordedCopy(UndoRun run, PlannedOperation op)
     {
@@ -328,7 +337,19 @@ public sealed class Undoer(ExecutionContext context)
         var temp = op.Destination + Executor.TempSuffix;
         if (fs.FileExists(temp))
         {
+            var warning = $"{Executor.ExistingTempMovedMessage}: {temp}";
+            var recorded = run.RecordedWarnings.Contains(warning);
+            var notOurs = recorded || fs.FileExists(op.Destination);
+            if (notOurs && !recorded)
+            {
+                run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Warning, Message: warning, TimestampUtc: context.UtcNow()));
+            }
+
             run.SafeDelete.Quarantine(temp);
+            if (notOurs)
+            {
+                run.Warnings.Add(warning);
+            }
         }
 
         if (!fs.FileExists(op.Destination))
@@ -736,6 +757,12 @@ public sealed class Undoer(ExecutionContext context)
         public SafeDelete SafeDelete { get; } = safeDelete;
 
         public List<UndoSkip> Skipped { get; } = [];
+
+        /// <summary>이번 되돌리기에서 결과에 알릴 일.</summary>
+        public List<string> Warnings { get; } = [];
+
+        /// <summary>기록에 이미 있는 경고들.</summary>
+        public IReadOnlyList<string> RecordedWarnings { get; init; } = [];
 
         public int Undone { get; set; }
 

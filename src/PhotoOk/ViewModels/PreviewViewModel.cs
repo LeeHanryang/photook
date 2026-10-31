@@ -13,6 +13,7 @@ using PhotoOk.Core.Naming;
 using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Scanning;
+using PhotoOk.Core.Sessions;
 using PhotoOk.Core.Workflow;
 using PhotoOk.Services;
 
@@ -22,6 +23,7 @@ namespace PhotoOk.ViewModels;
 /// 스캔 결과로 세운 계획을 보여 주는 화면: 요약, 촬영 카드(이벤트 이름 입력), 정리 후 폴더 트리, 선택 파일의 "왜 이 경로인가".
 /// 이벤트 이름이 바뀌면 <c>replanDelay</c>만큼 기다렸다가 백그라운드에서 계획을 다시 세우고, 가장 나중 요청의 결과만 반영한다.
 /// 위쪽 옵션을 바꾸면 같은 경로로, 다시 스캔하지 않고 촬영 묶기부터 다시 해서 카드와 트리를 함께 바꿔 끼운다.
+/// 뺀 상태는 카드가 아니라 파일 묶음마다 붙으므로 카드가 합쳐지거나 나뉘어도 뺀 파일이 다시 포함되지 않는다. 뺀 묶음을 바꿀 때마다 계획을 다시 세운다.
 /// 계획을 세우는 동안(<see cref="IsReplanning"/>)과 실행 전 점검 오류가 있을 때는 실행할 수 없다. 디스크는 읽기만 한다.
 /// 상태는 화면(UI) 스레드에서만 바꾼다.
 /// </summary>
@@ -37,8 +39,10 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private const string NoCaptureTimeText = "촬영 시각 없음 — 파일 수정 시각으로 대체";
     private const string NothingToTransferMessage = "옮길 파일이 없습니다 — 모두 보관 폴더에 있거나 중복입니다";
     private const string NothingToMoveInPlaceMessage = "옮길 파일이 없습니다 — 모두 제자리에 있습니다";
+    private const string NothingLeftMessage = "옮길 파일이 없습니다";
     private const string PlanningMessage = "정리 계획을 세우는 중…";
     private const string ReviewKeptNote = "자동으로 정할 수 없어 옮기지 않습니다";
+    private const string MultiDayKeptNote = "여러 날 폴더라 옮기지 않습니다";
     private const string NeverUseNameFailedTitle = "이름을 저장하지 못했습니다";
     private const string NeverUseNameFailedMessage = "이 이름을 제외 목록에 저장하지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
     private const string PlanFailedMessage = "계획을 세우지 못했습니다. 자세한 내용은 로그 폴더에 남겼습니다. 이벤트 이름을 고치거나 뒤로 가서 다시 시도해 주세요.";
@@ -54,13 +58,25 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private readonly Func<Plan, ScanFacts, ObservableObject> _createRun;
     private readonly Func<ImportSettings, ObservableObject> _createBack;
     private readonly TimeSpan _replanDelay;
-    private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome> _buildPlan;
+    private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, IReadOnlySet<string>, PlanOutcome> _buildPlan;
     private readonly Func<ImportSettings, ScanOutcome, ScanOutcome> _regroup;
     private readonly Action<ImportSettings> _saveChoices;
     private readonly string _ignoredNamesPath;
+    private readonly TimeZoneInfo _zone;
 
     /// <summary>스캔한 모든 파일(대표·딸린 파일)의 정보와 그 파일이 속한 묶음. 키는 전체 경로.</summary>
     private readonly Dictionary<string, (PhotoInfo Info, FileGroup Group)> _files = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>스캔한 모든 묶음. 키는 <see cref="FileGroup.Id"/>이고, 카드의 <see cref="SessionItemViewModel.Files"/>도 같은 값이다.</summary>
+    private readonly Dictionary<string, FileGroup> _groups = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>이번 실행에서 뺀 묶음의 <see cref="FileGroup.Id"/>. 촬영을 다시 묶어도 비우지 않는다. 화면 스레드에서만 바꾼다.</summary>
+    private readonly HashSet<string> _excluded = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 폴더 날짜가 달라도 기본으로 빼지 않을 묶음: 이미 한 번 기본으로 뺐거나 사용자가 포함한 묶음이다. 사용자가 포함한 뒤 다시 빠지지 않게 한다. 화면 스레드에서만 바꾼다.
+    /// </summary>
+    private readonly HashSet<string> _noDefaultExclusion = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>화면을 떠나면 취소한다(썸네일 요청).</summary>
     private readonly CancellationTokenSource _lifetime = new();
@@ -100,6 +116,9 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private int _reviewCount;
     private int _duplicateCount;
     private int _keptInPlaceCount;
+    private int _excludedCount;
+    private int _dateMismatchCount;
+    private string? _multiDayNotice;
     private int _transferCount;
     private long _transferBytes;
     private long _freeBytes;
@@ -127,7 +146,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         IFileSystem fileSystem, IThumbnailProvider thumbnails, IDialogService dialogs, FileLog log,
         Func<Plan, ScanFacts, ObservableObject> createRun, Func<ImportSettings, ObservableObject> createBack, TimeSpan replanDelay,
         string ignoredNamesPath, IReadOnlyList<PresetEntry> presets, Action<ImportSettings> saveChoices,
-        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null,
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, IReadOnlySet<string>, PlanOutcome>? buildPlan = null,
         Func<ImportSettings, ScanOutcome, ScanOutcome>? regroup = null)
     {
         ArgumentNullException.ThrowIfNull(workflow);
@@ -145,6 +164,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         _createBack = createBack;
         _replanDelay = replanDelay;
         _ignoredNamesPath = ignoredNamesPath;
+        _zone = workflow.Zone;
         _buildPlan = buildPlan ?? workflow.BuildPlan;
         _regroup = regroup ?? workflow.Regroup;
         _saveChoices = saveChoices;
@@ -154,6 +174,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         {
             foreach (var group in session.Groups)
             {
+                _groups[group.Id] = group;
                 foreach (var file in group.AllFiles)
                 {
                     _files[FullPath(file.Path)] = (file, group);
@@ -167,7 +188,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             : [.. scan.Ignored.Take(IgnoredLineLimit),
                 string.Create(CultureInfo.InvariantCulture, $"외 {scan.Ignored.Count - IgnoredLineLimit}건")];
 
-        _shown = Grouping.Create(settings, scan);
+        _shown = Grouping.Create(settings, scan, _zone);
+        ExcludeByDefault(_shown.Mismatched);
         ShowCards(_shown);
         RequestReplan(TimeSpan.Zero);
     }
@@ -219,10 +241,17 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         set => ChangeOptions(_settings with { KeepReviewInPlace = value });
     }
 
+    /// <summary>재정리에서 여러 날 폴더의 파일도 날짜별로 나눈다. 저장하지 않으므로 실행마다 다시 고른다.</summary>
+    public bool SplitMultiDayFolders
+    {
+        get => _settings.SplitMultiDayFolders;
+        set => ChangeOptions(_settings with { SplitMultiDayFolders = value });
+    }
+
     /// <summary>폴더 이름·<c>_</c> 나누기·하위 폴더 옵션을 보인다. 가져오기는 폴더 이름을 읽지 않으므로 숨긴다.</summary>
     public bool ShowFolderOptions => _settings.Kind != JobKind.Import;
 
-    /// <summary>판단 필요 파일 옵션을 보인다. 재정리에서만 뜻이 있다.</summary>
+    /// <summary>판단 필요 파일 옵션과 여러 날 폴더 옵션을 보인다. 재정리에서만 뜻이 있다.</summary>
     public bool ShowReviewOption => _settings.Kind == JobKind.Reorganize;
 
     /// <summary>날짜순 촬영 카드, 그 뒤에 판단 필요 묶음(있을 때). 옵션을 바꾸면 새 카드로 통째로 바뀐다.</summary>
@@ -263,7 +292,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     }
 
     /// <summary>
-    /// 재정리에서 제자리에 두는 파일 수(이미 제자리인 파일, 판단 필요라 두는 파일, 하위 폴더·다른 볼륨이라 두는 파일).
+    /// 재정리에서 제자리에 두는 파일 수(이미 제자리인 파일, 판단 필요라 두는 파일, 하위 폴더·다른 볼륨·여러 날 폴더라 두는 파일).
     /// 같은 파일이 이미 있어 두는 것은 <see cref="DuplicateCount"/>에 센다. 재정리가 아니면 0.
     /// </summary>
     public int KeptInPlaceCount
@@ -278,10 +307,38 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         }
     }
 
+    /// <summary>재정리의 여러 날 폴더 안내. <see cref="KeptInPlaceText"/> 옆에 보인다. 없으면 null.</summary>
+    public string? MultiDayNotice
+    {
+        get => _multiDayNotice;
+        private set => SetProperty(ref _multiDayNotice, value);
+    }
+
     /// <summary>재정리에서만 "그대로 N개". 그 밖의 작업은 null.</summary>
     public string? KeptInPlaceText => _settings.Kind == JobKind.Reorganize
         ? string.Create(CultureInfo.InvariantCulture, $"그대로 {KeptInPlaceCount}개")
         : null;
+
+    /// <summary>반영된 계획에서 뺀 파일 수(대표·딸린 파일).</summary>
+    public int ExcludedCount
+    {
+        get => _excludedCount;
+        private set
+        {
+            if (SetProperty(ref _excludedCount, value))
+            {
+                OnPropertyChanged(nameof(ExcludedText));
+            }
+        }
+    }
+
+    /// <summary>"제외 N개".</summary>
+    public string ExcludedText => string.Create(CultureInfo.InvariantCulture, $"제외 {ExcludedCount}개");
+
+    /// <summary>재정리에서 폴더 날짜와 다른 카드가 있으면 "폴더 날짜와 다른 촬영 N개". 없으면 null.</summary>
+    public string? DateMismatchText => _dateMismatchCount == 0
+        ? null
+        : string.Create(CultureInfo.InvariantCulture, $"폴더 날짜와 다른 촬영 {_dateMismatchCount}개");
 
     /// <summary>복사·이동할 파일 수.</summary>
     public int TransferCount
@@ -512,6 +569,91 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     partial void OnSelectedThumbnailChanged(ThumbnailItemViewModel? value) => UpdateDetail();
 
     /// <summary>
+    /// 카드의 체크박스를 눌렀다. 켜져 있던 카드는 묶음을 모두 빼고, 꺼졌거나 일부만 켜진 카드는 모두 포함한다. 바꿔 끼워 버려진 카드는 무시한다.
+    /// 지금 옵션으로 어차피 제자리인 묶음(여러 날 폴더 등)도 모두 빼기처럼 함께 기억해, 옵션을 바꿔도 사용자가 고른 대로 남는다. 제자리인 동안에는 뺀 수에 들지 않는다.
+    /// 날짜를 맞춰 본 적 없는 그 묶음은 기본 제외 판단을 남겨 둔다.
+    /// </summary>
+    private void OnIncludeToggled(SessionItemViewModel card)
+    {
+        if (!Sessions.Contains(card))
+        {
+            return;
+        }
+
+        if (card.IsIncluded == true)
+        {
+            _excluded.UnionWith(card.Files);
+        }
+        else
+        {
+            _excluded.ExceptWith(card.Files);
+            _noDefaultExclusion.UnionWith(card.Files.Where(id => !_shown.Staying.Contains(id)));
+        }
+
+        ExclusionsChanged();
+    }
+
+    /// <summary>
+    /// 모두 옮기기: 폴더 날짜가 달라 기본으로 뺀 묶음까지 모두 포함한다. 그 뒤로 기본으로 빼는 일은 없다.
+    /// 다만 지금 어차피 제자리인 묶음은 날짜를 맞춰 본 적이 없으므로 제외한다: 옵션을 바꿔 옮길 수 있게 되면 그때 한 번 맞춰 본다.
+    /// 뺀 묶음이 없어도 돌고 있는 계획이 있으면 다시 세운다: 그 계획은 이 명령 전의 값으로 새로 날짜가 달라진 묶음을 빼고 있을 수 있다.
+    /// 세대가 올라가면 그 계획은 반영되지 않으므로 화면과 실행이 어긋나지 않는다.
+    /// </summary>
+    [RelayCommand]
+    private void IncludeAll()
+    {
+        _noDefaultExclusion.UnionWith(_groups.Keys.Where(id => !_shown.Staying.Contains(id)));
+        if (_excluded.Count > 0 || _appliedGeneration != _generation)
+        {
+            _excluded.Clear();
+            ExclusionsChanged();
+        }
+    }
+
+    /// <summary>
+    /// 모두 빼기: 모든 묶음을 뺀다. 어차피 제자리인 묶음도 기억해 두어, 옵션을 바꿔 옮길 수 있게 되어도 다시 포함되지 않는다.
+    /// 제자리인 동안에는 계획에 넘기지 않으므로 뺀 수에 들지 않는다.
+    /// </summary>
+    [RelayCommand]
+    private void ExcludeAll()
+    {
+        if (_excluded.Count < _groups.Count)
+        {
+            _excluded.UnionWith(_groups.Keys);
+            ExclusionsChanged();
+        }
+    }
+
+    private void ExclusionsChanged()
+    {
+        RefreshCardExclusions();
+        RequestReplan(TimeSpan.Zero);
+    }
+
+    /// <summary>날짜가 달라 처음으로 기본으로 빼는 묶음을 더한다. 사용자가 포함했거나 이미 뺀 적 있는 묶음은 건너뛴다.</summary>
+    private void ExcludeByDefault(IEnumerable<string> mismatched)
+    {
+        foreach (var id in mismatched)
+        {
+            if (_noDefaultExclusion.Add(id))
+            {
+                _excluded.Add(id);
+            }
+        }
+    }
+
+    /// <summary>카드마다 체크 상태를 뺀 묶음에서 다시 정한다. 어차피 제자리인 묶음은 세지 않는다(위쪽의 "제외 N개"와 같은 기준).</summary>
+    private void RefreshCardExclusions()
+    {
+        foreach (var card in Sessions)
+        {
+            var movable = card.Files.Where(id => !_shown.Staying.Contains(id)).ToList();
+            var excluded = movable.Where(_excluded.Contains).ToList();
+            card.SetExclusion(excluded.Count, excluded.Sum(id => _groups.TryGetValue(id, out var group) ? group.Companions.Count + 1 : 1), movable.Count);
+        }
+    }
+
+    /// <summary>
     /// 고친 이름을 그 카드의 파일 묶음에 기억하고 계획을 다시 요청한다. 읽어 온 이름으로 되돌리면 손대지 않은 것과 같다.
     /// 바꿔 끼워 버려진 카드의 이름 변경은 무시한다.
     /// </summary>
@@ -562,7 +704,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         {
             var card = new SessionItemViewModel(spec.Id, spec.Title, spec.Devices, spec.IsReview, spec.Files, spec.SuggestedName,
                 spec.IsReview ? null : OnEventNameChanged, RequestCardThumbnail, spec.IsReview ? null : OnNeverUseName, spec.Note,
-                spec.SuggestedFromFormat);
+                spec.SuggestedFromFormat, OnIncludeToggled, spec.DateMismatch, !spec.StaysByOption);
             if (!spec.IsReview && _edits.TryGetValue(spec.FilesKey, out var edited))
             {
                 card.SetEventNameSilently(edited);
@@ -571,7 +713,10 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             Sessions.Add(card);
         }
 
+        RefreshCardExclusions();
         ReviewCount = grouping.ReviewCount;
+        _dateMismatchCount = grouping.Cards.Count(card => card.DateMismatch is not null);
+        OnPropertyChanged(nameof(DateMismatchText));
         SelectedSession = Sessions.FirstOrDefault(card => card.FilesKey == selected?.FilesKey)
             ?? Sessions.FirstOrDefault(card => card.SessionId == selected?.SessionId)
             ?? Sessions.FirstOrDefault();
@@ -659,6 +804,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         var settings = _settings;
         var grouping = settings == _shown.Settings ? _shown : null;
         var edits = new Dictionary<string, string>(_edits, StringComparer.Ordinal);
+        var excluded = new HashSet<string>(_excluded, StringComparer.OrdinalIgnoreCase);
+        var noDefaultExclusion = new HashSet<string>(_noDefaultExclusion, StringComparer.OrdinalIgnoreCase);
 
         // 앞선 요청의 계획 세우기가 끝난 뒤에야 이 요청의 계획을 세운다. 이 요청이 계획을 세우지 못하고 취소되어도,
         // 다음 요청은 앞선 계획 세우기가 끝나기를 기다린다.
@@ -666,12 +813,13 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         var buildDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _lastBuild = buildDone.Task;
 
-        WhenPlanned = ReplanAsync(generation, settings, grouping, edits, delay, previousBuild, buildDone, cts.Token);
+        WhenPlanned = ReplanAsync(generation, settings, grouping, edits, excluded, noDefaultExclusion, delay, previousBuild, buildDone, cts.Token);
     }
 
     /// <param name="grouping">다시 쓸 촬영 묶음. null이면 <paramref name="settings"/>로 다시 묶는다.</param>
     private async Task ReplanAsync(int generation, ImportSettings settings, Grouping? grouping,
-        IReadOnlyDictionary<string, string> edits, TimeSpan delay, Task previousBuild, TaskCompletionSource buildDone, CancellationToken ct)
+        IReadOnlyDictionary<string, string> edits, IReadOnlySet<string> excluded, IReadOnlySet<string> noDefaultExclusion, TimeSpan delay,
+        Task previousBuild, TaskCompletionSource buildDone, CancellationToken ct)
     {
         var ownBuild = previousBuild;
         try
@@ -686,19 +834,28 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             var fileSystem = _fileSystem;
             var build = Task.Run(() =>
             {
-                var grouped = grouping ?? Grouping.Create(settings, _regroup(settings, _scan));
-                return (Grouped: grouped, View: PlanView.Create(_buildPlan(settings, grouped.Scan, grouped.EventNames(edits)), fileSystem));
+                var grouped = grouping ?? Grouping.Create(settings, _regroup(settings, _scan), _zone);
+
+                // 다시 묶으며 처음으로 날짜가 달라진 묶음은 이 계획에서부터 뺀다(그 파일이 움직이는 계획이 화면에 반영되지 않게).
+                var defaulted = grouped.Mismatched.Where(id => !noDefaultExclusion.Contains(id)).ToList();
+
+                // 어차피 제자리인 묶음은 넘기지 않는다. 계획기가 같은 판단으로 제자리에 두므로 작업이 생기지 않고, 그대로 수에 든다.
+                IReadOnlySet<string> planned = excluded.Concat(defaulted)
+                    .Where(id => !grouped.Staying.Contains(id))
+                    .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                return (Grouped: grouped, Defaulted: defaulted,
+                    View: PlanView.Create(_buildPlan(settings, grouped.Scan, grouped.EventNames(edits), planned), fileSystem));
             }, CancellationToken.None);
             ownBuild = build;
 
             // 계획 세우기는 중간에 멈출 수 없다. 취소되면 기다리지 않고 결과만 버린다. 버린 작업의 오류도 관찰해 둔다.
             _ = build.ContinueWith(t => _ = t.Exception, CancellationToken.None,
                 TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            var (grouped, view) = await build.WaitAsync(ct);
+            var (grouped, defaulted, view) = await build.WaitAsync(ct);
 
             if (generation == _generation && !ct.IsCancellationRequested)
             {
-                Apply(generation, grouped, view);
+                Apply(generation, grouped, defaulted, view);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -758,9 +915,11 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     /// <summary>
     /// 백그라운드에서 정리해 둔 계획을 화면에 반영한다. 화면 스레드에서는 값과 목록을 바꿔 끼우기만 한다. 촬영을 다시 묶었으면 카드도 함께 바꾸되,
     /// 카드 내용이 그대로면 입력 칸의 포커스·스크롤·썸네일을 지키려고 카드 객체를 그대로 둔다.
+    /// 세대가 같으면 요청한 뒤로 뺀 묶음이 바뀌지 않았으므로 <paramref name="defaulted"/>를 더한 값이 이 계획이 쓴 값과 같다.
     /// </summary>
-    private void Apply(int generation, Grouping grouped, PlanView view)
+    private void Apply(int generation, Grouping grouped, IReadOnlyList<string> defaulted, PlanView view)
     {
+        ExcludeByDefault(defaulted);
         _plan = view.Outcome.Plan;
         _appliedGeneration = generation;
         _placementBySource = view.Placements;
@@ -783,8 +942,11 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             }
         }
 
+        RefreshCardExclusions();
+        ExcludedCount = view.Excluded;
         DuplicateCount = view.Duplicates;
         KeptInPlaceCount = _settings.Kind == JobKind.Reorganize ? view.KeptInPlace : 0;
+        MultiDayNotice = view.Outcome.Plan.MultiDayNotice;
         TransferCount = view.Copies + view.Moves;
         TransferBytes = view.Bytes;
         TransferText = DescribeTransfer(view.Copies, view.Moves);
@@ -793,6 +955,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         OnPropertyChanged(nameof(FreeSpaceText));
         PlanNotes = view.Notes;
         BlockingReason = view.BlockingReason ?? (TransferCount != 0 ? null
+            : view.Excluded > 0 ? NothingLeftMessage
             : _settings.Kind == JobKind.Reorganize ? NothingToMoveInPlaceMessage : NothingToTransferMessage);
         FolderTree = view.Tree;
         HasPlan = true;
@@ -852,6 +1015,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 SkipReason.ReviewKeptInPlace => "판단 필요라 제자리에 둡니다",
                 SkipReason.SubfolderKeptInPlace => "하위 폴더라 제자리에 둡니다",
                 SkipReason.OtherVolume => "다른 볼륨에 있어 옮기지 않습니다",
+                SkipReason.ExcludedByUser => "이번에 옮기지 않도록 뺐습니다",
+                SkipReason.MultiDayFolderKept => "여러 날 폴더라 제자리에 둡니다",
                 _ => "건너뜁니다",
             };
         }
@@ -878,7 +1043,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             branch.Name,
             string.Join('\\', branch.Levels.Select(level => level.Template)),
             reasons.Select(ReviewReasonText.Label).ToList(),
-            skipNote);
+            skipNote,
+            _shown.DateMismatchOf(group));
     }
 
     private async Task LoadThumbnailAsync(string path, int size, Action<ImageSource> apply, CancellationToken ct)
@@ -991,7 +1157,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
 
     /// <summary>카드 한 장의 내용. 백그라운드에서 만들고, 화면 스레드에서 이것으로 카드를 만든다.</summary>
     private sealed record CardSpec(string Id, string Title, string Devices, bool IsReview, IReadOnlyList<string> Files,
-        string? SuggestedName, string? Note, bool SuggestedFromFormat = false)
+        string? SuggestedName, string? Note, bool SuggestedFromFormat = false, string? DateMismatch = null, bool StaysByOption = false)
     {
         public string FilesKey { get; } = SessionItemViewModel.KeyOf(Files);
 
@@ -1002,34 +1168,75 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     /// <summary>
     /// 어떤 값(<paramref name="Settings"/>)으로 묶은 촬영과 그 카드, 그 값의 프리셋을 따르는 부품. 처음에는 화면 스레드에서, 옵션을 바꾼 뒤에는
     /// 백그라운드에서 만든다. 만든 뒤에는 바뀌지 않는다.
+    /// <paramref name="Mismatched"/>는 폴더 날짜와 사진 날짜가 다른 묶음(재정리만)이고, <paramref name="MismatchLines"/>는 묶음별 표시 문구다.
+    /// <paramref name="Staying"/>은 이 값의 옵션으로 어차피 제자리인 묶음(판단 필요를 제자리에 둠, 여러 날 폴더)이다. 판단은 계획기와 같다.
     /// </summary>
     private sealed record Grouping(ImportSettings Settings, ScanOutcome Scan, IReadOnlyList<CardSpec> Cards, int ReviewCount,
-        LayoutRenderer Renderer, DeviceAliasResolver Aliases)
+        LayoutRenderer Renderer, DeviceAliasResolver Aliases, IReadOnlyList<string> Mismatched, IReadOnlyDictionary<string, string> MismatchLines,
+        IReadOnlySet<string> Staying)
     {
         /// <summary>
         /// 판단이 필요한 묶음은 날짜 카드에서 빼고 맨 끝 판단 필요 카드에만 보인다. 사유는 계획과 같은 함수(ReviewDetector)로
         /// 구하므로 계획 작업에 붙는 사유와 같다. 이벤트 이름과 관계없으므로 첫 계획을 기다리지 않고 두 갈래 카드를 함께 만든다.
         /// 중복이라 건너뛰는 파일도 사유가 있으면 판단 필요 카드에 보인다. 카드의 "N장"은 대표·딸린 파일을 모두 센다.
+        /// 카드의 파일 목록은 묶음의 대표 경로이며 <see cref="FileGroup.Id"/>와 같다.
         /// </summary>
-        public static Grouping Create(ImportSettings settings, ScanOutcome scan)
+        public static Grouping Create(ImportSettings settings, ScanOutcome scan, TimeZoneInfo zone)
         {
             var aliases = new DeviceAliasResolver(settings.Preset.DeviceAliases);
             var cards = new List<CardSpec>();
             var reviewGroups = new List<FileGroup>();
+            var reviewChecks = new List<DateCheck>();
+            var reviewMultiDayFiles = 0;
+            var mismatchLines = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var staying = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var keepReview = settings.Kind == JobKind.Reorganize && settings.KeepReviewInPlace;
+            var keepMultiDay = settings.Kind == JobKind.Reorganize && !settings.SplitMultiDayFolders;
             foreach (var session in scan.Sessions)
             {
                 var dateGroups = new List<FileGroup>();
+                var dateChecks = new List<DateCheck>();
+                var dateMultiDayFiles = 0;
                 foreach (var group in session.Groups)
                 {
-                    (ReviewDetector.Detect(group, settings.Preset, aliases).Count == 0 ? dateGroups : reviewGroups).Add(group);
+                    var needsReview = ReviewDetector.Detect(group, settings.Preset, aliases).Count != 0;
+                    (needsReview ? reviewGroups : dateGroups).Add(group);
+                    var multiDay = keepMultiDay && FolderDate.IsInMultiDayFolder(group, settings.ArchiveRoot);
+                    if (multiDay)
+                    {
+                        if (needsReview)
+                        {
+                            reviewMultiDayFiles += group.Companions.Count + 1;
+                        }
+                        else
+                        {
+                            dateMultiDayFiles += group.Companions.Count + 1;
+                        }
+                    }
+
+                    // 어차피 제자리인 묶음은 폴더 날짜가 바뀔 일이 없으므로 맞춰 보지 않는다. 옵션을 바꿔 옮길 수 있게 되면 그때 처음으로 맞춰 본다.
+                    if (multiDay || (needsReview && keepReview))
+                    {
+                        staying.Add(group.Id);
+                    }
+                    else if (DateCheck.Of(settings, session.Start, group, zone) is { } check)
+                    {
+                        (needsReview ? reviewChecks : dateChecks).Add(check);
+                        if (check.Differs)
+                        {
+                            mismatchLines[group.Id] = DateCheck.Line([check]);
+                        }
+                    }
                 }
 
                 if (dateGroups.Count > 0)
                 {
+                    var files = FileCount(dateGroups);
                     cards.Add(new CardSpec(session.Id,
-                        CardTitle(session.Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), FileCount(dateGroups)),
+                        CardTitle(session.Start.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), files),
                         DevicesOf(dateGroups, aliases), IsReview: false, dateGroups.Select(g => g.Primary.Path).ToList(),
-                        session.SuggestedEventName, Note: null, session.SuggestedFromFormat));
+                        session.SuggestedEventName, MultiDayNote(dateMultiDayFiles, files), session.SuggestedFromFormat, DateCheck.CardText(dateChecks),
+                        StaysByOption: dateMultiDayFiles == files));
                 }
             }
 
@@ -1038,14 +1245,31 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             if (reviewGroups.Count > 0)
             {
                 // 재정리에서 판단 필요 파일을 제자리에 두면 카드에도 그렇게 보인다. 옵션이 꺼져 있으면 보통의 판단 필요 카드다.
-                var kept = settings.Kind == JobKind.Reorganize && settings.KeepReviewInPlace;
-                cards.Add(new CardSpec(ReviewGroupId, CardTitle(ReviewGroupId, reviewCount) + (kept ? " (그대로 둠)" : ""),
+                cards.Add(new CardSpec(ReviewGroupId, CardTitle(ReviewGroupId, reviewCount) + (keepReview ? " (그대로 둠)" : ""),
                     DevicesOf(reviewGroups, aliases), IsReview: true, reviewGroups.Select(g => g.Primary.Path).ToList(),
-                    SuggestedName: null, kept ? ReviewKeptNote : null));
+                    SuggestedName: null, keepReview ? ReviewKeptNote : MultiDayNote(reviewMultiDayFiles, reviewCount),
+                    DateMismatch: DateCheck.CardText(reviewChecks), StaysByOption: keepReview || reviewMultiDayFiles == reviewCount));
             }
 
-            return new Grouping(settings, scan, cards, reviewCount, new LayoutRenderer(settings.Preset), aliases);
+            return new Grouping(settings, scan, cards, reviewCount, new LayoutRenderer(settings.Preset), aliases,
+                [.. mismatchLines.Keys], mismatchLines, staying);
         }
+
+        /// <summary>카드 파일이 모두 여러 날 폴더라 옮기지 않으면 그 안내, 일부면 그 수. 없으면 null.</summary>
+        private static string? MultiDayNote(int keptFiles, int cardFiles)
+        {
+            if (keptFiles == 0)
+            {
+                return null;
+            }
+
+            return keptFiles == cardFiles
+                ? MultiDayKeptNote
+                : string.Create(CultureInfo.InvariantCulture, $"여러 날 폴더라 옮기지 않는 파일 {keptFiles}개");
+        }
+
+        /// <summary>이 묶음의 폴더 날짜가 사진 날짜와 다르면 그 문구. 아니면 null.</summary>
+        public string? DateMismatchOf(FileGroup group) => MismatchLines.GetValueOrDefault(group.Id);
 
         /// <summary>
         /// 계획에 넘길 이벤트 이름. 같은 파일 묶음에 고친 이름이 있으면 그것, 없으면 읽어 온 이름이다. 읽어 온 이름을 지운 카드는 빈 문자열로 넘겨 이름 없음으로 굳힌다.
@@ -1087,6 +1311,94 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     }
 
     /// <summary>
+    /// 재정리에서 옮겨질 수 있는 묶음 하나의 폴더 날짜와 사진 날짜(하루 시작 시각을 따른 촬영일)를 맞춰 본 값.
+    /// 촬영 시각이 없으면 수정 시각의 달력 날짜와 맞춰 보며 그것을 사진 날짜라고 부르지 않는다.
+    /// </summary>
+    private sealed record DateCheck(int Files, DateOnly FolderDay, DateOnly ActualDay, string Source, bool DayStartApplied, bool HasCaptureTime)
+    {
+        private static readonly string[] SourceOrder = ["사진 정보", "파일 이름"];
+
+        public bool Differs => FolderDay != ActualDay;
+
+        /// <summary>
+        /// 재정리가 아니거나 하루 폴더 안에 있지 않으면 null.
+        /// </summary>
+        public static DateCheck? Of(ImportSettings settings, DateOnly shootDay, FileGroup group, TimeZoneInfo zone)
+        {
+            if (settings.Kind != JobKind.Reorganize
+                || FolderDate.Of(group.Primary.Path, settings.ArchiveRoot) is not { } folderDay)
+            {
+                return null;
+            }
+
+            var primary = group.Primary;
+            var calendarDay = DateOnly.FromDateTime(ShootDate.EffectiveTime(primary, zone));
+            var files = group.Companions.Count + 1;
+            return primary.CaptureTime is null
+                ? new DateCheck(files, folderDay, calendarDay, "", DayStartApplied: false, HasCaptureTime: false)
+                : new DateCheck(files, folderDay, shootDay, primary.CaptureSource == CaptureTimeSource.FileName ? "파일 이름" : "사진 정보",
+                    calendarDay != shootDay, HasCaptureTime: true);
+        }
+
+        /// <summary>
+        /// 폴더 날짜가 한 가지이고 모두 같은 날로 다르면 날짜를 그대로 보이고, 섞이면 다른 파일 수를 보인다. 촬영 시각이 없는 파일은 따로 센다. 다른 파일이 없으면 null.
+        /// </summary>
+        public static string? CardText(IReadOnlyList<DateCheck> checks)
+        {
+            var differing = checks.Where(check => check.Differs).ToList();
+            if (differing.Count == 0)
+            {
+                return null;
+            }
+
+            var withCapture = differing.Where(check => check.HasCaptureTime).Sum(check => check.Files);
+            var withoutCapture = differing.Where(check => !check.HasCaptureTime).Sum(check => check.Files);
+            if (checks.Select(check => check.FolderDay).Distinct().Count() == 1
+                && differing.Select(check => check.ActualDay).Distinct().Count() == 1
+                && (withCapture == 0 || withoutCapture == 0))
+            {
+                return Line(differing);
+            }
+
+            var parts = new List<string>();
+            if (withCapture > 0)
+            {
+                parts.Add(string.Create(CultureInfo.InvariantCulture, $"폴더 날짜가 다른 파일 {withCapture}개"));
+            }
+
+            if (withoutCapture > 0)
+            {
+                parts.Add(string.Create(CultureInfo.InvariantCulture, $"촬영 시각 없는 파일 {withoutCapture}개"));
+            }
+
+            return string.Join(" · ", parts);
+        }
+
+        /// <summary>
+        /// 예: "폴더 날짜 2024-06-24 → 사진 날짜 2024-06-23 (사진 정보)", "폴더 날짜 2024-06-24 · 촬영 시각 없음 (수정 시각 2024-07-01)".
+        /// 하루 시작 시각 보정은 출처에서 드러낸다. 촬영 시각의 있고 없음이 같은 값들만 받는다.
+        /// </summary>
+        public static string Line(IReadOnlyList<DateCheck> checks)
+        {
+            var first = checks[0];
+            if (!first.HasCaptureTime)
+            {
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"폴더 날짜 {first.FolderDay:yyyy-MM-dd} · 촬영 시각 없음 (수정 시각 {first.ActualDay:yyyy-MM-dd})");
+            }
+
+            var sources = SourceOrder.Where(source => checks.Any(check => check.Source == source)).ToList();
+            if (checks.Any(check => check.DayStartApplied))
+            {
+                sources.Add("하루 시작 시각 보정");
+            }
+
+            return string.Create(CultureInfo.InvariantCulture,
+                $"폴더 날짜 {first.FolderDay:yyyy-MM-dd} → 사진 날짜 {first.ActualDay:yyyy-MM-dd} ({string.Join(", ", sources)})");
+        }
+    }
+
+    /// <summary>
     /// 계획을 화면에 보이기 좋게 정리한 것. 계획을 세운 백그라운드 작업 안에서 만든다(폴더 트리, 원본별 작업 찾기표,
     /// 개수, 여유 공간 조회). 만든 뒤에는 바뀌지 않는다.
     /// </summary>
@@ -1099,6 +1411,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         long Bytes,
         int Duplicates,
         int KeptInPlace,
+        int Excluded,
         long? FreeBytes,
         IReadOnlyList<string> Notes,
         string? BlockingReason,
@@ -1155,7 +1468,8 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 plan.Skipped.Count(skip => skip.Reason is SkipReason.DuplicateAtDestination or SkipReason.DuplicateInPlan
                     or SkipReason.DuplicateInArchive),
                 plan.Skipped.Count(skip => skip.Reason is SkipReason.AlreadyInPlace or SkipReason.ReviewKeptInPlace
-                    or SkipReason.SubfolderKeptInPlace or SkipReason.OtherVolume),
+                    or SkipReason.SubfolderKeptInPlace or SkipReason.OtherVolume or SkipReason.MultiDayFolderKept),
+                plan.Skipped.Count(skip => skip.Reason == SkipReason.ExcludedByUser),
                 FreeSpace(fileSystem, plan.ArchiveRoot), notes,
                 DescribeBlocking(outcome.Issues.Where(i => i.Severity == Severity.Error).ToList()),
                 FolderNodeViewModel.Build(plan));

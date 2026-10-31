@@ -40,11 +40,11 @@ public class ReorganizePlanTests
     private Plan Create(Preset preset, FileGroup[] groups, JobKind kind = JobKind.Reorganize, TransferMode mode = TransferMode.Move,
         bool keepReview = false, SubfolderPolicy subfolders = SubfolderPolicy.Keep,
         Func<FileGroup, IReadOnlyList<string>>? keptOf = null, IReadOnlyList<string>? roots = null,
-        IReadOnlyDictionary<string, string>? names = null, Func<FileGroup, string?>? nameOf = null)
+        IReadOnlyDictionary<string, string>? names = null, Func<FileGroup, string?>? nameOf = null, bool splitMultiDay = false)
     {
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc, nameOf);
         return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc, names,
-            kind, roots ?? Roots, null, keepReview, subfolders, keptOf));
+            kind, roots ?? Roots, null, keepReview, subfolders, keptOf, SplitMultiDayFolders: splitMultiDay));
     }
 
     /// <summary>주 파일 경로별로 유지할 폴더를 돌려준다. 없는 경로는 빈 목록이다.</summary>
@@ -648,24 +648,31 @@ public class ReorganizePlanTests
         AllFiles().Select(path => Convert.ToHexString(_fs.ReadAllBytes(path))).Order(StringComparer.Ordinal).ToList();
 
     // 카드에 채워지는 이름을 그대로 쓴다. 해시 기억이 넘어가지 않도록 차례마다 새 흐름을 쓴다.
-    private async Task<Plan> PlanWithSuggestedNamesAsync(ImportSettings settings)
+    private async Task<Plan> PlanWithSuggestedNamesAsync(ImportSettings settings, IReadOnlySet<string>? excluded = null)
     {
         var workflow = Workflow();
         var scan = await workflow.ScanAsync(settings, null, CancellationToken.None);
         var names = scan.Sessions.Where(s => s.SuggestedEventName is not null).ToDictionary(s => s.Id, s => s.SuggestedEventName!);
-        return workflow.BuildPlan(settings, scan, names).Plan;
+        return workflow.BuildPlan(settings, scan, names, excluded).Plan;
     }
 
     // 첫 번째만 파일을 옮길 수 있다. 두 번째와 세 번째는 작업이 없어야 하고, 어느 차례에도 파일 내용이 그대로여야 한다.
-    private async Task AssertStableAsync(ImportSettings settings)
+    // 뺀 파일과 여러 날 폴더의 파일은 어느 차례에도 작업이 없다.
+    private async Task AssertStableAsync(ImportSettings settings, IReadOnlySet<string>? excluded = null)
     {
         var before = Contents();
         for (var pass = 1; pass <= 3; pass++)
         {
-            var plan = await PlanWithSuggestedNamesAsync(settings);
+            var plan = await PlanWithSuggestedNamesAsync(settings, excluded);
             if (pass > 1)
             {
                 Assert.Empty(Shape(plan.Operations));
+            }
+
+            foreach (var kept in excluded ?? new HashSet<string>())
+            {
+                Assert.DoesNotContain(plan.Operations, op => string.Equals(op.Source, kept, StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(plan.Skipped, skip => skip.Source == kept && skip.Reason == SkipReason.ExcludedByUser);
             }
 
             Apply(plan);
@@ -742,6 +749,39 @@ public class ReorganizePlanTests
         Seed(@"D:\Archive\라이트룸\테이블1\DCIM\n.jpg", [19], null);
         Seed(@"D:\Archive\DCIM\o.jpg", [20], null);
         Seed(@"D:\Archive\테이블2\라이트룸\p.jpg", [21], null);
+
+        // 뺀 파일(옮겨질 자리에 있든, 판단 필요든)과 여러 날 폴더
+        Seed(CorpusExcludedMisplaced, [26], Oct14, "Zfc");
+        Seed(CorpusExcludedSameName, [27], Oct15, "Zfc");
+        Seed($@"{Old}\h.jpg", [28], Oct14, "Zfc"); // 뺀 파일이 있는 날짜 폴더로 간다
+        Seed(CorpusExcludedReview, [29], null);
+        Seed(CorpusMultiDayDirect, [30], Oct14, "Zfc");
+        Seed(CorpusMultiDayDeep, [31], Oct15, "Zfc");
+        Seed(CorpusMultiDayRaw, [32], Oct15, "Zfc");
+        _fs.AddFile(CorpusMultiDayXmp, [33]);
+    }
+
+    private const string CorpusExcludedMisplaced = @"D:\Archive\모음\뺌\u.jpg";
+    private const string CorpusExcludedSameName = @"D:\Archive\[2026-10-14] 뺌\h.jpg";
+    private const string CorpusExcludedReview = @"D:\Archive\뺌\v.jpg";
+    private const string CorpusMultiDayDirect = @"D:\Archive\[2026-10-14~10-15] 소풍\w.jpg";
+    private const string CorpusMultiDayDeep = @"D:\Archive\2026\2026-10-14~10-15 나들이\라이트룸\깊은 곳\x2.jpg";
+    private const string CorpusMultiDayRaw = @"D:\Archive\[2026-10-14~10-15] 소풍\y2.NEF";
+    private const string CorpusMultiDayXmp = @"D:\Archive\[2026-10-14~10-15] 소풍\y2.xmp";
+
+    private static readonly IReadOnlySet<string> CorpusExcluded =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { CorpusExcludedMisplaced, CorpusExcludedSameName, CorpusExcludedReview };
+
+    private void AssertCorpusKeptFilesInPlace()
+    {
+        foreach (var path in new[]
+                 {
+                     CorpusExcludedMisplaced, CorpusExcludedSameName, CorpusExcludedReview,
+                     CorpusMultiDayDirect, CorpusMultiDayDeep, CorpusMultiDayRaw, CorpusMultiDayXmp,
+                 })
+        {
+            Assert.True(_fs.FileExists(path), $"제자리에 있어야 합니다: {path}");
+        }
     }
 
     // \로 나눈 이름이 만든 구조
@@ -767,7 +807,8 @@ public class ReorganizePlanTests
         }
 
         await AssertStableAsync(new ImportSettings([Archive], true, Archive, StablePresets[preset], TransferMode.Move,
-            JobKind.Reorganize, useFolderNames, false, subfolders, keepReview));
+            JobKind.Reorganize, useFolderNames, false, subfolders, keepReview), CorpusExcluded);
+        AssertCorpusKeptFilesInPlace();
 
         // 떨어져 있어도 같은 폴더 이름이 두 번 나오면 안 된다(자료에는 그런 폴더가 없다).
         foreach (var path in AllFiles())
@@ -810,6 +851,52 @@ public class ReorganizePlanTests
 
         await AssertStableAsync(new ImportSettings([@"D:\Archive\2026"], true, Archive, preset, TransferMode.Move,
             JobKind.Reorganize, true, false, SubfolderPolicy.Keep, false));
+    }
+
+    [Theory]
+    [InlineData("날짜+이벤트")]
+    [InlineData("날짜")]
+    [InlineData("날짜+기기+포맷")]
+    [InlineData("기간+이벤트+기기+포맷")]
+    public async Task Reorganize_RerunWithSplitMultiDayOn_IsStable(string preset)
+    {
+        Seed(@"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg", [1], Oct14, "Zfc");
+        Seed(@"D:\Archive\[2026-10-14~10-15] 소풍\b.jpg", [2], Oct15, "Zfc");
+
+        await AssertStableAsync(new ImportSettings([Archive], true, Archive, StablePresets[preset], TransferMode.Move,
+            JobKind.Reorganize, SplitMultiDayFolders: true));
+
+        Assert.All(AllFiles(), path => Assert.StartsWith(@"D:\Archive\2026\", path, StringComparison.Ordinal));
+        Assert.Equal(2, AllFiles().Count);
+    }
+
+    [Fact]
+    public async Task Reorganize_SplitMultiDayOn_KeepPolicy_KeepsTheFolderNameBelowTheDay()
+    {
+        // 하위 폴더 유지에서는 여러 날 폴더 이름도 유지할 폴더로 읽혀 날짜 폴더 아래에 남는다. 다음 재정리(옵션 끔)에서는 여러 날 폴더라 그대로다.
+        Seed(@"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg", [1], Oct14, "Zfc");
+        var on = new ImportSettings([Archive], true, Archive, BuiltInPresets.DateOnly, TransferMode.Move, JobKind.Reorganize, SplitMultiDayFolders: true);
+
+        Apply(await PlanWithSuggestedNamesAsync(on));
+
+        Assert.Equal([@"D:\Archive\2026\2026-10-14\[2026-10-14~10-15] 소풍\a.jpg"], AllFiles());
+        Assert.Empty((await PlanWithSuggestedNamesAsync(on with { SplitMultiDayFolders = false })).Operations);
+    }
+
+    [Fact]
+    public async Task Reorganize_IncludedAfterExcluded_ThenStable()
+    {
+        // 뺀 파일을 다음 실행에서 포함하면 그때 옮겨지고, 그 뒤로는 안정하다.
+        SeedCorpus();
+        var preset = StablePresets["날짜+기기+포맷"];
+        var settings = new ImportSettings([Archive], true, Archive, preset, TransferMode.Move, JobKind.Reorganize, true, false, SubfolderPolicy.Keep, true);
+        Apply(await PlanWithSuggestedNamesAsync(settings, CorpusExcluded));
+        Assert.True(_fs.FileExists(CorpusExcludedMisplaced));
+
+        Apply(await PlanWithSuggestedNamesAsync(settings));
+
+        Assert.False(_fs.FileExists(CorpusExcludedMisplaced));
+        await AssertStableAsync(settings);
     }
 
     [Fact]
@@ -986,7 +1073,7 @@ public class ReorganizePlanTests
         Assert.Equal([$@"D:\Archive\판단 필요\촬영일 없음\{expected}"], AllFiles());
     }
 
-    // ---- 여러 날을 묶은 폴더 ----
+    // ---- 여러 날을 묶은 폴더(옵션을 켰을 때. 끈 상태는 ExclusionPlanTests) ----
 
     private static string MultiDayNote(int count) =>
         $"여러 날을 묶은 폴더 {count}개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요";
@@ -999,20 +1086,19 @@ public class ReorganizePlanTests
         var c = Add(@"D:\Archive\2026\[2026-10-14~2026-10-15]\c.jpg", [3], Oct14);
         var d = Add($@"{Old}\d.jpg", [4], Oct14);
 
-        var plan = Create(BuiltInPresets.DateOnly, [Group(a), Group(b), Group(c), Group(d)]);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(a), Group(b), Group(c), Group(d)], splitMultiDay: true);
 
-        Assert.Single(plan.Notes, MultiDayNote(2));
+        Assert.Equal(MultiDayNote(2), plan.MultiDayNotice);
     }
 
     [Theory]
     [InlineData(@"D:\Archive\[2026-10-14] 소풍\a.jpg")] // 하루 폴더
-    [InlineData(@"D:\Archive\2026-10-14~10-15 소풍\a.jpg")] // 대괄호가 없는 이름
     [InlineData(@"D:\Archive\[소풍~나들이]\a.jpg")] // 날짜가 아닌 글자
     public void Reorganize_OtherFolders_NoNote(string path)
     {
-        var plan = Create(BuiltInPresets.DateOnly, [Group(Add(path, [1], Oct14))]);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(Add(path, [1], Oct14))], splitMultiDay: true);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     [Fact]
@@ -1020,9 +1106,9 @@ public class ReorganizePlanTests
     {
         var kept = Add(@"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg", [1], null);
 
-        var plan = Create(BuiltInPresets.DateOnly, [Group(kept)], keepReview: true);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(kept)], keepReview: true, splitMultiDay: true);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     [Theory]
@@ -1034,7 +1120,7 @@ public class ReorganizePlanTests
 
         var plan = Create(BuiltInPresets.DateOnly, [Group(photo)], kind, roots: [@"D:\흩어짐"]);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     // ---- 화면이 부르는 흐름의 연결 ----

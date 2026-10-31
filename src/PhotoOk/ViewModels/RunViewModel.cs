@@ -150,6 +150,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     /// 재정리와, 이동으로 처리한 파일이 있는 흡수는 원본이 아카이브 안이거나 옮겨져 "원본을 정리"할 일이 없으므로 쓰지 않는다.
     /// 흡수에서 복사하지 않고 제자리에 둔 파일(하위 폴더·판단 필요·다른 볼륨)이 있으면 그 파일은 아카이브에 없으므로 쓰지 않는다.
     /// 흡수에서 아카이브에 이미 있어 남긴 파일은 그 내용이 아카이브에 있으므로 막지 않는다.
+    /// 사용자가 뺀 파일이 있으면 어떤 작업이든 쓰지 않는다(그 파일은 처리하지 않았다).
     /// </summary>
     public string? SafeToCleanMessage =>
         CompletedWithoutFailures && _scan is { ScanErrors: 0, IgnoredFiles: 0, SubfoldersNotImported: false } scan && !BlocksSafeMessage(scan)
@@ -157,15 +158,14 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             : null;
 
     /// <summary>
-    /// 끝난 재정리·흡수의 요약 줄("옮긴 파일 N개" 등). 재정리는 옮긴 줄이 늘 있고, 흡수는 이동이 있으면 옮긴 줄이, 없으면 복사 줄이 있다. 나머지는 0보다 클 때만 있다.
-    /// 가져오기, 기록에서 이어 한 실행(스캔을 모른다), 끝나지 않은 실행에는 없다.
+    /// 끝난 실행의 요약 줄("옮긴 파일 N개" 등). 재정리는 옮긴 줄이 늘 있고, 흡수는 이동이 있으면 옮긴 줄이, 없으면 복사 줄이 있다. 나머지는 0보다 클 때만 있다.
+    /// 가져오기는 뺀 파일 줄만 있다. 기록에서 이어 한 실행(스캔을 모른다), 끝나지 않은 실행에는 없다.
     /// </summary>
     public IReadOnlyList<string> SummaryLines
     {
         get
         {
-            if (_scan is not { Kind: JobKind.Absorb or JobKind.Reorganize } scan
-                || _result is not { Outcome: RunOutcome.Completed or RunOutcome.CompletedWithFailures })
+            if (_scan is not { } scan || _result is not { Outcome: RunOutcome.Completed or RunOutcome.CompletedWithFailures })
             {
                 return [];
             }
@@ -182,7 +182,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
                 AddIfAny(lines, "판단 필요로 그대로 둔 파일", scan.ReviewKept);
                 AddIfAny(lines, "같은 파일이 있어 그대로 둔 파일", scan.DuplicateKept);
             }
-            else
+            else if (scan.Kind == JobKind.Absorb)
             {
                 // 옮긴 파일과 복사한 파일을 따로 센다. 계획에 이동이 있으면 옮긴 줄이, 없으면 복사한 줄이 0개여도 보인다.
                 if (_movedFiles is { } moved && (moved > 0 || scan.AnyMoved))
@@ -199,12 +199,13 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
                 AddIfAny(lines, "이미 있어 남긴 파일", scan.AlreadyInArchive);
             }
 
+            AddIfAny(lines, "뺀 파일", scan.Excluded);
             return lines;
         }
     }
 
     private static bool BlocksSafeMessage(ScanFacts scan) =>
-        scan.Kind == JobKind.Reorganize || (scan.Kind == JobKind.Absorb && (scan.AnyMoved || scan.KeptInPlace > 0));
+        scan.Excluded > 0 || scan.Kind == JobKind.Reorganize || (scan.Kind == JobKind.Absorb && (scan.AnyMoved || scan.KeptInPlace > 0));
 
     private static string Count(string label, int count) => string.Create(CultureInfo.InvariantCulture, $"{label} {count}개");
 

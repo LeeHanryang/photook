@@ -136,6 +136,17 @@ public class AppSettingsStoreTests
         Assert.Equal(2, Text().Split('\n', StringSplitOptions.RemoveEmptyEntries).Length);
     }
 
+    [Theory]
+    [InlineData(JobKind.Import)]
+    [InlineData(JobKind.Reorganize)]
+    public void SaveChoices_NeverWritesSplitMultiDayFolders(JobKind kind)
+    {
+        AppSettingsStore.SaveChoices(_fs, SettingsPath, new ImportSettings([@"D:\B\모음"], true, @"D:\B", BuiltInPresets.DateOnly, TransferMode.Move,
+            kind, SplitMultiDayFolders: true));
+
+        Assert.DoesNotContain("MultiDay", Text(), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void SaveChoices_Import_SavesSourcesAndMode()
     {

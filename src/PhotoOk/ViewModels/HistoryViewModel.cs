@@ -331,7 +331,8 @@ public sealed partial class HistoryViewModel : ObservableObject, IBusyViewModel,
             _log.Warning("되돌리지 않고 남긴 항목" + Environment.NewLine + string.Join(Environment.NewLine, full));
         }
 
-        var shown = result.Skipped.Select(s => $"{s.Path}: {Summary(s.Reason)}").ToList();
+        // 알릴 일(옮긴 임시 이름 파일)은 경로까지 그대로 보인다.
+        var shown = result.Skipped.Select(s => $"{s.Path}: {Summary(s.Reason)}").Concat(result.Warnings).ToList();
         var summary = string.Create(CultureInfo.InvariantCulture, $"되돌린 파일 {result.UndoneFiles}개, 남긴 항목 {result.Skipped.Count}개")
             + (result.Stopped ? StoppedNote : string.Empty);
         SetUndoResult(runId, Cap(shown), summary, null);

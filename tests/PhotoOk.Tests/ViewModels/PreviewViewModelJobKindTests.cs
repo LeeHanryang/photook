@@ -80,14 +80,14 @@ public class PreviewViewModelJobKindTests
                 return new ScreenStub();
             }, createBack: _ => new ScreenStub(), replanDelay: TimeSpan.Zero,
             ignoredNamesPath: IgnoredPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
-            buildPlan: (s, scanned, names) =>
+            buildPlan: (s, scanned, names, excluded) =>
             {
                 lock (_planNames)
                 {
                     _planNames.Add(new Dictionary<string, string>(names));
                 }
 
-                var outcome = _workflow.BuildPlan(s, scanned, names);
+                var outcome = _workflow.BuildPlan(s, scanned, names, excluded);
                 return rewrite is null ? outcome : rewrite(outcome);
             });
         _shell.Navigate(vm);
@@ -490,13 +490,13 @@ public class PreviewViewModelJobKindTests
     }
 
     [Fact]
-    public async Task Reorganize_MultiDayNote_ReachesPlanNotes()
+    public async Task Reorganize_MultiDayNotice_ReachesSummary()
     {
         var group = Add(@"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg", Oct14);
 
-        var vm = await CreateAsync(Scan([group]));
+        var vm = await CreateAsync(Scan([group]), Settings() with { SplitMultiDayFolders = true });
 
-        Assert.Contains("여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요", vm.PlanNotes);
+        Assert.Equal("여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요", vm.MultiDayNotice);
     }
 
     // ----- 실행 잠금 -----

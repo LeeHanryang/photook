@@ -36,6 +36,9 @@ public partial class App : Application
     private ShellViewModel? _shell;
     private bool _showingError;
 
+    /// <summary>앱이 끝날 때까지 들고 있기만 한다. 끝나면 운영체제가 치운다.</summary>
+    private System.Threading.Mutex? _runningMarker;
+
     internal AppServices? Services { get; private set; }
 
     protected override void OnStartup(StartupEventArgs e)
@@ -49,6 +52,13 @@ public partial class App : Application
         // 로그는 다른 무엇보다 먼저 만든다(조립 중 오류도 남기도록). 로그 위치조차 알 수 없으면 로그 없이 간다.
         IFileSystem fileSystem = new PhysicalFileSystem();
         _log = TryCreateLog(fileSystem);
+
+        // 설치 파일이 실행 중인지 알아보는 표시. 앱이 끝날 때까지 쥐고 있는다(둘째 실행도 막지 않는다).
+        _runningMarker = RunningMarker.TryHold();
+        if (_runningMarker is null)
+        {
+            _log?.Warning("실행 중 표시를 만들지 못했습니다");
+        }
 
         try
         {

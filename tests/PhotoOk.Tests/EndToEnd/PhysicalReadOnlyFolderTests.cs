@@ -164,6 +164,80 @@ public sealed class PhysicalReadOnlyFolderTests : IDisposable
     }
 
     [Fact]
+    public async Task Reorganize_ExcludedCardAndMultiDayFolder_StayUntouched_OthersMove_UndoRestores()
+    {
+        // 뺄 촬영: 사이드카가 딸린 묶음과 다른 묶음을 한 폴더에, 옮길 파일은 다른 폴더에 둔다.
+        var excludedFolder = Path.Combine(_picked, "가족");
+        var excludedOne = AddPhoto(excludedFolder, "keep1.jpg", 0);
+        var excludedTwo = AddPhoto(excludedFolder, "keep2.jpg", 1);
+        var excludedSidecar = Path.Combine(excludedFolder, "keep1.xmp");
+        File.WriteAllText(excludedSidecar, "<x/>");
+        var moving = AddPhoto(Path.Combine(_picked, "소풍", "공원"), "move1.jpg", 2);
+        var movingTwo = AddPhoto(Path.Combine(_picked, "모임"), "move2.jpg", 3);
+
+        // 고른 폴더 아래의 여러 날 폴더(직속·하위 파일)
+        var multiDay = Path.Combine(_picked, "[2026-10-14~10-15] 나들이");
+        var multiDayDirect = AddPhoto(multiDay, "day1.jpg", 4);
+        var multiDayDeep = AddPhoto(Path.Combine(multiDay, "오후"), "day2.jpg", 5);
+        MarkFoldersReadOnly(_picked);
+        SetReadOnly(_archive);
+
+        // 파일과 표시, 시각까지 그대로인지 볼 사진들
+        var stayed = new[] { excludedOne, excludedTwo, multiDayDirect, multiDayDeep };
+        var settings = Reorganize();
+        var workflow = new ImportWorkflow(_fs, new MetadataExtractorReader(_fs, FileKinds.Default, Zone), new XxHasher(_fs), Zone);
+        var scan = await workflow.ScanAsync(settings, null, CancellationToken.None);
+        Assert.Empty(scan.Errors);
+        var names = scan.Sessions.Where(s => s.SuggestedEventName is not null).ToDictionary(s => s.Id, s => s.SuggestedEventName!);
+        var excludedCard = scan.Sessions.Single(s => s.SuggestedEventName == "가족");
+        var excluded = excludedCard.Groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        Assert.Equal(2, excluded.Count);
+
+        var outcome = workflow.BuildPlan(settings, scan, names, excluded);
+
+        Assert.False(outcome.HasBlockingIssue);
+        Assert.Equal(3, outcome.Plan.Skipped.Count(s => s.Reason == SkipReason.ExcludedByUser));
+        Assert.Equal(2, outcome.Plan.Skipped.Count(s => s.Reason == SkipReason.MultiDayFolderKept));
+        Assert.Equal("여러 날 폴더 1개는 옮기지 않습니다", outcome.Plan.MultiDayNotice);
+        var touched = stayed.Append(excludedSidecar).ToList();
+        Assert.DoesNotContain(outcome.Plan.Operations, op => touched.Contains(op.Source ?? "", StringComparer.OrdinalIgnoreCase)
+                                                             || touched.Contains(op.Destination, StringComparer.OrdinalIgnoreCase));
+
+        var result = new Executor(_context).Execute(outcome.Plan);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Failures);
+        Assert.Empty(result.Warnings);
+        foreach (var path in stayed)
+        {
+            Assert.Equal(_photos[path].Content, File.ReadAllBytes(path));
+            Assert.Equal(_photos[path].Time, File.GetLastWriteTimeUtc(path));
+        }
+
+        Assert.Equal("<x/>", File.ReadAllText(excludedSidecar));
+        Assert.False(File.Exists(moving));
+        Assert.False(File.Exists(movingTwo));
+        Assert.Equal(_photos[moving].Content, File.ReadAllBytes(Assert.Single(Directory.EnumerateFiles(_archive, "move1.jpg", SearchOption.AllDirectories))));
+        Assert.Equal(_photos[movingTwo].Content, File.ReadAllBytes(Assert.Single(Directory.EnumerateFiles(_archive, "move2.jpg", SearchOption.AllDirectories))));
+
+        // 빠져나간 폴더만 치우고, 뺀 파일과 여러 날 폴더의 폴더는 표시까지 그대로 남는다.
+        Assert.False(Directory.Exists(Path.Combine(_picked, "모임")));
+        Assert.False(Directory.Exists(Path.Combine(_picked, "소풍")));
+        Assert.True(IsReadOnly(excludedFolder));
+        Assert.True(IsReadOnly(multiDay));
+        Assert.True(IsReadOnly(Path.Combine(multiDay, "오후")));
+
+        var undo = new Undoer(_context).Undo(result.JournalPath!);
+
+        Assert.Empty(undo.Skipped);
+        AssertPhotosAreBack();
+        Assert.Equal("<x/>", File.ReadAllText(excludedSidecar));
+        Assert.True(IsReadOnly(excludedFolder));
+        Assert.True(IsReadOnly(multiDay));
+        Assert.False(Directory.Exists(Path.Combine(_archive, "2026")));
+    }
+
+    [Fact]
     public async Task Absorb_Copy_ReadOnlySource_UndoSetsCopiesAside()
     {
         var inbox = Path.Combine(_root, "흩어짐");
