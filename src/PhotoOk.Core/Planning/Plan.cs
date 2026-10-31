@@ -15,8 +15,9 @@ public enum SubfolderPolicy { Keep, InPlace, Merge }
 public enum OperationKind { CreateDirectory, Copy, Move }
 
 /// <summary>
-/// 작업을 만들지 않은 이유. <see cref="ReviewKeptInPlace"/>, <see cref="OtherVolume"/>, <see cref="SubfolderKeptInPlace"/>는 파일을 제자리에 두며
-/// 그 기록의 대상은 원본 자리와 같다. <see cref="DuplicateInArchive"/>는 아카이브 어딘가에 같은 내용이 있다는 뜻이다.
+/// 작업을 만들지 않은 이유. <see cref="ExcludedByUser"/>, <see cref="MultiDayFolderKept"/>, <see cref="ReviewKeptInPlace"/>,
+/// <see cref="OtherVolume"/>, <see cref="SubfolderKeptInPlace"/>는 파일을 제자리에 두며 그 기록의 대상은 원본 자리와 같다.
+/// <see cref="DuplicateInArchive"/>는 아카이브 어딘가에 같은 내용이 있다는 뜻이다.
 /// </summary>
 public enum SkipReason
 {
@@ -27,6 +28,8 @@ public enum SkipReason
     OtherVolume,
     DuplicateInArchive,
     SubfolderKeptInPlace,
+    ExcludedByUser,
+    MultiDayFolderKept,
 }
 
 /// <summary>
@@ -50,9 +53,12 @@ public sealed record Plan(string ArchiveRoot, IReadOnlyList<PlannedOperation> Op
 /// 계획 요청. <paramref name="Roots"/>는 고른 폴더, <paramref name="Index"/>는 아카이브 색인이다.
 /// <paramref name="KeepReviewInPlace"/>이면 판단이 필요한 묶음을 옮기지 않는다.
 /// <paramref name="KeptFoldersOf"/>는 묶음이 유지할 하위 폴더 이름들을 돌려주며, <paramref name="Subfolders"/>와 함께 가져오기에는 쓰지 않는다.
+/// <paramref name="ExcludedGroups"/>는 사용자가 뺀 묶음의 <see cref="FileGroup.Id"/>다(대소문자 무시). 어떤 작업에서든 그 파일에는 작업이 없다.
+/// <paramref name="SplitMultiDayFolders"/>를 켜지 않으면 재정리에서 여러 날 폴더 안의 파일을 옮기지 않는다.
 /// </summary>
 public sealed record PlanRequest(IReadOnlyList<Session> Sessions, Preset Preset, string ArchiveRoot,
     TransferMode Mode, TimeZoneInfo Zone, IReadOnlyDictionary<string, string>? EventNames = null,
     JobKind Kind = JobKind.Import, IReadOnlyList<string>? Roots = null, ArchiveIndex? Index = null,
     bool KeepReviewInPlace = false, SubfolderPolicy Subfolders = SubfolderPolicy.Keep,
-    Func<FileGroup, IReadOnlyList<string>>? KeptFoldersOf = null);
+    Func<FileGroup, IReadOnlyList<string>>? KeptFoldersOf = null,
+    IReadOnlySet<string>? ExcludedGroups = null, bool SplitMultiDayFolders = false);

@@ -40,11 +40,11 @@ public class ReorganizePlanTests
     private Plan Create(Preset preset, FileGroup[] groups, JobKind kind = JobKind.Reorganize, TransferMode mode = TransferMode.Move,
         bool keepReview = false, SubfolderPolicy subfolders = SubfolderPolicy.Keep,
         Func<FileGroup, IReadOnlyList<string>>? keptOf = null, IReadOnlyList<string>? roots = null,
-        IReadOnlyDictionary<string, string>? names = null, Func<FileGroup, string?>? nameOf = null)
+        IReadOnlyDictionary<string, string>? names = null, Func<FileGroup, string?>? nameOf = null, bool splitMultiDay = false)
     {
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc, nameOf);
         return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc, names,
-            kind, roots ?? Roots, null, keepReview, subfolders, keptOf));
+            kind, roots ?? Roots, null, keepReview, subfolders, keptOf, SplitMultiDayFolders: splitMultiDay));
     }
 
     /// <summary>주 파일 경로별로 유지할 폴더를 돌려준다. 없는 경로는 빈 목록이다.</summary>
@@ -986,7 +986,7 @@ public class ReorganizePlanTests
         Assert.Equal([$@"D:\Archive\판단 필요\촬영일 없음\{expected}"], AllFiles());
     }
 
-    // ---- 여러 날을 묶은 폴더 ----
+    // ---- 여러 날을 묶은 폴더(옵션을 켰을 때. 끈 상태는 ExclusionPlanTests) ----
 
     private static string MultiDayNote(int count) =>
         $"여러 날을 묶은 폴더 {count}개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요";
@@ -999,18 +999,17 @@ public class ReorganizePlanTests
         var c = Add(@"D:\Archive\2026\[2026-10-14~2026-10-15]\c.jpg", [3], Oct14);
         var d = Add($@"{Old}\d.jpg", [4], Oct14);
 
-        var plan = Create(BuiltInPresets.DateOnly, [Group(a), Group(b), Group(c), Group(d)]);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(a), Group(b), Group(c), Group(d)], splitMultiDay: true);
 
         Assert.Single(plan.Notes, MultiDayNote(2));
     }
 
     [Theory]
     [InlineData(@"D:\Archive\[2026-10-14] 소풍\a.jpg")] // 하루 폴더
-    [InlineData(@"D:\Archive\2026-10-14~10-15 소풍\a.jpg")] // 대괄호가 없는 이름
     [InlineData(@"D:\Archive\[소풍~나들이]\a.jpg")] // 날짜가 아닌 글자
     public void Reorganize_OtherFolders_NoNote(string path)
     {
-        var plan = Create(BuiltInPresets.DateOnly, [Group(Add(path, [1], Oct14))]);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(Add(path, [1], Oct14))], splitMultiDay: true);
 
         Assert.Empty(plan.Notes);
     }
@@ -1020,7 +1019,7 @@ public class ReorganizePlanTests
     {
         var kept = Add(@"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg", [1], null);
 
-        var plan = Create(BuiltInPresets.DateOnly, [Group(kept)], keepReview: true);
+        var plan = Create(BuiltInPresets.DateOnly, [Group(kept)], keepReview: true, splitMultiDay: true);
 
         Assert.Empty(plan.Notes);
     }

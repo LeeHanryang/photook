@@ -54,7 +54,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private readonly Func<Plan, ScanFacts, ObservableObject> _createRun;
     private readonly Func<ImportSettings, ObservableObject> _createBack;
     private readonly TimeSpan _replanDelay;
-    private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome> _buildPlan;
+    private readonly Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, IReadOnlySet<string>, PlanOutcome> _buildPlan;
     private readonly Func<ImportSettings, ScanOutcome, ScanOutcome> _regroup;
     private readonly Action<ImportSettings> _saveChoices;
     private readonly string _ignoredNamesPath;
@@ -127,7 +127,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         IFileSystem fileSystem, IThumbnailProvider thumbnails, IDialogService dialogs, FileLog log,
         Func<Plan, ScanFacts, ObservableObject> createRun, Func<ImportSettings, ObservableObject> createBack, TimeSpan replanDelay,
         string ignoredNamesPath, IReadOnlyList<PresetEntry> presets, Action<ImportSettings> saveChoices,
-        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null,
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, IReadOnlySet<string>, PlanOutcome>? buildPlan = null,
         Func<ImportSettings, ScanOutcome, ScanOutcome>? regroup = null)
     {
         ArgumentNullException.ThrowIfNull(workflow);
@@ -659,6 +659,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         var settings = _settings;
         var grouping = settings == _shown.Settings ? _shown : null;
         var edits = new Dictionary<string, string>(_edits, StringComparer.Ordinal);
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // 앞선 요청의 계획 세우기가 끝난 뒤에야 이 요청의 계획을 세운다. 이 요청이 계획을 세우지 못하고 취소되어도,
         // 다음 요청은 앞선 계획 세우기가 끝나기를 기다린다.
@@ -666,12 +667,13 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         var buildDone = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _lastBuild = buildDone.Task;
 
-        WhenPlanned = ReplanAsync(generation, settings, grouping, edits, delay, previousBuild, buildDone, cts.Token);
+        WhenPlanned = ReplanAsync(generation, settings, grouping, edits, excluded, delay, previousBuild, buildDone, cts.Token);
     }
 
     /// <param name="grouping">다시 쓸 촬영 묶음. null이면 <paramref name="settings"/>로 다시 묶는다.</param>
     private async Task ReplanAsync(int generation, ImportSettings settings, Grouping? grouping,
-        IReadOnlyDictionary<string, string> edits, TimeSpan delay, Task previousBuild, TaskCompletionSource buildDone, CancellationToken ct)
+        IReadOnlyDictionary<string, string> edits, IReadOnlySet<string> excluded, TimeSpan delay, Task previousBuild,
+        TaskCompletionSource buildDone, CancellationToken ct)
     {
         var ownBuild = previousBuild;
         try
@@ -687,7 +689,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             var build = Task.Run(() =>
             {
                 var grouped = grouping ?? Grouping.Create(settings, _regroup(settings, _scan));
-                return (Grouped: grouped, View: PlanView.Create(_buildPlan(settings, grouped.Scan, grouped.EventNames(edits)), fileSystem));
+                return (Grouped: grouped, View: PlanView.Create(_buildPlan(settings, grouped.Scan, grouped.EventNames(edits), excluded), fileSystem));
             }, CancellationToken.None);
             ownBuild = build;
 

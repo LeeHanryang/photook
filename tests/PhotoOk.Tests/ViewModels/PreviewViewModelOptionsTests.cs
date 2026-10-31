@@ -93,7 +93,7 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
             ignoredNamesPath: IgnoredPath,
             presets: presets ?? PresetLibrary.BuiltIn,
             saveChoices: saveChoices ?? _saved.Add,
-            buildPlan: (s, scanned, names) =>
+            buildPlan: (s, scanned, names, excluded) =>
             {
                 _gate.Wait(Wait);
                 if (Interlocked.Exchange(ref _failPlans, 0) > 0)
@@ -101,7 +101,7 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
                     throw new InvalidOperationException("시험용 실패");
                 }
 
-                var outcome = _workflow.BuildPlan(s, scanned, names);
+                var outcome = _workflow.BuildPlan(s, scanned, names, excluded);
                 lock (_plans)
                 {
                     _plans.Add(new PlanCall(s, scanned, new Dictionary<string, string>(names), outcome));

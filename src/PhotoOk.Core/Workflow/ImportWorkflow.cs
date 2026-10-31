@@ -110,7 +110,9 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
             new FolderNameContext(devices, ignored), settings.SplitUnderscores, settings.ArchiveRoot);
     }
 
-    public PlanOutcome BuildPlan(ImportSettings settings, ScanOutcome scan, IReadOnlyDictionary<string, string> eventNames)
+    /// <param name="excludedGroups">사용자가 뺀 묶음의 <see cref="FileGroup.Id"/>. 그 파일에는 작업을 만들지 않는다.</param>
+    public PlanOutcome BuildPlan(ImportSettings settings, ScanOutcome scan, IReadOnlyDictionary<string, string> eventNames,
+        IReadOnlySet<string>? excludedGroups = null)
     {
         ArgumentNullException.ThrowIfNull(settings);
         ArgumentNullException.ThrowIfNull(scan);
@@ -121,7 +123,7 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
             new PlanRequest(scan.Sessions, settings.Preset, settings.ArchiveRoot, settings.Mode, zone, eventNames,
                 settings.Kind, settings.Sources, scan.Index,
                 settings.Kind == JobKind.Reorganize && settings.KeepReviewInPlace,
-                settings.Subfolders, KeptFoldersOf(settings, scan)));
+                settings.Subfolders, KeptFoldersOf(settings, scan), excludedGroups, settings.SplitMultiDayFolders));
         return new PlanOutcome(plan, Preflight.Check(plan, fileSystem));
     }
 

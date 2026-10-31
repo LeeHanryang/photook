@@ -66,7 +66,7 @@ public class PreviewViewModelTests
     private async Task<ScanOutcome> ScanAsync() => await _workflow.ScanAsync(_settings, null, CancellationToken.None);
 
     private async Task<PreviewViewModel> CreateAsync(ScanOutcome? scan = null,
-        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, PlanOutcome>? buildPlan = null,
+        Func<ImportSettings, ScanOutcome, IReadOnlyDictionary<string, string>, IReadOnlySet<string>, PlanOutcome>? buildPlan = null,
         IFileSystem? fileSystem = null)
     {
         scan ??= await ScanAsync();
@@ -179,7 +179,7 @@ public class PreviewViewModelTests
         AddStandardPhotos();
         using var gate = new ManualResetEventSlim();
         using var slowStarted = new ManualResetEventSlim();
-        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        var vm = await CreateAsync(buildPlan: (settings, scan, names, excluded) =>
         {
             if (names.Values.Contains("a"))
             {
@@ -187,7 +187,7 @@ public class PreviewViewModelTests
                 gate.Wait(Wait);
             }
 
-            return _workflow.BuildPlan(settings, scan, names);
+            return _workflow.BuildPlan(settings, scan, names, excluded);
         });
 
         vm.Sessions[0].EventName = "a";
@@ -222,7 +222,7 @@ public class PreviewViewModelTests
         var running = 0;
         var maxRunning = 0;
         var built = new List<string>();
-        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        var vm = await CreateAsync(buildPlan: (settings, scan, names, excluded) =>
         {
             var now = Interlocked.Increment(ref running);
             lock (built)
@@ -239,7 +239,7 @@ public class PreviewViewModelTests
                     gate.Wait(Wait);
                 }
 
-                return _workflow.BuildPlan(settings, scan, names);
+                return _workflow.BuildPlan(settings, scan, names, excluded);
             }
             finally
             {
@@ -288,7 +288,7 @@ public class PreviewViewModelTests
         AddStandardPhotos();
         using var gate = new ManualResetEventSlim();
         using var slowStarted = new ManualResetEventSlim();
-        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        var vm = await CreateAsync(buildPlan: (settings, scan, names, excluded) =>
         {
             if (names.Values.Contains("a"))
             {
@@ -296,7 +296,7 @@ public class PreviewViewModelTests
                 gate.Wait(Wait);
             }
 
-            return _workflow.BuildPlan(settings, scan, names);
+            return _workflow.BuildPlan(settings, scan, names, excluded);
         });
         var busyEnded = 0;
         vm.BusyEnded += (_, _) => busyEnded++;
@@ -322,7 +322,7 @@ public class PreviewViewModelTests
         AddStandardPhotos();
         using var gate = new ManualResetEventSlim();
         using var slowStarted = new ManualResetEventSlim();
-        var vm = await CreateAsync(buildPlan: (settings, scan, names) =>
+        var vm = await CreateAsync(buildPlan: (settings, scan, names, excluded) =>
         {
             if (names.Values.Contains("a"))
             {
@@ -330,7 +330,7 @@ public class PreviewViewModelTests
                 gate.Wait(Wait);
             }
 
-            return _workflow.BuildPlan(settings, scan, names);
+            return _workflow.BuildPlan(settings, scan, names, excluded);
         });
 
         vm.Sessions[0].EventName = "a";
@@ -671,10 +671,10 @@ public class PreviewViewModelTests
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
             createRun: (_, _) => _runScreen, createBack: _ => _backScreen, replanDelay: TimeSpan.Zero,
             ignoredNamesPath: IgnoredNamesPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
-            buildPlan: (settings, s, names) =>
+            buildPlan: (settings, s, names, excluded) =>
             {
                 gate.Wait(Wait);
-                return _workflow.BuildPlan(settings, s, names);
+                return _workflow.BuildPlan(settings, s, names, excluded);
             });
 
         Assert.Equal(["2026-10-14 · 2장", "2026-10-15 · 1장", "판단 필요 · 1장"], vm.Sessions.Select(c => c.Title));
@@ -696,10 +696,10 @@ public class PreviewViewModelTests
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
             createRun: (_, _) => _runScreen, createBack: _ => _backScreen, replanDelay: TimeSpan.Zero,
             ignoredNamesPath: IgnoredNamesPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
-            buildPlan: (settings, s, names) =>
+            buildPlan: (settings, s, names, excluded) =>
             {
                 gate.Wait(Wait);
-                return _workflow.BuildPlan(settings, s, names);
+                return _workflow.BuildPlan(settings, s, names, excluded);
             });
 
         // 첫 계획 전에는 "용량 0 B · 여유 공간 알 수 없음" 같은 빈 합계 대신 계획 중이라고 보인다.

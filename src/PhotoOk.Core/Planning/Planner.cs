@@ -1,5 +1,4 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.IO;
 using PhotoOk.Core.Layout;
@@ -15,15 +14,12 @@ namespace PhotoOk.Core.Planning;
 /// <item>어떤 작업도 다른 파일 자리에 덮어쓰지 않는다. 이름이 겹치고 내용이 다르면 그룹 전체에 같은 순번(<c>_k</c>)을 붙인다.</item>
 /// <item>다른 드라이브에서는 이동을 요청해도 복사한다. 재정리는 복사하지 않고 그 묶음을 제자리에 둔다.</item>
 /// <item>이동으로 비워질 자리에 다른 파일이 들어오면, 비우는 파일을 먼저 임시 이름으로 옮겨 둔다.</item>
-/// <item>제자리에 두기로 한 파일은 작업이 없고, 그 자리는 다른 파일에게 빈 자리가 아니다.</item>
+/// <item>제자리에 두기로 한 파일(사용자가 뺀 묶음, 재정리의 여러 날 폴더 등)은 작업이 없고, 그 자리는 다른 파일에게 빈 자리가 아니다.</item>
 /// </list>
 /// </summary>
 public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
 {
     private const string TempMarker = ".photook-tmp-";
-
-    // [2026-07-08~07-09] 소풍, [2026-07-08~2026-07-09]
-    private static readonly Regex MultiDayFolder = new(@"^\[\s*\d{4}[-.]\d{1,2}[-.]\d{1,2}\s*[~～–]\s*[\d\-.]+\s*\]", RegexOptions.CultureInvariant);
 
     public Plan Create(PlanRequest request)
     {
@@ -35,6 +31,9 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
         var aliases = new DeviceAliasResolver(request.Preset.DeviceAliases);
         var mode = request.Kind == JobKind.Reorganize ? TransferMode.Move : request.Mode; // 재정리는 이동 고정
 
+        // 넘겨받은 집합의 비교 방식과 상관없이 대소문자를 가리지 않는다.
+        var excluded = new HashSet<string>(request.ExcludedGroups ?? Enumerable.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+
         var groups = new List<GroupPlan>();
         var stays = new List<PlannedSkip>();
         var hashes = new HashCache();
@@ -44,7 +43,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             {
                 var reasons = ReviewDetector.Detect(group, request.Preset, aliases).Distinct().Order().ToList();
                 var kept = KeptFolders(request, group);
-                if (StayReason(request, group, reasons, kept, archiveVolume) is { } stay)
+                if (StayReason(request, excluded, root, group, reasons, kept, archiveVolume) is { } stay)
                 {
                     stays.AddRange(group.AllFiles.Select(file =>
                     {
@@ -116,30 +115,29 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             vacating.IntersectWith(moved);
         }
 
-        var multiDayNote = request.Kind == JobKind.Reorganize ? MultiDayNote(root, resolution.FileOps) : null;
+        var multiDayNote = request.Kind == JobKind.Reorganize ? MultiDayNote(root, request.SplitMultiDayFolders, resolution.FileOps, stays) : null;
         return Assemble(root, resolution, hashes.Unreadable, stays, CleanupRootsOf(request), multiDayNote);
     }
 
     /// <summary>
-    /// 재정리에서 파일이 빠져나가는 <c>[시작~종료]</c> 폴더를 센다. 여러 날 묶기가 들어오기 전에는 이 폴더들이 날짜별로 나뉘므로 미리 알린다. 없으면 null.
+    /// 재정리의 여러 날 폴더 안내. 옵션을 켰으면 파일이 빠져나가는 폴더를 세어 날짜별로 나뉜다고 미리 알리고, 껐으면 파일을 남긴 폴더를 센다. 없으면 null.
     /// </summary>
-    private static string? MultiDayNote(string root, IReadOnlyList<DraftOp> fileOps)
+    private static string? MultiDayNote(string root, bool split, IReadOnlyList<DraftOp> fileOps, IReadOnlyList<PlannedSkip> stays)
     {
-        var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var op in fileOps.Where(op => op.Kind == OperationKind.Move))
+        var sources = split
+            ? fileOps.Where(op => op.Kind == OperationKind.Move).Select(op => op.Source)
+            : stays.Where(stay => stay.Reason == SkipReason.MultiDayFolderKept).Select(stay => stay.Source);
+        var count = sources.SelectMany(source => FolderDate.MultiDayFolders(source, root))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+        if (count == 0)
         {
-            for (var dir = Path.GetDirectoryName(op.Source); dir is not null && IsUnder(dir, root); dir = Path.GetDirectoryName(dir))
-            {
-                if (MultiDayFolder.IsMatch(Path.GetFileName(dir)))
-                {
-                    folders.Add(dir);
-                }
-            }
+            return null;
         }
 
-        return folders.Count == 0
-            ? null
-            : string.Create(CultureInfo.InvariantCulture, $"여러 날을 묶은 폴더 {folders.Count}개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요");
+        return split
+            ? string.Create(CultureInfo.InvariantCulture, $"여러 날을 묶은 폴더 {count}개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요")
+            : string.Create(CultureInfo.InvariantCulture, $"여러 날 폴더 {count}개는 옮기지 않습니다");
     }
 
     /// <summary>프리셋 폴더 아래에 붙일 하위 폴더 이름들. 가져오기와 합치기에는 없다.</summary>
@@ -166,10 +164,24 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             Path.Combine([rendered, .. kept.Select(PathSanitizer.SanitizeSegment)])));
     }
 
-    /// <summary>묶음 전체를 제자리에 둘 이유. 묶음이 갈라지지 않도록 파일 하나가 아니라 묶음 단위로 정한다.</summary>
-    private SkipReason? StayReason(PlanRequest request, FileGroup group, IReadOnlyList<ReviewReason> reasons,
-        IReadOnlyList<string> kept, string archiveVolume)
+    /// <summary>
+    /// 묶음 전체를 제자리에 둘 이유. 묶음이 갈라지지 않도록 파일 하나가 아니라 묶음 단위로 정한다. 사용자가 뺀 묶음이 가장 먼저다.
+    /// 여러 날 폴더는 이름 판독과 고른 폴더와 상관없이 아카이브 안의 경로 전체를 본다.
+    /// </summary>
+    private SkipReason? StayReason(PlanRequest request, HashSet<string> excluded, string root, FileGroup group,
+        IReadOnlyList<ReviewReason> reasons, IReadOnlyList<string> kept, string archiveVolume)
     {
+        if (excluded.Contains(group.Id))
+        {
+            return SkipReason.ExcludedByUser;
+        }
+
+        if (request.Kind == JobKind.Reorganize && !request.SplitMultiDayFolders
+            && group.AllFiles.Any(file => FolderDate.MultiDayFolders(file.Path, root).Count > 0))
+        {
+            return SkipReason.MultiDayFolderKept;
+        }
+
         if (request.KeepReviewInPlace && reasons.Count > 0)
         {
             return SkipReason.ReviewKeptInPlace;
