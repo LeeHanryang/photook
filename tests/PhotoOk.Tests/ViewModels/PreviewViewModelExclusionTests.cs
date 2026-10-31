@@ -774,6 +774,47 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
     }
 
     [Fact]
+    public async Task IncludeAll_WhilePlanIsInFlight_PreviewMatchesWhatRuns()
+    {
+        // 다음 계획이 도는 동안 새로 날짜가 달라진 묶음을 그 계획이 빼고 있다. 그때 모두 옮기기를 누르면 그 계획은 쓰이면 안 된다.
+        var path = Add(@"D:\Archive\2026-10-15\a.jpg", new DateTime(2026, 10, 15, 2, 0, 0));
+        var other = Add($@"{Old}\b.jpg", new DateTime(2026, 10, 20, 12, 0, 0));
+        var presets = PresetsWithDayStart(new TimeOnly(4, 0));
+        var vm = await CreateAsync(Settings(preset: presets[0].Preset) with { UseFolderNames = false }, presets);
+        Assert.Equal("제외 0개", vm.ExcludedText);
+
+        _gate.Reset();
+        vm.SelectedPreset = presets[1];
+        vm.IncludeAllCommand.Execute(null);
+        Assert.False(vm.ExecuteCommand.CanExecute(null));
+        _gate.Set();
+        await vm.WhenPlanned;
+
+        Assert.All(vm.Sessions, card => Assert.True(card.IsIncluded));
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        await vm.ExecuteCommand.ExecuteAsync(null);
+        Assert.Equal(new[] { path, other }.Order(StringComparer.Ordinal), Sources(_runPlan!));
+        Assert.Equal(0, _runFacts!.Excluded);
+    }
+
+    [Fact]
+    public async Task IncludeAll_WhilePlanIsInFlight_WithNothingExcluded_Replans()
+    {
+        Add($@"{Old}\a.jpg", Oct14);
+        var vm = await CreateAsync();
+        _gate.Reset();
+        vm.UseFolderNames = false;
+        var inFlight = _plans.Count;
+
+        vm.IncludeAllCommand.Execute(null);
+        _gate.Set();
+        await vm.WhenPlanned;
+
+        Assert.Equal(inFlight + 2, _plans.Count); // 돌던 계획은 버리고 하나 더 세운다
+        Assert.Empty(_plans[^1].Excluded);
+    }
+
+    [Fact]
     public async Task PresetChange_MismatchGone_DefaultStaysUntilUserIncludes()
     {
         var path = Add(@"D:\Archive\2026-10-14\a.jpg", new DateTime(2026, 10, 15, 2, 0, 0));

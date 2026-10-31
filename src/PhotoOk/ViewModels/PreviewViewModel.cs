@@ -582,12 +582,16 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         ExclusionsChanged();
     }
 
-    /// <summary>모두 옮기기: 폴더 날짜가 달라 기본으로 뺀 묶음까지 모두 포함한다. 그 뒤로 기본으로 빼는 일은 없다.</summary>
+    /// <summary>
+    /// 모두 옮기기: 폴더 날짜가 달라 기본으로 뺀 묶음까지 모두 포함한다. 그 뒤로 기본으로 빼는 일은 없다.
+    /// 뺀 묶음이 없어도 돌고 있는 계획이 있으면 다시 세운다: 그 계획은 이 명령 전의 값으로 새로 날짜가 달라진 묶음을 빼고 있을 수 있다.
+    /// 세대가 올라가면 그 계획은 반영되지 않으므로 화면과 실행이 어긋나지 않는다.
+    /// </summary>
     [RelayCommand]
     private void IncludeAll()
     {
         _noDefaultExclusion.UnionWith(_groups.Keys);
-        if (_excluded.Count > 0)
+        if (_excluded.Count > 0 || _appliedGeneration != _generation)
         {
             _excluded.Clear();
             ExclusionsChanged();
