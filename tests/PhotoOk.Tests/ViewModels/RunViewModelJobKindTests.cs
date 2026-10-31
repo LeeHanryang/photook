@@ -346,6 +346,97 @@ public class RunViewModelJobKindTests
         Assert.Empty(resumed.SummaryLines);
     }
 
+    // ----- 뺀 파일 -----
+
+    [Theory]
+    [InlineData(JobKind.Import)]
+    [InlineData(JobKind.Absorb)]
+    public async Task ExcludedFiles_BlockSafeMessage(JobKind kind)
+    {
+        var plan = CopyPlan(2) with { Skipped = [Skip(SkipReason.ExcludedByUser, "a.jpg"), Skip(SkipReason.ExcludedByUser, "b.jpg")] };
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, kind, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal("정리를 마쳤습니다", vm.ResultTitle);
+        Assert.Null(vm.SafeToCleanMessage);
+        Assert.Contains("뺀 파일 2개", vm.SummaryLines);
+    }
+
+    [Fact]
+    public async Task Import_Excluded_SummaryIsOnlyTheExcludedLine()
+    {
+        var plan = CopyPlan(2) with { Skipped = [Skip(SkipReason.ExcludedByUser, "a.jpg")] };
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Import, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal(["뺀 파일 1개"], vm.SummaryLines);
+    }
+
+    [Fact]
+    public async Task Import_NothingExcluded_StaysAsBefore()
+    {
+        var plan = CopyPlan(2);
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Import, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal(SafeMessage, vm.SafeToCleanMessage);
+        Assert.Empty(vm.SummaryLines);
+    }
+
+    [Fact]
+    public async Task Absorb_NothingExcluded_KeepsSafeMessage()
+    {
+        var plan = CopyPlan(2);
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Absorb, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal(SafeMessage, vm.SafeToCleanMessage);
+        Assert.Equal(["복사한 파일 2개"], vm.SummaryLines);
+    }
+
+    [Fact]
+    public async Task Reorganize_Summary_ListsExcludedAndMultiDayKept()
+    {
+        var plan = MovePlan(1) with
+        {
+            Skipped = [Skip(SkipReason.ExcludedByUser, "a.jpg"), Skip(SkipReason.MultiDayFolderKept, "b.jpg"), Skip(SkipReason.AlreadyInPlace, "c.jpg")],
+        };
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Reorganize, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal(["옮긴 파일 1개", "그대로 둔 파일 2개", "뺀 파일 1개"], vm.SummaryLines);
+    }
+
+    [Fact]
+    public async Task Excluded_NotCountedAsFailed()
+    {
+        var plan = PlanOf() with { Skipped = [Skip(SkipReason.ExcludedByUser, "a.jpg")] };
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Reorganize, plan));
+
+        await vm.StartAsync();
+
+        Assert.Empty(vm.FailureLines);
+    }
+
+    [Fact]
+    public async Task ExistingTempWarning_ShowsTheWholePath()
+    {
+        const string destination = @"D:\Archive\2026\a — b.jpg";
+        AddFile(destination + ".photook-tmp", 9);
+        AddFile(@"E:\Source\a.jpg", 10);
+        var plan = PlanOf(new PlannedOperation("op1", OperationKind.Copy, @"E:\Source\a.jpg", destination, 64, []));
+        var vm = ForPlan(plan, ScanFacts.From(NoScan, JobKind.Import, plan));
+
+        await vm.StartAsync();
+
+        Assert.Equal([$"임시 이름 파일을 되돌림 폴더로 옮김: {destination}.photook-tmp"], vm.WarningLines);
+    }
+
     // ----- ScanFacts 만들기 -----
 
     private static readonly PhotoOk.Core.Workflow.ScanOutcome NoScan = new([], [], [], 0, false);
