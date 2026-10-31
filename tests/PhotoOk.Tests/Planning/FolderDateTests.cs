@@ -41,6 +41,8 @@ public class FolderDateTests
     [InlineData("2024-06-24～06-25")]
     [InlineData("2024-06-24–06-25")]
     [InlineData("2024-06-24~")]
+    [InlineData("2024-06-15 ~ 16시 모임")] // 하루 폴더도 여러 날 폴더도 아니다
+    [InlineData("2024-06-15-16")]
     public void DayOfSegment_OtherNames_AreNotDateFolders(string segment)
     {
         Assert.Null(FolderDate.DayOfSegment(segment));
@@ -92,6 +94,9 @@ public class FolderDateTests
     [InlineData("2026-07-08~2026-07-09")]
     [InlineData("2026-7-8～7-9")]
     [InlineData("2026-07-08–09")]
+    [InlineData("2024-06-15 ~ 16")]
+    [InlineData("2024-06-15~16 모임")]
+    [InlineData("[2024-06-15~16]모임")]
     public void IsMultiDaySegment_True(string segment)
     {
         Assert.True(FolderDate.IsMultiDaySegment(segment));
@@ -103,6 +108,11 @@ public class FolderDateTests
     [InlineData("[소풍~나들이]")]
     [InlineData("소풍 [2026-07-08~07-09]")] // 이름이 앞에 있으면 기간 폴더로 보지 않는다
     [InlineData("2026-07-08~소풍")]
+    [InlineData("2024-06-15 ~ 16시 모임")] // 끝이 날짜가 아니라 시각이다
+    [InlineData("2024-06-15~16시")]
+    [InlineData("2024-06-15~16_모임")] // 끝 뒤에는 닫는 대괄호, 빈칸, 끝만 온다
+    [InlineData("2024-06-15~-")] // 끝에 숫자가 없다
+    [InlineData("2024-06-15-16")] // 구분 표시가 없다
     public void IsMultiDaySegment_False(string segment)
     {
         Assert.False(FolderDate.IsMultiDaySegment(segment));
