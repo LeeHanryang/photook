@@ -7,6 +7,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVisibility" />
         <views:EnumEqualsConverter x:Key="EnumEquals" />
         <views:InvertBooleanConverter x:Key="InvertBool" />
+        <SolidColorBrush x:Key="MismatchBrush" Color="#C2570C" />
         <Style x:Key="OptionLabel" TargetType="TextBlock">
             <Setter Property="Margin" Value="0,0,10,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
@@ -101,8 +102,26 @@
                     <RadioButton Content="판단 필요 폴더로" GroupName="ReviewOption" VerticalAlignment="Center"
                                  IsChecked="{Binding KeepReviewInPlace, Converter={StaticResource InvertBool}}" />
                 </StackPanel>
+                <StackPanel Style="{StaticResource OptionGroup}"
+                            Visibility="{Binding ShowReviewOption, Converter={StaticResource BoolToVisibility}}">
+                    <CheckBox Content="여러 날 폴더도 날짜별로 나누기" IsChecked="{Binding SplitMultiDayFolders}" VerticalAlignment="Center" />
+                </StackPanel>
             </WrapPanel>
             <WrapPanel Margin="0,10,0,0">
+                <Button Content="모두 옮기기" Command="{Binding IncludeAllCommand}" Padding="8,2" Margin="0,0,6,0" VerticalAlignment="Center" />
+                <Button Content="모두 빼기" Command="{Binding ExcludeAllCommand}" Padding="8,2" Margin="0,0,24,0" VerticalAlignment="Center" />
+                <TextBlock Style="{StaticResource SummaryItem}" Text="{Binding ExcludedText}" FontWeight="SemiBold" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}" />
+                <TextBlock Text="{Binding DateMismatchText}" FontWeight="SemiBold" Foreground="{StaticResource MismatchBrush}">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource SummaryItem}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DateMismatchText}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
                 <TextBlock Style="{StaticResource SummaryItem}">
                     <Run Text="판단 필요" /> <Run Text="{Binding ReviewCount, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="개" />
                 </TextBlock>
@@ -223,10 +242,19 @@
                                     <ColumnDefinition Width="64" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
-                                <Border Width="64" Height="64" Background="#EEEEEE" VerticalAlignment="Top">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+                                <!-- 값은 뺀 묶음에서 정해지므로 한 방향으로만 묶고, 누르면 명령이 어느 쪽으로 바꿀지 정한다(일부일 때 누르면 모두 포함). -->
+                                <CheckBox Grid.ColumnSpan="2" Margin="0,0,0,6" IsChecked="{Binding IsIncluded, Mode=OneWay}"
+                                          Command="{Binding ToggleIncludedCommand}">
+                                    <TextBlock Text="{Binding IncludeLabel}" />
+                                </CheckBox>
+                                <Border Grid.Row="1" Width="64" Height="64" Background="#EEEEEE" VerticalAlignment="Top">
                                     <Image Source="{Binding Thumbnail}" Stretch="UniformToFill" />
                                 </Border>
-                                <StackPanel Grid.Column="1" Margin="10,0,0,0">
+                                <StackPanel Grid.Row="1" Grid.Column="1" Margin="10,0,0,0">
                                     <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
                                     <TextBlock Text="{Binding Devices}" Opacity="0.7" TextTrimming="CharacterEllipsis" />
                                     <Grid Margin="0,6,0,0">
@@ -280,6 +308,28 @@
                                             <Style TargetType="TextBlock">
                                                 <Style.Triggers>
                                                     <DataTrigger Binding="{Binding Note}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding ExcludedNote}" Opacity="0.7" TextWrapping="Wrap" Margin="0,4,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding ExcludedNote}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                    <TextBlock Text="{Binding DateMismatch}" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap" Margin="0,4,0,0">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DateMismatch}" Value="{x:Null}">
                                                         <Setter Property="Visibility" Value="Collapsed" />
                                                     </DataTrigger>
                                                 </Style.Triggers>
@@ -362,6 +412,7 @@
                         <TextBlock Text="왜 이 경로인가" Style="{StaticResource PaneTitle}" Margin="0,16,0,4" />
                         <TextBlock Text="{Binding Destination}" TextWrapping="Wrap" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding SkipNote}" TextWrapping="Wrap" Foreground="#8A5A00" Margin="0,4,0,0" />
+                        <TextBlock Text="{Binding DateMismatch}" TextWrapping="Wrap" Foreground="{StaticResource MismatchBrush}" Margin="0,4,0,0" />
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto" />

@@ -162,6 +162,17 @@ public class SourceViewModelJobKindTests
     }
 
     [Fact]
+    public void Back_Reorganize_DoesNotCarrySplitMultiDayFolders()
+    {
+        var previous = Sent(JobKind.Reorganize, [@"D:\Archive\2024"], TransferMode.Move, useFolderNames: true) with { SplitMultiDayFolders = true };
+
+        var vm = Create(JobKind.Reorganize, previous: previous);
+        vm.NextCommand.Execute(null);
+
+        Assert.False(Assert.Single(_scanRequests).SplitMultiDayFolders); // 실행마다 다시 고른다
+    }
+
+    [Fact]
     public void Back_AfterNext_ThenNextAgain_SendsTheSameChoices()
     {
         var first = Create(JobKind.Absorb);

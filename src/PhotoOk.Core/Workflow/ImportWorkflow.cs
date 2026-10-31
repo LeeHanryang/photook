@@ -39,6 +39,9 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
 {
     private readonly CachingHasher _hasher = new(hasher, fileSystem);
 
+    /// <summary>촬영일을 정할 때 쓰는 시간대.</summary>
+    public TimeZoneInfo Zone => zone;
+
     /// <param name="checkingArchive">흡수에서 파일을 다 읽고 아카이브 색인을 만들기 시작할 때 true를 알린다(그동안 읽은 파일 수는 멈춰 있다).</param>
     public Task<ScanOutcome> ScanAsync(ImportSettings settings, IProgress<int>? filesRead, CancellationToken ct,
         IProgress<bool>? checkingArchive = null)

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -13,7 +14,10 @@ public sealed partial class SessionItemViewModel : ObservableObject
     private readonly Action<SessionItemViewModel>? _eventNameChanged;
     private readonly Action<SessionItemViewModel>? _thumbnailNeeded;
     private readonly Action<SessionItemViewModel>? _neverUseName;
+    private readonly Action<SessionItemViewModel>? _includeToggled;
     private readonly bool _suggestedFromFormat;
+    private int _excludedGroups;
+    private int _excludedFiles;
     private ImageSource? _thumbnail;
     private bool _thumbnailRequested;
     private bool _silent;
@@ -32,12 +36,17 @@ public sealed partial class SessionItemViewModel : ObservableObject
     /// <param name="neverUseName">"이 이름 다시 쓰지 않기"를 눌렀을 때 부를 알림.</param>
     /// <param name="note">제목 아래에 보일 안내(재정리의 판단 필요 카드). 없으면 null.</param>
     /// <param name="suggestedFromFormat">읽어 온 이름이 프리셋 형식에서 왔다. 제외 목록을 따르지 않는 이름이라 "이 이름 다시 쓰지 않기"를 보이지 않는다.</param>
+    /// <param name="includeToggled">"이번에 옮기기" 체크박스를 눌렀을 때 부를 알림. 뺀 상태는 부모가 파일 묶음마다 기억한다.</param>
+    /// <param name="dateMismatch">폴더 날짜와 사진 날짜가 다르다는 안내. 없으면 null.</param>
     public SessionItemViewModel(string sessionId, string title, string devices, bool isReviewGroup,
         IReadOnlyList<string> files, string? suggestedEventName, Action<SessionItemViewModel>? eventNameChanged,
         Action<SessionItemViewModel>? thumbnailNeeded = null, Action<SessionItemViewModel>? neverUseName = null,
-        string? note = null, bool suggestedFromFormat = false)
+        string? note = null, bool suggestedFromFormat = false, Action<SessionItemViewModel>? includeToggled = null,
+        string? dateMismatch = null)
     {
         _suggestedFromFormat = suggestedFromFormat;
+        _includeToggled = includeToggled;
+        DateMismatch = dateMismatch;
         SessionId = sessionId;
         Title = title;
         Devices = devices;
@@ -89,6 +98,20 @@ public sealed partial class SessionItemViewModel : ObservableObject
 
     public IReadOnlyList<string> Files { get; }
 
+    /// <summary>폴더 날짜와 사진 날짜가 다르다는 안내. 없으면 null.</summary>
+    public string? DateMismatch { get; }
+
+    /// <summary>이번에 옮기는가: 모든 묶음을 옮기면 true, 모두 뺐으면 false, 일부만 뺐으면 null.</summary>
+    public bool? IsIncluded => _excludedGroups == 0 ? true : _excludedGroups >= Files.Count ? false : null;
+
+    /// <summary>체크박스 옆 글자. 일부만 뺐으면 "일부".</summary>
+    public string IncludeLabel => IsIncluded is null ? "일부" : "이번에 옮기기";
+
+    /// <summary>일부만 뺐으면 "뺀 파일 N개". 아니면 null.</summary>
+    public string? ExcludedNote => IsIncluded is null
+        ? string.Create(CultureInfo.InvariantCulture, $"뺀 파일 {_excludedFiles}개")
+        : null;
+
     /// <summary>첫 파일의 썸네일. 처음 읽을 때 비동기로 요청하고, 오기 전까지는 null.</summary>
     public ImageSource? Thumbnail
     {
@@ -107,6 +130,22 @@ public sealed partial class SessionItemViewModel : ObservableObject
 
     [RelayCommand]
     private void NeverUseName() => _neverUseName?.Invoke(this);
+
+    /// <summary>체크박스를 눌렀다. 어느 쪽으로 바꿀지는 부모가 지금 상태를 보고 정한다.</summary>
+    [RelayCommand]
+    private void ToggleIncluded() => _includeToggled?.Invoke(this);
+
+    /// <summary>이 카드에서 뺀 묶음 수와 그 파일 수(대표·딸린 파일)를 알린다.</summary>
+    internal void SetExclusion(int excludedGroups, int excludedFiles)
+    {
+        _excludedGroups = excludedGroups;
+        _excludedFiles = excludedFiles;
+
+        // 체크박스가 눌리며 스스로 값을 바꿔 두므로, 값이 같아도 늘 다시 읽게 한다.
+        OnPropertyChanged(nameof(IsIncluded));
+        OnPropertyChanged(nameof(IncludeLabel));
+        OnPropertyChanged(nameof(ExcludedNote));
+    }
 
     /// <summary>알림 없이 이벤트 칸을 비운다(여러 카드를 비운 뒤 재계획을 한 번만 하려고 부모가 쓴다).</summary>
     internal void ClearEventNameSilently() => SetEventNameSilently("");
