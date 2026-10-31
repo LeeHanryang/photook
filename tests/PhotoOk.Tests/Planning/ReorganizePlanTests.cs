@@ -1088,7 +1088,7 @@ public class ReorganizePlanTests
 
         var plan = Create(BuiltInPresets.DateOnly, [Group(a), Group(b), Group(c), Group(d)], splitMultiDay: true);
 
-        Assert.Single(plan.Notes, MultiDayNote(2));
+        Assert.Equal(MultiDayNote(2), plan.MultiDayNotice);
     }
 
     [Theory]
@@ -1098,7 +1098,7 @@ public class ReorganizePlanTests
     {
         var plan = Create(BuiltInPresets.DateOnly, [Group(Add(path, [1], Oct14))], splitMultiDay: true);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     [Fact]
@@ -1108,7 +1108,7 @@ public class ReorganizePlanTests
 
         var plan = Create(BuiltInPresets.DateOnly, [Group(kept)], keepReview: true, splitMultiDay: true);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     [Theory]
@@ -1120,7 +1120,7 @@ public class ReorganizePlanTests
 
         var plan = Create(BuiltInPresets.DateOnly, [Group(photo)], kind, roots: [@"D:\흩어짐"]);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     // ---- 화면이 부르는 흐름의 연결 ----

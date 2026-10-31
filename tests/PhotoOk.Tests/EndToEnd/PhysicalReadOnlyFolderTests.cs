@@ -198,7 +198,7 @@ public sealed class PhysicalReadOnlyFolderTests : IDisposable
         Assert.False(outcome.HasBlockingIssue);
         Assert.Equal(3, outcome.Plan.Skipped.Count(s => s.Reason == SkipReason.ExcludedByUser));
         Assert.Equal(2, outcome.Plan.Skipped.Count(s => s.Reason == SkipReason.MultiDayFolderKept));
-        Assert.Contains("여러 날 폴더 1개는 옮기지 않습니다", outcome.Plan.Notes);
+        Assert.Equal("여러 날 폴더 1개는 옮기지 않습니다", outcome.Plan.MultiDayNotice);
         var touched = stayed.Append(excludedSidecar).ToList();
         Assert.DoesNotContain(outcome.Plan.Operations, op => touched.Contains(op.Source ?? "", StringComparer.OrdinalIgnoreCase)
                                                              || touched.Contains(op.Destination, StringComparer.OrdinalIgnoreCase));

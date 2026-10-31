@@ -842,7 +842,8 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
 
         Assert.False(vm.SplitMultiDayFolders);
         Assert.Equal("그대로 1개", vm.KeptInPlaceText);
-        Assert.Contains("여러 날 폴더 1개는 옮기지 않습니다", vm.PlanNotes);
+        Assert.Equal("여러 날 폴더 1개는 옮기지 않습니다", vm.MultiDayNotice);
+        Assert.Empty(vm.PlanNotes);
         Assert.Equal([moved], Sources(LastPlan));
         AssertNoOperationOn(LastPlan, path);
         vm.SelectedSession = vm.Sessions.Single(c => c.Files.Contains(path));
@@ -860,15 +861,13 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
 
         Assert.True(_plans[^1].Settings.SplitMultiDayFolders);
         Assert.Equal([path], Sources(LastPlan));
-        Assert.Contains("여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요", vm.PlanNotes);
-        Assert.DoesNotContain("여러 날 폴더 1개는 옮기지 않습니다", vm.PlanNotes);
+        Assert.Equal("여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요", vm.MultiDayNotice);
 
         vm.SplitMultiDayFolders = false;
         await vm.WhenPlanned;
 
         Assert.Empty(LastPlan.Operations);
-        Assert.Contains("여러 날 폴더 1개는 옮기지 않습니다", vm.PlanNotes);
-        Assert.DoesNotContain(vm.PlanNotes, note => note.Contains("나뉩니다", StringComparison.Ordinal));
+        Assert.Equal("여러 날 폴더 1개는 옮기지 않습니다", vm.MultiDayNotice);
     }
 
     [Fact]

@@ -44,10 +44,10 @@ public sealed record PlannedSkip(string Source, string Destination, SkipReason R
 
 /// <summary>
 /// 정리 계획. 작업은 적힌 순서대로 실행한다. <paramref name="CleanupRoots"/>는 비게 된 폴더를 치울 때 넘지 않는 고른 폴더들이다
-/// (재정리와 이동 흡수에만 있다).
+/// (재정리와 이동 흡수에만 있다). <paramref name="MultiDayNotice"/>는 재정리의 여러 날 폴더 안내로, 메모와 달리 요약에 바로 보인다(없으면 null).
 /// </summary>
 public sealed record Plan(string ArchiveRoot, IReadOnlyList<PlannedOperation> Operations, IReadOnlyList<PlannedSkip> Skipped,
-    IReadOnlyList<string> Notes, IReadOnlyList<string>? CleanupRoots = null);
+    IReadOnlyList<string> Notes, IReadOnlyList<string>? CleanupRoots = null, string? MultiDayNotice = null);
 
 /// <summary>
 /// 계획 요청. <paramref name="Roots"/>는 고른 폴더, <paramref name="Index"/>는 아카이브 색인이다.

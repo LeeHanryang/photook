@@ -173,6 +173,16 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void PreviewView_MultiDayNotice_SitsBesideKeptCount_NotInTheCollapsedNotes()
+    {
+        var notice = Load("Views", "PreviewView.xaml").Descendants(Wpf + "TextBlock")
+            .Single(t => (string?)t.Attribute("Text") == "{Binding MultiDayNotice}");
+
+        Assert.Equal("{Binding KeptInPlaceText}", (string?)notice.ElementsBeforeSelf().Last().Attribute("Text"));
+        Assert.Empty(notice.Ancestors(Wpf + "Expander"));
+    }
+
+    [Fact]
     public void PreviewView_ShowsIgnoredFiles()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));

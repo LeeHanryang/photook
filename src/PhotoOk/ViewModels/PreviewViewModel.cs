@@ -117,6 +117,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
     private int _keptInPlaceCount;
     private int _excludedCount;
     private int _dateMismatchCount;
+    private string? _multiDayNotice;
     private int _transferCount;
     private long _transferBytes;
     private long _freeBytes;
@@ -303,6 +304,13 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 OnPropertyChanged(nameof(KeptInPlaceText));
             }
         }
+    }
+
+    /// <summary>재정리의 여러 날 폴더 안내. <see cref="KeptInPlaceText"/> 옆에 보인다. 없으면 null.</summary>
+    public string? MultiDayNotice
+    {
+        get => _multiDayNotice;
+        private set => SetProperty(ref _multiDayNotice, value);
     }
 
     /// <summary>재정리에서만 "그대로 N개". 그 밖의 작업은 null.</summary>
@@ -928,6 +936,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
         ExcludedCount = view.Excluded;
         DuplicateCount = view.Duplicates;
         KeptInPlaceCount = _settings.Kind == JobKind.Reorganize ? view.KeptInPlace : 0;
+        MultiDayNotice = view.Outcome.Plan.MultiDayNotice;
         TransferCount = view.Copies + view.Moves;
         TransferBytes = view.Bytes;
         TransferText = DescribeTransfer(view.Copies, view.Moves);

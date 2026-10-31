@@ -115,14 +115,14 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             vacating.IntersectWith(moved);
         }
 
-        var multiDayNote = request.Kind == JobKind.Reorganize ? MultiDayNote(root, request.SplitMultiDayFolders, resolution.FileOps, stays) : null;
-        return Assemble(root, resolution, hashes.Unreadable, stays, CleanupRootsOf(request), multiDayNote);
+        var multiDayNotice = request.Kind == JobKind.Reorganize ? MultiDayNotice(root, request.SplitMultiDayFolders, resolution.FileOps, stays) : null;
+        return Assemble(root, resolution, hashes.Unreadable, stays, CleanupRootsOf(request)) with { MultiDayNotice = multiDayNotice };
     }
 
     /// <summary>
     /// 재정리의 여러 날 폴더 안내. 옵션을 켰으면 파일이 빠져나가는 폴더를 세어 날짜별로 나뉜다고 미리 알리고, 껐으면 파일을 남긴 폴더를 센다. 없으면 null.
     /// </summary>
-    private static string? MultiDayNote(string root, bool split, IReadOnlyList<DraftOp> fileOps, IReadOnlyList<PlannedSkip> stays)
+    private static string? MultiDayNotice(string root, bool split, IReadOnlyList<DraftOp> fileOps, IReadOnlyList<PlannedSkip> stays)
     {
         var sources = split
             ? fileOps.Where(op => op.Kind == OperationKind.Move).Select(op => op.Source)
@@ -421,7 +421,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
     }
 
     private Plan Assemble(string root, Resolution resolution, IReadOnlyList<string> unreadable,
-        IReadOnlyList<PlannedSkip> stays, IReadOnlyList<string>? cleanupRoots, string? multiDayNote)
+        IReadOnlyList<PlannedSkip> stays, IReadOnlyList<string>? cleanupRoots)
     {
         var fileOps = resolution.FileOps;
 
@@ -477,11 +477,6 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
         if (forced > 0)
         {
             notes.Add($"다른 드라이브라 복사로 처리: {forced}개");
-        }
-
-        if (multiDayNote is not null)
-        {
-            notes.Add(multiDayNote);
         }
 
         notes.AddRange(unreadable.Select(path => "파일을 읽지 못해 다른 파일로 처리했습니다: " + path));

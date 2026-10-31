@@ -142,6 +142,20 @@
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
+                <TextBlock Text="{Binding MultiDayNotice}" FontWeight="SemiBold" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource SummaryItem}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding MultiDayNotice}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                                <DataTrigger Binding="{Binding HasPlan}" Value="False">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
                 <TextBlock Style="{StaticResource SummaryItem}" Text="{Binding TransferText}" FontWeight="SemiBold" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}" />
                 <TextBlock Style="{StaticResource SummaryItem}" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}">
                     <Run Text="용량" /> <Run Text="{Binding TransferSizeText, Mode=OneWay}" FontWeight="SemiBold" />

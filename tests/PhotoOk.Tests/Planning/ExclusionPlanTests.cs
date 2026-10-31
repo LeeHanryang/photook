@@ -249,7 +249,8 @@ public class ExclusionPlanTests
 
         Assert.Empty(plan.Operations);
         Assert.Equal([new PlannedSkip(path, path, SkipReason.MultiDayFolderKept)], plan.Skipped);
-        Assert.Contains(MultiDayKeptNote1, plan.Notes);
+        Assert.Equal(MultiDayKeptNote1, plan.MultiDayNotice);
+        Assert.Empty(plan.Notes); // 접힌 메모가 아니라 요약 줄에 보인다
     }
 
     [Fact]
@@ -321,7 +322,7 @@ public class ExclusionPlanTests
 
         var plan = Create([Group(a), Group(b), Group(c), Group(d)]);
 
-        Assert.Single(plan.Notes, "여러 날 폴더 2개는 옮기지 않습니다");
+        Assert.Equal("여러 날 폴더 2개는 옮기지 않습니다", plan.MultiDayNotice);
         Assert.Equal(d.Path, Assert.Single(FileOps(plan)).Source);
     }
 
@@ -332,7 +333,7 @@ public class ExclusionPlanTests
 
         var plan = Create([Group(a)], [a.Path]);
 
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
         Assert.Equal(SkipReason.ExcludedByUser, Assert.Single(plan.Skipped).Reason);
     }
 
@@ -345,8 +346,8 @@ public class ExclusionPlanTests
         var plan = Create([Group(a), Group(b)], split: true);
 
         Assert.Equal([$@"{Day14}\a.jpg", $@"{Day15}\b.jpg"], FileOps(plan).Select(o => o.Destination));
-        Assert.Single(plan.Notes, "여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요");
-        Assert.DoesNotContain(MultiDayKeptNote1, plan.Notes);
+        Assert.Equal("여러 날을 묶은 폴더 1개가 날짜별로 나뉩니다. 여러 날 묶기가 들어오기 전에는 재정리에서 빼 주세요", plan.MultiDayNotice);
+        Assert.Empty(plan.Notes);
     }
 
     [Fact]
@@ -372,7 +373,7 @@ public class ExclusionPlanTests
 
         Assert.Single(FileOps(plan));
         Assert.Empty(plan.Skipped);
-        Assert.Empty(plan.Notes);
+        Assert.Null(plan.MultiDayNotice);
     }
 
     // ----- 화면이 부르는 흐름의 연결 -----
