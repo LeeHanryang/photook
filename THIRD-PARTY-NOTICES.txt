@@ -1,0 +1,68 @@
+PhotoOK 제3자 소프트웨어 고지 (Third-Party Notices)
+====================================================
+
+PhotoOK는 아래 오픈소스 소프트웨어를 사용합니다. 각 소프트웨어의 저작권은
+해당 저작권자에게 있고, 아래 라이선스에 따라 사용합니다.
+PhotoOK 자체의 라이선스(MIT)는 함께 설치되는 LICENSE.txt에 있습니다.
+
+PhotoOK uses the open-source software listed below. Copyright remains with
+the respective authors, and each component is used under the license named
+here. PhotoOK's own MIT license is in the LICENSE.txt installed next to this file.
+
+
+1. MetadataExtractor
+   용도: 사진·동영상 메타데이터(EXIF 등) 읽기
+   저작권: Copyright Drew Noakes 2002-2026
+   라이선스: Apache License 2.0
+   프로젝트: https://github.com/drewnoakes/metadata-extractor-dotnet
+   라이선스 전문: https://www.apache.org/licenses/LICENSE-2.0
+
+2. XmpCore
+   용도: XMP 메타데이터 해석 (MetadataExtractor가 사용)
+   저작권: Copyright Drew Noakes 2015-2021, 원 코드는 Adobe XMP SDK
+   라이선스: BSD 계열 (Adobe XMP SDK와 같은 라이선스)
+   프로젝트: https://github.com/drewnoakes/xmp-core-dotnet
+   라이선스 안내: 위 프로젝트 저장소의 LICENSE 파일
+
+3. System.IO.Hashing
+   용도: 파일 검증용 xxHash64
+   저작권: (c) Microsoft Corporation
+   라이선스: MIT License
+   프로젝트: https://github.com/dotnet/runtime
+   라이선스 전문: https://licenses.nuget.org/MIT
+
+4. CommunityToolkit.Mvvm
+   용도: 화면 로직(MVVM)
+   저작권: (c) .NET Foundation and Contributors
+   라이선스: MIT License
+   프로젝트: https://github.com/CommunityToolkit/dotnet
+   라이선스 전문: https://licenses.nuget.org/MIT
+
+5. .NET 런타임 (.NET Runtime, Windows Desktop Runtime / WPF)
+   용도: PhotoOK는 .NET을 함께 넣어 배포하므로(self-contained) 설치 폴더에
+         .NET 런타임이 들어 있습니다.
+   저작권: (c) Microsoft Corporation, .NET Foundation and Contributors
+   라이선스: MIT License
+   프로젝트: https://github.com/dotnet/runtime , https://github.com/dotnet/wpf
+   라이선스 전문: https://licenses.nuget.org/MIT
+   런타임이 다시 포함하는 구성 요소의 고지: https://github.com/dotnet/runtime/blob/main/THIRD-PARTY-NOTICES.TXT
+
+
+MIT License (위 3, 4, 5번의 공통 조건)
+---------------------------------------
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in the
+Software without restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

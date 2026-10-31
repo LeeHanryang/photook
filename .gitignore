@@ -494,3 +494,7 @@ GEMINI.md
 prompts/
 *.prompt.md
 *.prompt.txt
+
+# PhotoOK 설치 파일 빌드 결과
+installer/output/
+installer/publish/

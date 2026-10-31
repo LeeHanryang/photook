@@ -42,6 +42,28 @@ SD 카드나 휴대폰에서 PC로 옮겨 둔 폴더, 여기저기 흩어진 폴
 | M4 위치·시간·태그 | 즐겨찾는 장소, 여행 자동 제안, 지명, 일출·일몰 기준 주간/야간, 시간 보정, XMP 태그, 파일 이름 바꾸기 | 예정 |
 | M5 마무리 | 프리셋 모음, 대용량 성능, 배포 | 예정 |
 
+## 설치
+
+설치 파일 하나로 설치합니다. .NET을 따로 설치할 필요가 없습니다(.NET 런타임을 함께 넣은 self-contained 배포).
+
+- **설치 위치**: `%LOCALAPPDATA%\Programs\PhotoOk`. 관리자 권한이 필요 없고, 지금 사용자에게만 설치됩니다. 시작 메뉴에 바로 가기가 생기며, 바탕 화면 바로 가기는 설치할 때 고르면 만들어집니다(기본은 만들지 않음).
+- **업데이트**: 새 설치 파일을 그대로 실행해 덮어 설치합니다. 설정, 프리셋, 제외 단어, 작업 기록은 그대로 읽힙니다. 낮은 버전으로 덮어 설치하는 것은 막습니다.
+- **실행 중에는 설치·제거하지 않습니다**: PhotoOK가 실행 중이면 `PhotoOK를 닫은 뒤 다시 설치해 주세요`라고 안내하고 멈춥니다. 제거도 같습니다. 파일을 옮기는 도중일 수 있어 강제로 종료하지 않습니다.
+- **제거**: 프로그램 파일만 지웁니다. `%AppData%\PhotoOk`, `%LocalAppData%\PhotoOk`의 설정과 작업 기록, 아카이브의 사진과 `.photook` 폴더는 건드리지 않습니다. 데이터를 지우는 선택지는 없습니다.
+- **서명 없음**: 설치 파일에 코드 서명을 하지 않아 Windows SmartScreen이 경고를 보일 수 있습니다.
+- **보안 패치**: .NET을 함께 넣어 배포하므로 .NET의 보안 패치는 PhotoOK 업데이트로만 들어옵니다. 새 버전이 나오면 덮어 설치해 주세요.
+- **라이선스 고지**: 사용한 오픈소스의 고지 `THIRD-PARTY-NOTICES.txt`가 설치 폴더에 함께 들어갑니다.
+
+### 설치 파일 만들기
+
+[.NET 10 SDK](https://dotnet.microsoft.com/download)와 [Inno Setup 6](https://jrsoftware.org/isinfo.php)(`winget install JRSoftware.InnoSetup`)이 필요합니다.
+
+```powershell
+installer\build.ps1
+```
+
+`installer\output\PhotoOK-Setup-<버전>.exe`가 만들어집니다(git에는 넣지 않음). 버전은 `Directory.Build.props`의 `Version` 한 곳에서 읽습니다.
+
 ## 실행 방법
 
 Windows 전용입니다(.NET 10, WPF). [.NET 10 SDK](https://dotnet.microsoft.com/download)를 설치한 뒤 저장소 폴더에서 실행합니다.
