@@ -1043,6 +1043,184 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
         Assert.Equal(0, _runFacts.Excluded);
     }
 
+    private const string TripFolder = @"D:\Archive\[2026-10-14~10-15] 소풍";
+
+    [Fact]
+    public async Task MultiDay_AllKept_HidesCheckBox_AndSaysWhy_UntilSplitIsOn()
+    {
+        var path = Add($@"{TripFolder}\a.jpg", Oct14);
+
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+
+        var card = Assert.Single(vm.Sessions);
+        Assert.False(card.ShowIncludeCheckBox);
+        Assert.Equal("여러 날 폴더라 옮기지 않습니다", card.Note);
+        Assert.Null(card.ExcludedNote);
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        card = Assert.Single(vm.Sessions);
+        Assert.True(card.ShowIncludeCheckBox);
+        Assert.Null(card.Note);
+        Assert.True(card.IsIncluded);
+        Assert.Equal([path], Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task MultiDay_MixedCard_ShowsCheckBox_AndCountsKeptFiles()
+    {
+        Add($@"{TripFolder}\IMG.NEF", Oct14);
+        _fs.AddFile($@"{TripFolder}\IMG.xmp", [99]);
+        Add($@"{Old}\b.jpg", Oct14);
+
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+
+        var card = Assert.Single(vm.Sessions);
+        Assert.True(card.ShowIncludeCheckBox);
+        Assert.True(card.IsIncluded);
+        Assert.Equal("여러 날 폴더라 옮기지 않는 파일 2개", card.Note);
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        Assert.Null(Assert.Single(vm.Sessions).Note);
+    }
+
+    [Fact]
+    public async Task MultiDay_MixedCard_CheckBoxActsOnMovableFiles_AndCountsAgree()
+    {
+        var kept = Add($@"{TripFolder}\a.jpg", Oct14);
+        var movable = Add($@"{Old}\b.jpg", Oct14);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+        var card = Assert.Single(vm.Sessions);
+
+        await ToggleAsync(vm, card);
+
+        // 옮길 수 있는 파일을 모두 뺐으므로 일부가 아니라 꺼짐이다. 여러 날 폴더의 파일은 뺀 수가 아니라 그대로 수에 든다.
+        Assert.False(card.IsIncluded);
+        Assert.Null(card.ExcludedNote);
+        Assert.Equal("제외 1개", vm.ExcludedText);
+        Assert.Equal("그대로 1개", vm.KeptInPlaceText);
+        Assert.Contains(new PlannedSkip(kept, kept, SkipReason.MultiDayFolderKept), LastPlan.Skipped);
+        Assert.Contains(new PlannedSkip(movable, movable, SkipReason.ExcludedByUser), LastPlan.Skipped);
+
+        await ToggleAsync(vm, card);
+
+        Assert.True(card.IsIncluded);
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Equal([movable], Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task MultiDay_ExcludeAll_CountsOnlyWhatCouldMove_ButStaysOutWhenSplitIsOn()
+    {
+        var kept = Add($@"{TripFolder}\a.jpg", Oct14);
+        var movable = Add($@"{Old}\b.jpg", Oct15);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+
+        vm.ExcludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+
+        Assert.Equal("제외 1개", vm.ExcludedText);
+        Assert.Equal("그대로 1개", vm.KeptInPlaceText);
+        Assert.Equal("옮길 파일이 없습니다", vm.BlockingReason);
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        // 뺀 파일은 옵션을 켜도 다시 포함되지 않는다.
+        Assert.Empty(LastPlan.Operations);
+        Assert.Equal("제외 2개", vm.ExcludedText);
+        Assert.All(vm.Sessions, card => Assert.False(card.IsIncluded));
+        AssertNoOperationOn(LastPlan, kept, movable);
+
+        vm.SplitMultiDayFolders = false;
+        await vm.WhenPlanned;
+
+        Assert.Equal("제외 1개", vm.ExcludedText);
+        Assert.Equal(SkipReason.MultiDayFolderKept, LastPlan.Skipped.Single(s => s.Source == kept).Reason);
+    }
+
+    [Fact]
+    public async Task MultiDay_OnlyKeptCards_ExcludeAll_KeepsTheInPlaceMessage()
+    {
+        Add($@"{TripFolder}\a.jpg", Oct14);
+        var vm = await CreateAsync();
+
+        vm.ExcludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Equal("그대로 1개", vm.KeptInPlaceText);
+        Assert.Equal("옮길 파일이 없습니다 — 모두 제자리에 있습니다", vm.BlockingReason);
+        Assert.Null(vm.Sessions[0].ExcludedNote);
+    }
+
+    [Fact]
+    public async Task MultiDay_MixedCardUnchecked_ThenSplit_KeptFileIsStillIncluded()
+    {
+        var kept = Add($@"{TripFolder}\a.jpg", Oct14);
+        var movable = Add($@"{Old}\b.jpg", Oct14);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+        await ToggleAsync(vm, Assert.Single(vm.Sessions));
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        var card = Assert.Single(vm.Sessions);
+        Assert.Null(card.IsIncluded);
+        Assert.Equal("뺀 파일 1개", card.ExcludedNote);
+        Assert.Equal([kept], Sources(LastPlan));
+        AssertNoOperationOn(LastPlan, movable);
+    }
+
+    [Fact]
+    public async Task ReviewKept_ExcludeAll_IsNotCountedAsExcluded_ButStaysOutWhenMovable()
+    {
+        var review = Add($@"{Old}\x.jpg", null);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+
+        vm.ExcludeAllCommand.Execute(null);
+        await vm.WhenPlanned;
+
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Equal(SkipReason.ReviewKeptInPlace, Assert.Single(LastPlan.Skipped).Reason);
+
+        vm.KeepReviewInPlace = false;
+        await vm.WhenPlanned;
+
+        Assert.Equal("제외 1개", vm.ExcludedText);
+        AssertNoOperationOn(LastPlan, review);
+    }
+
+    [Fact]
+    public async Task MultiDay_ResultFacts_MatchTheSummary()
+    {
+        Add($@"{TripFolder}\a.jpg", Oct14);
+        Add($@"{Old}\b.jpg", Oct15);
+        Add($@"{Old}\c.jpg", Oct14);
+        var vm = await CreateAsync(Settings() with { UseFolderNames = false });
+        await ToggleAsync(vm, vm.Sessions.Single(card => card.SessionId == "2026-10-14"));
+
+        await vm.ExecuteCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, _runFacts!.Excluded);
+        Assert.Equal(1, _runFacts.KeptInPlace);
+    }
+
+    [Fact]
+    public void Card_IsIncludedSetter_FollowsTheSameRuleAsTheCommand()
+    {
+        var toggled = 0;
+        var card = new SessionItemViewModel("2026-10-14", "2026-10-14 · 1장", "", false, [@"D:\a.jpg"], null, null,
+            includeToggled: _ => toggled++);
+
+        card.IsIncluded = false;
+
+        Assert.Equal(1, toggled);
+    }
+
     [Fact]
     public async Task Detail_ExcludedFile_SaysSo()
     {

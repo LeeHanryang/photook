@@ -18,6 +18,7 @@ public sealed partial class SessionItemViewModel : ObservableObject
     private readonly bool _suggestedFromFormat;
     private int _excludedGroups;
     private int _excludedFiles;
+    private int? _movableGroups;
     private ImageSource? _thumbnail;
     private bool _thumbnailRequested;
     private bool _silent;
@@ -106,8 +107,22 @@ public sealed partial class SessionItemViewModel : ObservableObject
     /// <summary>"이번에 옮기기" 체크박스를 보이는가.</summary>
     public bool ShowIncludeCheckBox { get; }
 
-    /// <summary>이번에 옮기는가: 모든 묶음을 옮기면 true, 모두 뺐으면 false, 일부만 뺐으면 null.</summary>
-    public bool? IsIncluded => _excludedGroups == 0 ? true : _excludedGroups >= Files.Count ? false : null;
+    /// <summary>
+    /// 이번에 옮기는가: 옮길 수 있는 묶음을 모두 옮기면 true, 모두 뺐으면 false, 일부만 뺐으면 null.
+    /// 체크박스가 바꾼 값(마우스, 자동화 Toggle 모두)이 이 설정자로 온다. 어느 쪽으로 바꿀지는 받은 값이 아니라 부모가 지금 상태를 보고 정한다
+    /// (일부일 때 누르면 체크박스는 꺼짐을 보내지만 모두 포함한다).
+    /// </summary>
+    public bool? IsIncluded
+    {
+        get => _excludedGroups == 0 ? true : _excludedGroups >= (_movableGroups ?? Files.Count) ? false : null;
+        set
+        {
+            if (value != IsIncluded)
+            {
+                ToggleIncluded();
+            }
+        }
+    }
 
     /// <summary>체크박스 옆 글자. 일부만 뺐으면 "일부".</summary>
     public string IncludeLabel => IsIncluded is null ? "일부" : "이번에 옮기기";
@@ -140,11 +155,12 @@ public sealed partial class SessionItemViewModel : ObservableObject
     [RelayCommand]
     private void ToggleIncluded() => _includeToggled?.Invoke(this);
 
-    /// <summary>이 카드에서 뺀 묶음 수와 그 파일 수(대표·딸린 파일)를 알린다.</summary>
-    internal void SetExclusion(int excludedGroups, int excludedFiles)
+    /// <summary>이 카드에서 뺀 묶음 수와 그 파일 수(대표·딸린 파일), 옮길 수 있는 묶음 수(모르면 카드의 모든 묶음)를 알린다.</summary>
+    internal void SetExclusion(int excludedGroups, int excludedFiles, int? movableGroups = null)
     {
         _excludedGroups = excludedGroups;
         _excludedFiles = excludedFiles;
+        _movableGroups = movableGroups;
 
         // 체크박스가 눌리며 스스로 값을 바꿔 두므로, 값이 같아도 늘 다시 읽게 한다.
         OnPropertyChanged(nameof(IsIncluded));

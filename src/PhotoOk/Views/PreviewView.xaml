@@ -260,9 +260,8 @@
                                     <RowDefinition Height="Auto" />
                                     <RowDefinition Height="Auto" />
                                 </Grid.RowDefinitions>
-                                <!-- 값은 뺀 묶음에서 정해지므로 한 방향으로만 묶고, 누르면 명령이 어느 쪽으로 바꿀지 정한다(일부일 때 누르면 모두 포함). -->
-                                <CheckBox Grid.ColumnSpan="2" Margin="0,0,0,6" IsChecked="{Binding IsIncluded, Mode=OneWay}"
-                                          Command="{Binding ToggleIncludedCommand}"
+                                <!-- 마우스와 자동화 Toggle 모두 값 묶음으로 온다. 어느 쪽으로 바꿀지는 카드가 정한다(일부일 때 누르면 모두 포함). -->
+                                <CheckBox Grid.ColumnSpan="2" Margin="0,0,0,6" IsChecked="{Binding IsIncluded}"
                                           Visibility="{Binding ShowIncludeCheckBox, Converter={StaticResource BoolToVisibility}}">
                                     <TextBlock Text="{Binding IncludeLabel}" />
                                 </CheckBox>

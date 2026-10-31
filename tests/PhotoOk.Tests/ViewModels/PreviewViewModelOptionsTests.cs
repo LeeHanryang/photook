@@ -1,6 +1,8 @@
 using System.IO;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Threading;
@@ -1047,9 +1049,76 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
         return [root, .. Descendants(root)];
     }
 
-    /// <summary>사용자가 체크박스를 누른 것과 같다(값을 뒤집은 뒤 명령을 부른다).</summary>
+    /// <summary>사용자가 체크박스를 누른 것과 같다.</summary>
     private static void Click(CheckBox box) =>
         typeof(ButtonBase).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(box, null);
+
+    [Fact]
+    public void View_CardCheckBox_AutomationToggle_WorksLikeTheMouse_AndDoesNotFireTwice() => OnUiThread(async () =>
+    {
+        Add(Trip + @"\a.jpg", Oct14);
+        Add(Walk + @"\b.jpg", Oct14, fill: 2);
+        var vm = await CreateAsync();
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var first = vm.Sessions[0];
+        var box = CardContent(view, first).OfType<CheckBox>().Single();
+        await SettleAsync();
+        IToggleProvider toggle = new CheckBoxAutomationPeer(box);
+
+        toggle.Toggle();
+        await vm.WhenPlanned;
+        await SettleAsync();
+
+        Assert.False(first.IsIncluded);
+        Assert.False(box.IsChecked);
+        Assert.Equal(1, vm.TransferCount);
+
+        // 마우스로 눌러도 한 번만 바뀐다(값 묶음과 명령이 함께 불리면 도로 켜진다).
+        Click(box);
+        await vm.WhenPlanned;
+        await SettleAsync();
+
+        Assert.True(first.IsIncluded);
+        Assert.True(box.IsChecked);
+        Assert.Equal(2, vm.TransferCount);
+
+        // 일부만 켜진 카드는 자동화로 눌러도 모두 포함된다.
+        toggle.Toggle();
+        await vm.WhenPlanned;
+        vm.UseFolderNames = false;
+        await vm.WhenPlanned;
+        await SettleAsync();
+        var merged = Assert.Single(vm.Sessions);
+        var mergedBox = CardContent(view, merged).OfType<CheckBox>().Single();
+        await SettleAsync();
+        Assert.Null(mergedBox.IsChecked);
+
+        ((IToggleProvider)new CheckBoxAutomationPeer(mergedBox)).Toggle();
+        await vm.WhenPlanned;
+        await SettleAsync();
+
+        Assert.True(merged.IsIncluded);
+        Assert.True(mergedBox.IsChecked);
+        Assert.Equal(2, vm.TransferCount);
+    });
+
+    [Fact]
+    public void View_MultiDayKeptCard_HidesCheckBox_AndShowsTheNote() => OnUiThread(async () =>
+    {
+        _fs.AddDirectory(@"D:\Archive\[2026-10-14~10-15] 소풍");
+        var path = @"D:\Archive\[2026-10-14~10-15] 소풍\a.jpg";
+        _fs.AddFile(path, [7, 7, 7]);
+        _reader.Set(path, Oct14);
+        var vm = await CreateAsync(Settings() with { Sources = [Archive], UseFolderNames = false });
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var content = CardContent(view, Assert.Single(vm.Sessions));
+        await SettleAsync();
+
+        Assert.Equal(Visibility.Collapsed, content.OfType<CheckBox>().Single().Visibility);
+        Assert.Contains(content.OfType<TextBlock>(), t => t.Text == "여러 날 폴더라 옮기지 않습니다");
+    });
 
     [Fact]
     public void View_CardCheckBox_ThreeStates_AndClickFollowsTheRules() => OnUiThread(async () =>

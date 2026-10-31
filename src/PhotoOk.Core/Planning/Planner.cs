@@ -176,8 +176,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
             return SkipReason.ExcludedByUser;
         }
 
-        if (request.Kind == JobKind.Reorganize && !request.SplitMultiDayFolders
-            && group.AllFiles.Any(file => FolderDate.MultiDayFolders(file.Path, root).Count > 0))
+        if (request.Kind == JobKind.Reorganize && !request.SplitMultiDayFolders && FolderDate.IsInMultiDayFolder(group, root))
         {
             return SkipReason.MultiDayFolderKept;
         }

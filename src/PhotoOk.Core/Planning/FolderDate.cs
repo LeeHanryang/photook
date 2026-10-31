@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
+using PhotoOk.Core.Scanning;
 
 namespace PhotoOk.Core.Planning;
 
@@ -59,6 +60,13 @@ public static partial class FolderDate
     /// <summary>파일이 든 여러 날 폴더들(가까운 것부터). 고른 폴더와 상관없이 아카이브 루트 아래를 모두 본다.</summary>
     public static IReadOnlyList<string> MultiDayFolders(string filePath, string archiveRoot) =>
         FoldersBelowRoot(filePath, archiveRoot).Where(folder => IsMultiDaySegment(Path.GetFileName(folder))).ToList();
+
+    /// <summary>묶음의 파일 가운데 하나라도 여러 날 폴더 안에 있는가. 묶음은 갈라지지 않으므로 묶음 전체의 판단이다.</summary>
+    public static bool IsInMultiDayFolder(FileGroup group, string archiveRoot)
+    {
+        ArgumentNullException.ThrowIfNull(group);
+        return group.AllFiles.Any(file => MultiDayFolders(file.Path, archiveRoot).Count > 0);
+    }
 
     private static IEnumerable<string> FoldersBelowRoot(string filePath, string archiveRoot)
     {
