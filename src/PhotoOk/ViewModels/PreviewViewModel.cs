@@ -1184,7 +1184,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 {
                     var needsReview = ReviewDetector.Detect(group, settings.Preset, aliases).Count != 0;
                     (needsReview ? reviewGroups : dateGroups).Add(group);
-                    if (DateCheck.Of(settings, session.Start, group, zone) is { } check)
+                    if (DateCheck.Of(settings, session.Start, group, needsReview, zone) is { } check)
                     {
                         (needsReview ? reviewChecks : dateChecks).Add(check);
                         if (check.Differs)
@@ -1260,30 +1260,42 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             string.Create(CultureInfo.InvariantCulture, $"{label} · {count}장");
     }
 
-    /// <summary>재정리에서 묶음 하나의 폴더 날짜와 사진 날짜(하루 시작 시각을 따른 촬영일)를 맞춰 본 값.</summary>
-    private sealed record DateCheck(int Files, DateOnly FolderDay, DateOnly ShootDay, string Source, bool DayStartApplied)
+    /// <summary>
+    /// 재정리에서 옮겨질 수 있는 묶음 하나의 폴더 날짜와 사진 날짜(하루 시작 시각을 따른 촬영일)를 맞춰 본 값.
+    /// 촬영 시각이 없으면 수정 시각의 달력 날짜와 맞춰 보며 그것을 사진 날짜라고 부르지 않는다.
+    /// </summary>
+    private sealed record DateCheck(int Files, DateOnly FolderDay, DateOnly ActualDay, string Source, bool DayStartApplied, bool HasCaptureTime)
     {
-        private static readonly string[] SourceOrder = ["사진 정보", "파일 이름", "수정 시각"];
+        private static readonly string[] SourceOrder = ["사진 정보", "파일 이름"];
 
-        public bool Differs => FolderDay != ShootDay;
+        public bool Differs => FolderDay != ActualDay;
 
-        /// <summary>재정리가 아니거나 묶음이 하루 폴더 안에 있지 않으면 null.</summary>
-        public static DateCheck? Of(ImportSettings settings, DateOnly shootDay, FileGroup group, TimeZoneInfo zone)
+        /// <summary>
+        /// 재정리가 아니거나, 지금 옵션으로 어차피 제자리인 묶음(판단 필요를 제자리에 둠, 여러 날 폴더)이거나, 하루 폴더 안에 있지 않으면 null.
+        /// 제자리인 묶음은 폴더 날짜가 바뀔 일이 없으므로 맞춰 보지 않는다. 옵션을 바꿔 움직일 수 있게 되면 그때 처음으로 맞춰 본다.
+        /// </summary>
+        public static DateCheck? Of(ImportSettings settings, DateOnly shootDay, FileGroup group, bool needsReview, TimeZoneInfo zone)
         {
-            if (settings.Kind != JobKind.Reorganize || FolderDate.Of(group.Primary.Path, settings.ArchiveRoot) is not { } folderDay)
+            if (settings.Kind != JobKind.Reorganize
+                || (needsReview && settings.KeepReviewInPlace)
+                || (!settings.SplitMultiDayFolders && group.AllFiles.Any(file => FolderDate.MultiDayFolders(file.Path, settings.ArchiveRoot).Count > 0))
+                || FolderDate.Of(group.Primary.Path, settings.ArchiveRoot) is not { } folderDay)
             {
                 return null;
             }
 
             var primary = group.Primary;
-            var source = primary.CaptureTime is null ? "수정 시각"
-                : primary.CaptureSource == CaptureTimeSource.FileName ? "파일 이름"
-                : "사진 정보";
-            return new DateCheck(group.Companions.Count + 1, folderDay, shootDay, source,
-                DateOnly.FromDateTime(ShootDate.EffectiveTime(primary, zone)) != shootDay);
+            var calendarDay = DateOnly.FromDateTime(ShootDate.EffectiveTime(primary, zone));
+            var files = group.Companions.Count + 1;
+            return primary.CaptureTime is null
+                ? new DateCheck(files, folderDay, calendarDay, "", DayStartApplied: false, HasCaptureTime: false)
+                : new DateCheck(files, folderDay, shootDay, primary.CaptureSource == CaptureTimeSource.FileName ? "파일 이름" : "사진 정보",
+                    calendarDay != shootDay, HasCaptureTime: true);
         }
 
-        /// <summary>폴더 날짜가 한 가지이고 모두 같은 촬영일로 다르면 날짜를 그대로 보이고, 여러 날짜가 섞이면 다른 파일 수를 보인다. 다른 파일이 없으면 null.</summary>
+        /// <summary>
+        /// 폴더 날짜가 한 가지이고 모두 같은 날로 다르면 날짜를 그대로 보이고, 섞이면 다른 파일 수를 보인다. 촬영 시각이 없는 파일은 따로 센다. 다른 파일이 없으면 null.
+        /// </summary>
         public static string? CardText(IReadOnlyList<DateCheck> checks)
         {
             var differing = checks.Where(check => check.Differs).ToList();
@@ -1292,15 +1304,42 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
                 return null;
             }
 
-            return checks.Select(check => check.FolderDay).Distinct().Count() == 1
-                   && differing.Select(check => check.ShootDay).Distinct().Count() == 1
-                ? Line(differing)
-                : string.Create(CultureInfo.InvariantCulture, $"폴더 날짜가 다른 파일 {differing.Sum(check => check.Files)}개");
+            var withCapture = differing.Where(check => check.HasCaptureTime).Sum(check => check.Files);
+            var withoutCapture = differing.Where(check => !check.HasCaptureTime).Sum(check => check.Files);
+            if (checks.Select(check => check.FolderDay).Distinct().Count() == 1
+                && differing.Select(check => check.ActualDay).Distinct().Count() == 1
+                && (withCapture == 0 || withoutCapture == 0))
+            {
+                return Line(differing);
+            }
+
+            var parts = new List<string>();
+            if (withCapture > 0)
+            {
+                parts.Add(string.Create(CultureInfo.InvariantCulture, $"폴더 날짜가 다른 파일 {withCapture}개"));
+            }
+
+            if (withoutCapture > 0)
+            {
+                parts.Add(string.Create(CultureInfo.InvariantCulture, $"촬영 시각 없는 파일 {withoutCapture}개"));
+            }
+
+            return string.Join(" · ", parts);
         }
 
-        /// <summary>예: "폴더 날짜 2024-06-24 → 사진 날짜 2024-06-23 (사진 정보)". 수정 시각으로 대체한 파일과 하루 시작 시각 보정은 출처에서 드러낸다.</summary>
+        /// <summary>
+        /// 예: "폴더 날짜 2024-06-24 → 사진 날짜 2024-06-23 (사진 정보)", "폴더 날짜 2024-06-24 · 촬영 시각 없음 (수정 시각 2024-07-01)".
+        /// 하루 시작 시각 보정은 출처에서 드러낸다. 촬영 시각의 있고 없음이 같은 값들만 받는다.
+        /// </summary>
         public static string Line(IReadOnlyList<DateCheck> checks)
         {
+            var first = checks[0];
+            if (!first.HasCaptureTime)
+            {
+                return string.Create(CultureInfo.InvariantCulture,
+                    $"폴더 날짜 {first.FolderDay:yyyy-MM-dd} · 촬영 시각 없음 (수정 시각 {first.ActualDay:yyyy-MM-dd})");
+            }
+
             var sources = SourceOrder.Where(source => checks.Any(check => check.Source == source)).ToList();
             if (checks.Any(check => check.DayStartApplied))
             {
@@ -1308,7 +1347,7 @@ public sealed partial class PreviewViewModel : ObservableObject, IBusyViewModel,
             }
 
             return string.Create(CultureInfo.InvariantCulture,
-                $"폴더 날짜 {checks[0].FolderDay:yyyy-MM-dd} → 사진 날짜 {checks[0].ShootDay:yyyy-MM-dd} ({string.Join(", ", sources)})");
+                $"폴더 날짜 {first.FolderDay:yyyy-MM-dd} → 사진 날짜 {first.ActualDay:yyyy-MM-dd} ({string.Join(", ", sources)})");
         }
     }
 

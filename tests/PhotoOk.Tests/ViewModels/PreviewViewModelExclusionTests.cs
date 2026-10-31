@@ -573,16 +573,140 @@ public sealed class PreviewViewModelExclusionTests : IDisposable
     }
 
     [Fact]
-    public async Task Mismatch_ModifiedTime_IsNamed_OnTheReviewCard()
+    public async Task NoCaptureTime_MovableToReviewFolder_SaysSo_AndDoesNotCallItAPhotoDate()
     {
-        Add(@"D:\Archive\2026-10-15\a.jpg", null, lastWrite: new DateTime(2026, 10, 14, 10, 0, 0, DateTimeKind.Utc));
+        var path = Add(@"D:\Archive\2026-10-14\scan.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
+
+        var vm = await CreateAsync(Settings() with { KeepReviewInPlace = false });
+
+        var card = Assert.Single(vm.Sessions);
+        Assert.True(card.IsReviewGroup);
+        const string text = "폴더 날짜 2026-10-14 · 촬영 시각 없음 (수정 시각 2026-11-01)";
+        Assert.Equal(text, card.DateMismatch);
+        Assert.Equal(text, vm.Detail?.DateMismatch);
+        Assert.False(card.IsIncluded);
+        AssertNoOperationOn(LastPlan, path);
+    }
+
+    [Fact]
+    public async Task NoCaptureTime_KeptInPlaceAsReview_IsNotMismatched_NorExcluded()
+    {
+        var path = Add(@"D:\Archive\2026-10-14\scan.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
 
         var vm = await CreateAsync();
 
         var card = Assert.Single(vm.Sessions);
-        Assert.True(card.IsReviewGroup);
-        Assert.Equal("폴더 날짜 2026-10-15 → 사진 날짜 2026-10-14 (수정 시각)", card.DateMismatch);
-        Assert.False(card.IsIncluded);
+        Assert.Null(card.DateMismatch);
+        Assert.Null(vm.Detail?.DateMismatch);
+        Assert.Null(vm.DateMismatchText);
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Empty(_plans[0].Excluded);
+        Assert.Equal(new PlannedSkip(path, path, SkipReason.ReviewKeptInPlace), Assert.Single(LastPlan.Skipped));
+    }
+
+    [Fact]
+    public async Task ReviewOptionOff_ExcludesOnceAtThatPoint_ThenStaysAsTheUserLeftIt()
+    {
+        var path = Add(@"D:\Archive\2026-10-14\scan.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
+        var vm = await CreateAsync();
+
+        vm.KeepReviewInPlace = false;
+        await vm.WhenPlanned;
+
+        // 판단 필요 폴더로 움직일 수 있게 된 바로 그 계획부터 빠진다.
+        Assert.False(vm.Sessions[0].IsIncluded);
+        Assert.NotNull(vm.Sessions[0].DateMismatch);
+        Assert.Contains(path, _plans[^1].Excluded);
+        AssertNoOperationOn(LastPlan, path);
+
+        await ToggleAsync(vm, vm.Sessions[0]);
+        Assert.Contains(path, Sources(LastPlan));
+
+        vm.KeepReviewInPlace = true;
+        await vm.WhenPlanned;
+        vm.KeepReviewInPlace = false;
+        await vm.WhenPlanned;
+
+        Assert.True(vm.Sessions[0].IsIncluded); // 켠 묶음은 다시 빼지 않는다
+        Assert.Contains(path, Sources(LastPlan));
+    }
+
+    [Fact]
+    public async Task NoCaptureTime_ComparesTheModifiedDate_WithoutDayStart()
+    {
+        // 수정 시각이 새벽이어도 달력의 날짜로 본다. 폴더와 같은 날이므로 다르다고 하지 않는다.
+        Add(@"D:\Archive\2026-11-01\scan.jpg", null, lastWrite: new DateTime(2026, 11, 1, 2, 0, 0, DateTimeKind.Utc));
+        var preset = BuiltInPresets.DateOnly with { DayStart = new TimeOnly(4, 0) };
+
+        var vm = await CreateAsync(Settings(preset: preset) with { KeepReviewInPlace = false });
+
+        Assert.Null(Assert.Single(vm.Sessions).DateMismatch);
+        Assert.True(vm.Sessions[0].IsIncluded);
+    }
+
+    [Fact]
+    public async Task NoCaptureTime_SeveralOnOneCard_CountedSeparately()
+    {
+        Add(@"D:\Archive\2026-10-14\a.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
+        Add(@"D:\Archive\2026-10-15\b.jpg", null, lastWrite: new DateTime(2026, 11, 2, 10, 0, 0, DateTimeKind.Utc));
+
+        var vm = await CreateAsync(Settings() with { KeepReviewInPlace = false, UseFolderNames = false });
+
+        Assert.Equal("촬영 시각 없는 파일 2개", Assert.Single(vm.Sessions).DateMismatch);
+    }
+
+    [Fact]
+    public async Task ReviewCard_MixedCaptureAndNoCapture_CountsEach()
+    {
+        // 기기를 쓰는 프리셋에서 기기를 모르면 촬영 시각이 있어도 판단 필요다.
+        Add(@"D:\Archive\2026-10-15\a.jpg", Oct14);
+        Add(@"D:\Archive\2026-10-16\b.jpg", null, lastWrite: new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc));
+
+        var vm = await CreateAsync(Settings(preset: BuiltInPresets.DateDeviceFormat) with { KeepReviewInPlace = false, UseFolderNames = false });
+
+        Assert.Equal("폴더 날짜가 다른 파일 1개 · 촬영 시각 없는 파일 1개", Assert.Single(vm.Sessions).DateMismatch);
+    }
+
+    [Fact]
+    public async Task MultiDayKept_InnerDateFolderDiffers_IsKept_NotExcluded()
+    {
+        var path = Add(@"D:\Archive\[2026-10-14~10-15] 소풍\2026-10-14\a.jpg", Oct15);
+
+        var vm = await CreateAsync();
+
+        Assert.Null(Assert.Single(vm.Sessions).DateMismatch);
+        Assert.True(vm.Sessions[0].IsIncluded);
+        Assert.Equal("제외 0개", vm.ExcludedText);
+        Assert.Equal("그대로 1개", vm.KeptInPlaceText);
+        Assert.Equal("여러 날 폴더 1개는 옮기지 않습니다", vm.MultiDayNotice);
+        Assert.Equal(new PlannedSkip(path, path, SkipReason.MultiDayFolderKept), Assert.Single(LastPlan.Skipped));
+    }
+
+    [Fact]
+    public async Task SplitOn_ExcludesOnceAtThatPoint_ThenStaysAsTheUserLeftIt()
+    {
+        var path = Add(@"D:\Archive\[2026-10-14~10-15] 소풍\2026-10-14\a.jpg", Oct15);
+        var vm = await CreateAsync();
+
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        Assert.Equal("폴더 날짜 2026-10-14 → 사진 날짜 2026-10-15 (사진 정보)", vm.Sessions[0].DateMismatch);
+        Assert.False(vm.Sessions[0].IsIncluded);
+        Assert.Contains(path, _plans[^1].Excluded);
+        AssertNoOperationOn(LastPlan, path);
+
+        await ToggleAsync(vm, vm.Sessions[0]);
+        Assert.Contains(path, Sources(LastPlan));
+
+        vm.SplitMultiDayFolders = false;
+        await vm.WhenPlanned;
+        Assert.Empty(LastPlan.Operations);
+        vm.SplitMultiDayFolders = true;
+        await vm.WhenPlanned;
+
+        Assert.True(vm.Sessions[0].IsIncluded);
+        Assert.Contains(path, Sources(LastPlan));
     }
 
     [Fact]
