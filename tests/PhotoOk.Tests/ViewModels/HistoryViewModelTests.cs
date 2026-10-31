@@ -229,6 +229,32 @@ public class HistoryViewModelTests
     }
 
     [Fact]
+    public async Task Undo_ExistingTempThatIsNotThisRuns_IsShownInTheResult()
+    {
+        const string runId = "20261027-103000-ab99";
+        const string temp = @"D:\Archive\2026\p1.jpg.photook-tmp";
+        var ops = CopyPlan(1).Operations.ToArray();
+        var writer = new JournalWriter(_fs, [JournalPaths.InArchive(Archive, runId), JournalPaths.InAppData(AppData, runId)]);
+        writer.Write(new JournalEntry(runId, JournalEvent.RunStarted, Length: ops.Length, Destination: Archive, TimestampUtc: Now));
+        foreach (var op in ops)
+        {
+            writer.Write(new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source, op.Destination, op.Length, TimestampUtc: Now));
+        }
+
+        var warning = "임시 이름 파일을 되돌림 폴더로 옮김: " + temp;
+        writer.Write(new JournalEntry(runId, JournalEvent.Warning, Message: warning, TimestampUtc: Now));
+        writer.Write(new JournalEntry(runId, JournalEvent.Started, ops[^1].Id, TimestampUtc: Now));
+        _fs.AddFile(temp, [1, 2, 3]);
+        var vm = await CreateAsync();
+        vm.Selected = vm.Runs.Single();
+        _dialogs.ConfirmAnswers.Enqueue(true);
+
+        await vm.UndoCommand.ExecuteAsync(null);
+
+        Assert.Equal([warning], vm.UndoResultLines);
+    }
+
+    [Fact]
     public async Task UndoSummary_CountsFilesOnly_NotFolders()
     {
         var data = new byte[50];

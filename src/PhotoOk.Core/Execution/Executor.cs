@@ -135,6 +135,7 @@ public sealed class Executor(ExecutionContext context)
         foreach (var warning in warnings)
         {
             run.AddWarning(warning);
+            run.JournaledWarnings.Add(warning);
         }
 
         var steps = state.Operations
@@ -290,14 +291,55 @@ public sealed class Executor(ExecutionContext context)
     /// 실행을 계속해도 되면 true(작업이 끝났으므로 진행률을 보고한다), 원본 드라이브가 빠져 멈춰야 하면 false.
     /// 모의 크래시나 <see cref="JournalUnavailableException"/> 같은 다른 예외는 잡지 않는다.
     /// </summary>
-    private bool ExecuteOperation(Run run, PlannedOperation op) =>
-        RunStep(run, op, checkVolumesFirst: false, () => op.Kind switch
+    private bool ExecuteOperation(Run run, PlannedOperation op)
+    {
+        JournalExistingTemp(run, op);
+        return RunStep(run, op, checkVolumesFirst: false, () => op.Kind switch
         {
             OperationKind.CreateDirectory => CreateDirectory(op),
             OperationKind.Copy => Copy(run, op),
             OperationKind.Move => Move(op),
             _ => throw new InvalidOperationException($"알 수 없는 작업 종류입니다: {op.Kind}"),
         });
+    }
+
+    /// <summary>
+    /// 복사를 시작했다고 기록하기 전에, 이미 있는 임시 이름 파일을 기록에 남긴다. 그래서 "시작했는데 그 임시 파일에 대한 경고가 없다"는 곧 이번 실행이 만든
+    /// 임시 파일이라는 뜻이 되어, 이어 하기와 되돌리기가 알리지 않고 치워도 된다. 대상이 이미 있으면 복사가 실패하고 임시 파일에 손대지 않으므로 남기지 않는다.
+    /// 확인하다 생긴 오류는 복사가 같은 오류로 실패를 기록하므로 여기서는 넘어간다.
+    /// </summary>
+    private void JournalExistingTemp(Run run, PlannedOperation op)
+    {
+        if (op.Kind != OperationKind.Copy || op.Source is null)
+        {
+            return;
+        }
+
+        var fs = context.FileSystem;
+        var temp = op.Destination + TempSuffix;
+        bool found;
+        try
+        {
+            found = !fs.FileExists(op.Destination) && fs.FileExists(temp);
+        }
+        catch (Exception ex) when (IsFileOperationFailure(ex))
+        {
+            return;
+        }
+
+        if (found)
+        {
+            JournalWarningOnce(run, $"{ExistingTempMovedMessage}: {temp}");
+        }
+    }
+
+    private void JournalWarningOnce(Run run, string warning)
+    {
+        if (run.JournaledWarnings.Add(warning))
+        {
+            run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Warning, Message: warning, TimestampUtc: context.UtcNow()));
+        }
+    }
 
     /// <summary>
     /// 이어 하기: 기록이 Started에서 끊긴 작업을 디스크 상태와 맞춰 본 뒤 끝맺는다.
@@ -670,11 +712,7 @@ public sealed class Executor(ExecutionContext context)
     private void QuarantineExistingTemp(Run run, string temp)
     {
         var warning = $"{ExistingTempMovedMessage}: {temp}";
-        if (!run.HasWarning(warning))
-        {
-            run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Warning, Message: warning, TimestampUtc: context.UtcNow()));
-        }
-
+        JournalWarningOnce(run, warning);
         run.SafeDelete.Quarantine(temp);
         run.AddWarning(warning);
     }
@@ -738,7 +776,8 @@ public sealed class Executor(ExecutionContext context)
 
         public List<string> Warnings { get; } = [];
 
-        public bool HasWarning(string warning) => _seenWarnings.Contains(warning);
+        /// <summary>기록에 이미 있는 경고. 같은 경고를 또 쓰지 않는다.</summary>
+        public HashSet<string> JournaledWarnings { get; } = new(StringComparer.Ordinal);
 
         /// <summary>경고를 한 번만 더한다. 새 경고면 true.</summary>
         public bool AddWarning(string warning)

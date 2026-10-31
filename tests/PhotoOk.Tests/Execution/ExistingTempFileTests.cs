@@ -64,6 +64,26 @@ public class ExistingTempFileTests
         return path;
     }
 
+    /// <summary>실행이 Started를 쓰기 전에 있던 임시 파일을 알아채 경고를 남기고, Started를 쓴 직후 끊긴 기록.</summary>
+    private string WriteJournalWithWarningBeforeStarted()
+    {
+        var path = JournalPaths.InArchive(Archive, RunId);
+        var writer = new JournalWriter(_fs, [path, JournalPaths.InAppData(AppData, RunId)]);
+        writer.Write(new JournalEntry(RunId, JournalEvent.RunStarted, Length: 1, Destination: Archive, TimestampUtc: Now));
+        writer.Write(new JournalEntry(RunId, JournalEvent.Planned, _copy.Id, _copy.Kind, _copy.Source, _copy.Destination, _copy.Length, TimestampUtc: Now));
+        writer.Write(new JournalEntry(RunId, JournalEvent.Warning, Message: Warning, TimestampUtc: Now));
+        writer.Write(new JournalEntry(RunId, JournalEvent.Started, _copy.Id, _copy.Kind, TimestampUtc: Now));
+        return path;
+    }
+
+    private List<JournalEntry> Entries(string path) =>
+        System.Text.Encoding.UTF8.GetString(_fs.ReadAllBytes(path))
+            .Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(line => System.Text.Json.JsonSerializer.Deserialize<JournalEntry>(line, JournalWriter.JsonOptions)!)
+            .ToList();
+
+    private Undoer NewUndoer() => new(new ExecutionContext(_hooked, new XxHasher(_hooked), AppData, () => Now));
+
     private string Quarantined(string runId) => new SafeDelete(_fs, Archive, runId).QuarantineRoot + @"\2026\a.jpg.photook-tmp";
 
     [Fact]
@@ -165,6 +185,83 @@ public class ExistingTempFileTests
 
         Assert.Equal(RunOutcome.Completed, result.Outcome);
         Assert.Equal([Warning], result.Warnings);
+    }
+
+    [Fact]
+    public void Warning_IsWrittenBeforeStarted_AndOnlyOnce()
+    {
+        AddExistingTemp();
+
+        var result = NewExecutor().Execute(new Plan(Archive, [_copy], [], []));
+
+        var entries = Entries(result.JournalPath!);
+        var warnings = entries.FindAll(e => e.Event == JournalEvent.Warning);
+        Assert.Equal(Warning, Assert.Single(warnings).Message);
+        Assert.True(entries.IndexOf(warnings[0]) < entries.FindIndex(e => e.Event == JournalEvent.Started));
+    }
+
+    [Fact]
+    public void DestinationTaken_NothingToMove_NothingWrittenAboutTheTemp()
+    {
+        AddExistingTemp();
+        _fs.AddFile(Destination, Bytes(30, 3));
+
+        var result = NewExecutor().Execute(new Plan(Archive, [_copy], [], []));
+
+        Assert.DoesNotContain(Entries(result.JournalPath!), e => e.Event == JournalEvent.Warning);
+    }
+
+    [Fact]
+    public void Resume_CrashRightAfterStarted_ExistingTempIsStillReported()
+    {
+        var existing = AddExistingTemp();
+        var journal = WriteJournalWithWarningBeforeStarted();
+
+        var result = NewExecutor().Resume(journal);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Equal([Warning], result.Warnings);
+        Assert.Equal(existing, _fs.ReadAllBytes(Quarantined(RunId)));
+    }
+
+    [Fact]
+    public void Undo_CrashRightAfterStarted_ExistingTempIsReported()
+    {
+        var existing = AddExistingTemp();
+        var journal = WriteJournalWithWarningBeforeStarted();
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal([Warning], result.Warnings);
+        Assert.Equal(existing, _fs.ReadAllBytes(Quarantined(RunId)));
+        Assert.Empty(result.Skipped);
+    }
+
+    [Fact]
+    public void Undo_OwnLeftover_StaysSilent()
+    {
+        var partial = _source[..100];
+        _fs.AddFile(Temp, partial);
+        var journal = WriteJournal(JournalEvent.Started);
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Empty(result.Warnings);
+        Assert.Equal(partial, _fs.ReadAllBytes(Quarantined(RunId)));
+    }
+
+    [Fact]
+    public void Undo_DestinationPresent_TempIsNotALeftover_Warns_AndRecords()
+    {
+        var existing = AddExistingTemp();
+        _fs.AddFile(Destination, Bytes(30, 3)); // 복사는 임시 파일을 만들기 전에 실패했다
+        var journal = WriteJournal(JournalEvent.Started, JournalEvent.Failed);
+
+        var result = NewUndoer().Undo(journal);
+
+        Assert.Equal([Warning], result.Warnings);
+        Assert.Equal(existing, _fs.ReadAllBytes(Quarantined(RunId)));
+        Assert.Contains(Entries(journal), e => e.Event == JournalEvent.Warning && e.Message == Warning);
     }
 
     [Fact]
