@@ -22,8 +22,24 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
     /// <summary><see cref="SetLastWriteTimeUtc"/>를 부른 경로, 부른 순서대로.</summary>
     public List<string> TimesSet { get; } = [];
 
-    public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null) =>
-        inner.EnumerateFiles(directory, recursive, onInaccessible);
+    /// <summary><see cref="EnumerateFiles"/>를 부른 횟수.</summary>
+    public int EnumerateFilesCalls { get; private set; }
+
+    public IEnumerable<string> EnumerateFiles(string directory, bool recursive, Action<string, Exception>? onInaccessible = null)
+    {
+        EnumerateFilesCalls++;
+        return inner.EnumerateFiles(directory, recursive, onInaccessible).Select(path =>
+        {
+            OnEnumerated?.Invoke(path);
+            return path;
+        });
+    }
+
+    /// <summary><see cref="EnumerateFiles"/>의 결과를 하나씩 꺼낼 때마다 경로를 받아 부른다. 예외를 던지면 열거가 그 자리에서 끊긴다.</summary>
+    public Action<string>? OnEnumerated { get; set; }
+
+    /// <summary><see cref="GetFile"/> 직전에 경로를 받아 부른다. 예외를 던지면 파일 정보를 주지 않는다.</summary>
+    public Action<string>? BeforeGetFile { get; set; }
 
     public IEnumerable<string> EnumerateDirectories(string directory) => inner.EnumerateDirectories(directory);
 
@@ -42,7 +58,11 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
         return inner.DirectoryExists(path);
     }
 
-    public FileEntry GetFile(string path) => inner.GetFile(path);
+    public FileEntry GetFile(string path)
+    {
+        BeforeGetFile?.Invoke(path);
+        return inner.GetFile(path);
+    }
 
     /// <summary><see cref="OpenRead"/> 직전에 경로를 받아 부른다. 예외를 던지면 열지 않는다.</summary>
     public Action<string>? BeforeOpenRead { get; set; }
@@ -77,7 +97,16 @@ public sealed class HookedFileSystem(IFileSystem inner) : IFileSystem
 
     public bool IsDirectoryEmpty(string path) => inner.IsDirectoryEmpty(path);
 
-    public void RemoveEmptyDirectory(string path) => inner.RemoveEmptyDirectory(path);
+    /// <summary><see cref="RemoveEmptyDirectory"/> 직전에 경로를 받아 부른다. 예외를 던지면 지우지 않는다.</summary>
+    public Action<string>? BeforeRemoveDirectory { get; set; }
+
+    public void RemoveEmptyDirectory(string path)
+    {
+        BeforeRemoveDirectory?.Invoke(path);
+        inner.RemoveEmptyDirectory(path);
+    }
+
+    public bool IsLinkedDirectory(string path) => inner.IsLinkedDirectory(path);
 
     public void AppendLine(string path, string line)
     {

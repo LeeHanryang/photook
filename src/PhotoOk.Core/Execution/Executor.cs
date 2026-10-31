@@ -32,8 +32,12 @@ public sealed class Executor(ExecutionContext context)
     internal const string PlanIncompleteMessage = "계획 기록이 끝나지 않아 이어 할 수 없습니다. 다시 계획해 주세요";
     internal const string JournalCopiesDifferMessage = "기록 사본이 서로 달라 더 긴 기록을 사용했습니다";
     internal const string TimestampNotKeptMessage = "원본 날짜를 유지하지 못했습니다";
+    internal const string FolderNotRemovedMessage = "빈 폴더를 치우지 못함";
 
     private const int BufferSize = 1024 * 1024;
+
+    /// <summary>끊긴 복사를 맞춰 볼 때 같은 시각으로 보는 차이. FAT 계열은 시각을 2초 단위로 저장하므로 시각을 넣었어도 그만큼 다를 수 있다.</summary>
+    private static readonly TimeSpan TimestampTolerance = TimeSpan.FromSeconds(2);
 
     public ExecutionResult Execute(Plan plan, CancellationToken ct = default, IProgress<ExecutionProgress>? progress = null)
     {
@@ -53,14 +57,19 @@ public sealed class Executor(ExecutionContext context)
         {
             Total = plan.Operations.Count(Run.IsFileOperation),
             Progress = progress,
+            CleanupRoots = plan.CleanupRoots ?? [],
+            Operations = plan.Operations,
         };
 
         // 선기록: 첫 작업을 시작하기 전에 모든 작업을 기록해 둔다. 작업이 수만 개여도 사본마다 한 번에 쓰고 한 번만 flush한다.
         // RunStarted의 Length에는 계획한 작업 수를 적는다. 이어 하기는 이 수만큼 Planned가 있어야 계획이 다 기록된 것으로 본다
-        // (묶음 중간에 끊긴 기록도 그래서 가려낸다).
+        // (묶음 중간에 끊긴 기록도 그래서 가려낸다). 고른 폴더는 그 수에 넣지 않고 Planned보다 앞에 쓴다:
+        // 계획이 다 기록된 것으로 보이는 기록에는 고른 폴더도 모두 들어 있다.
+        var roots = run.CleanupRoots.Select(root => new JournalEntry(runId, JournalEvent.CleanupRoot, Destination: root,
+            TimestampUtc: context.UtcNow()));
         var planned = plan.Operations.Select(op => new JournalEntry(runId, JournalEvent.Planned, op.Id, op.Kind, op.Source,
             op.Destination, op.Length, TimestampUtc: context.UtcNow()));
-        journal.WriteMany(planned.Prepend(new JournalEntry(runId, JournalEvent.RunStarted, Length: plan.Operations.Count,
+        journal.WriteMany(roots.Concat(planned).Prepend(new JournalEntry(runId, JournalEvent.RunStarted, Length: plan.Operations.Count,
             Destination: plan.ArchiveRoot, TimestampUtc: context.UtcNow())));
 
         var outcome = RunOperations(run, plan.Operations, ct);
@@ -77,6 +86,7 @@ public sealed class Executor(ExecutionContext context)
     /// 드라이브가 없으면 작업마다 확인해 Interrupted로 멈춘다.
     /// 되돌리기를 시작한 기록이면 아무것도 하지 않고(기록에도 쓰지 않는다) <see cref="RunOutcome.UndoStarted"/>를 돌려준다.
     /// 진행률은 이전 실행에서 끝난(Completed·Skipped) 파일 작업을 끝난 수에 넣고 센다.
+    /// 기록에 남은 경고는 결과에 다시 싣고, 고른 폴더(CleanupRoot)도 기록에서 읽어 끝날 때 비게 된 폴더를 치운다.
     /// </summary>
     public ExecutionResult Resume(string journalPath, CancellationToken ct = default,
         IProgress<ExecutionProgress>? progress = null)
@@ -104,6 +114,7 @@ public sealed class Executor(ExecutionContext context)
             return new ExecutionResult(state.RunId, RunOutcome.UndoStarted, 0, [], [], [UndoStartedMessage], path);
         }
 
+        warnings.AddRange(state.Warnings);
         var alreadyDone = state.Operations.Count(o => o.Status is OpStatus.Completed or OpStatus.Skipped);
         if (state.Finished)
         {
@@ -117,8 +128,13 @@ public sealed class Executor(ExecutionContext context)
             Done = state.Operations.Count(o => Run.IsFileOperation(o.Operation) && o.Status is OpStatus.Completed or OpStatus.Skipped),
             Total = state.Operations.Count(o => Run.IsFileOperation(o.Operation)),
             Progress = progress,
+            CleanupRoots = state.CleanupRoots,
+            Operations = state.Operations.Select(o => o.Operation).ToList(),
         };
-        run.Warnings.AddRange(warnings);
+        foreach (var warning in warnings)
+        {
+            run.AddWarning(warning);
+        }
 
         var steps = state.Operations
             .Where(o => o.Status is OpStatus.Pending or OpStatus.Failed or OpStatus.Started)
@@ -144,7 +160,8 @@ public sealed class Executor(ExecutionContext context)
 
     /// <summary>
     /// 작업을 순서대로 실행한다. 작업 사이마다 취소를 확인하고(지금 작업은 마친다), 원본 드라이브가 빠지면 즉시 멈춘다.
-    /// 모든 작업을 시도했을 때만 RunFinished를 쓴다.
+    /// 모든 작업을 시도했을 때만 RunFinished를 쓴다. 실패한 작업이 없으면 RunFinished를 쓰기 전에 비게 된 폴더를 치운다
+    /// (그 사이 끊기거나 취소되면 끝맺지 않았으므로 이어 하기가 다시 치운다).
     /// </summary>
     private RunOutcome RunOperations(Run run, IEnumerable<PlannedOperation> operations, CancellationToken ct) =>
         RunSteps(run, operations.Select(op => (Func<bool>)(() => ExecuteOperation(run, op))), ct);
@@ -164,8 +181,107 @@ public sealed class Executor(ExecutionContext context)
             }
         }
 
+        if (run.Failures.Count == 0 && !RemoveVacatedFolders(run, ct))
+        {
+            return RunOutcome.Cancelled;
+        }
+
         run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.RunFinished, TimestampUtc: context.UtcNow()));
         return run.Failures.Count == 0 ? RunOutcome.Completed : RunOutcome.CompletedWithFailures;
+    }
+
+    // ------------------------------------------------------------------
+    // 비게 된 폴더 치우기
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// 옮긴 파일이 있던 폴더를 깊은 곳부터, 비어 있는 동안 위로 올라가며 치운다. 고른 폴더(어느 것이든)에 닿거나 고른 폴더 아래가 아니면 멈춘다.
+    /// 옮긴 파일이 없던 폴더는 손대지 않는다(올라가는 길의 부모는 옮긴 파일이 있던 폴더를 품고 있던 폴더다).
+    /// 폴더마다 취소를 확인한다. 취소되면 false(지금 폴더는 마쳤다). 치우지 못해도 경고만 남기고 실행은 성공이다.
+    /// </summary>
+    private bool RemoveVacatedFolders(Run run, CancellationToken ct)
+    {
+        if (run.CleanupRoots.Count == 0)
+        {
+            return true;
+        }
+
+        var roots = run.CleanupRoots
+            .Where(root => !string.IsNullOrWhiteSpace(root))
+            .Select(root => Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)))
+            .ToList();
+        var folders = run.Operations
+            .Where(op => op.Kind == OperationKind.Move && op.Source is not null)
+            .Select(op => Path.GetDirectoryName(Path.GetFullPath(op.Source!)))
+            .OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(folder => folder.Count(c => c == Path.DirectorySeparatorChar))
+            .ThenBy(folder => folder, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var start in folders)
+        {
+            for (var folder = start; folder is not null && IsBelowRootsOnly(folder, roots); folder = Path.GetDirectoryName(folder))
+            {
+                if (ct.IsCancellationRequested)
+                {
+                    return false;
+                }
+
+                if (!TryRemoveVacatedFolder(run, folder))
+                {
+                    break;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>치워도 되는 자리인지: 어떤 고른 폴더의 아래에 있고, 그 자신이 고른 폴더가 아니다(고른 폴더끼리 겹쳐도 안쪽 것을 치우지 않는다).</summary>
+    private static bool IsBelowRootsOnly(string folder, List<string> roots) =>
+        !roots.Exists(root => string.Equals(folder, root, StringComparison.OrdinalIgnoreCase))
+        && roots.Exists(root => IsStrictlyUnder(folder, root));
+
+    private static bool IsStrictlyUnder(string folder, string root)
+    {
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        return folder.Length > prefix.Length && folder.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 폴더 하나를 치운다. 위로 계속 올라가도 되면 true, 이 갈래를 멈춰야 하면 false(비어 있지 않거나, 연결 폴더이거나, 치우지 못했다).
+    /// 이미 없는 폴더는 올라간다: 앞선 실행이 치우고 기록하기 전에 끊겼거나 취소된 뒤 이어 하는 경우, 그 위 폴더는 아직 남아 있다.
+    /// 드라이브가 빠져 안 보이는 폴더는 없는 폴더가 아니므로 경고한다.
+    /// </summary>
+    private bool TryRemoveVacatedFolder(Run run, string folder)
+    {
+        try
+        {
+            if (!context.FileSystem.DirectoryExists(folder))
+            {
+                if (IsVolumePresent(folder))
+                {
+                    return true;
+                }
+
+                run.AddWarning($"{FolderNotRemovedMessage}: {folder}");
+                return false;
+            }
+
+            if (!run.SafeDelete.RemoveVacatedDirectory(folder))
+            {
+                return false;
+            }
+        }
+        catch (Exception ex) when (IsFileOperationFailure(ex))
+        {
+            run.AddWarning($"{FolderNotRemovedMessage}: {folder}");
+            return false;
+        }
+
+        run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.FolderRemoved, Destination: folder, TimestampUtc: context.UtcNow()));
+        return true;
     }
 
     /// <summary>
@@ -325,7 +441,7 @@ public sealed class Executor(ExecutionContext context)
 
             if (!timeKept)
             {
-                run.Warnings.Add($"{TimestampNotKeptMessage}: {op.Destination}");
+                WarnTimestampNotKept(run, op.Destination);
             }
 
             return StepResult.Completed(sourceHash);
@@ -393,6 +509,8 @@ public sealed class Executor(ExecutionContext context)
 
     /// <summary>
     /// 대상이 이미 있고 지금 다시 구한 원본 해시와 같으면, 검증을 마치고 이름까지 붙인 뒤 끊긴 것이므로 Completed로 기록한다.
+    /// 이때 대상의 시각이 원본과 <see cref="TimestampTolerance"/>보다 많이 다르면 시각을 넣지 못한 채 이름을 붙이고 경고를 기록하기 전에
+    /// 끊긴 것일 수 있으므로 경고한다.
     /// 아니면 남은 임시 파일을 격리하고 일반 복사를 한다(대상에 다른 파일이 있으면 덮어쓰지 않고 실패로 기록한다).
     /// </summary>
     private StepResult ReconcileCopy(Run run, PlannedOperation op)
@@ -411,6 +529,12 @@ public sealed class Executor(ExecutionContext context)
             if (string.Equals(sourceHash, destinationHash, StringComparison.Ordinal))
             {
                 TryQuarantine(run, temp);
+                var timeGap = fs.GetFile(op.Destination).LastWriteTimeUtc - fs.GetFile(op.Source).LastWriteTimeUtc;
+                if (timeGap.Duration() > TimestampTolerance)
+                {
+                    WarnTimestampNotKept(run, op.Destination);
+                }
+
                 return StepResult.Completed(sourceHash);
             }
         }
@@ -521,6 +645,16 @@ public sealed class Executor(ExecutionContext context)
         }
     }
 
+    /// <summary>시각을 넣지 못한 대상을 경고하고 기록에도 남긴다(강제 종료 뒤 이어 해도 경고가 사라지지 않게). 이미 알린 대상은 다시 쓰지 않는다.</summary>
+    private void WarnTimestampNotKept(Run run, string destination)
+    {
+        var warning = $"{TimestampNotKeptMessage}: {destination}";
+        if (run.AddWarning(warning))
+        {
+            run.Journal.Write(new JournalEntry(run.RunId, JournalEvent.Warning, Message: warning, TimestampUtc: context.UtcNow()));
+        }
+    }
+
     /// <summary>실패한 복사가 남긴 임시 파일을 격리한다. 그마저 안 되면 경고로 남기고 이어 하기·되돌리기에 맡긴다.</summary>
     private void TryQuarantine(Run run, string temp)
     {
@@ -533,7 +667,7 @@ public sealed class Executor(ExecutionContext context)
         }
         catch (Exception ex) when (IsFileOperationFailure(ex))
         {
-            run.Warnings.Add($"임시 파일을 치우지 못함: {temp}");
+            run.AddWarning($"임시 파일을 치우지 못함: {temp}");
         }
     }
 
@@ -558,6 +692,8 @@ public sealed class Executor(ExecutionContext context)
     /// <summary>실행 하나의 상태. 격리(SafeDelete)는 실행마다 하나다.</summary>
     private sealed class Run(string runId, string archiveRoot, JournalWriter journal, SafeDelete safeDelete)
     {
+        private readonly HashSet<string> _seenWarnings = new(StringComparer.Ordinal);
+
         public string RunId { get; } = runId;
 
         public string ArchiveRoot { get; } = archiveRoot;
@@ -569,6 +705,24 @@ public sealed class Executor(ExecutionContext context)
         public List<OperationFailure> Failures { get; } = [];
 
         public List<string> Warnings { get; } = [];
+
+        /// <summary>경고를 한 번만 더한다. 새 경고면 true.</summary>
+        public bool AddWarning(string warning)
+        {
+            if (!_seenWarnings.Add(warning))
+            {
+                return false;
+            }
+
+            Warnings.Add(warning);
+            return true;
+        }
+
+        /// <summary>비게 된 폴더를 치울 때 넘지 않는 고른 폴더들. 비어 있으면 치우지 않는다.</summary>
+        public IReadOnlyList<string> CleanupRoots { get; init; } = [];
+
+        /// <summary>이 실행의 모든 작업(이어 하기는 이전 실행에서 끝난 작업 포함).</summary>
+        public IReadOnlyList<PlannedOperation> Operations { get; init; } = [];
 
         public int Succeeded { get; set; }
 

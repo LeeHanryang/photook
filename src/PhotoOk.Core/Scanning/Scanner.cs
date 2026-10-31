@@ -114,8 +114,7 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
             {
                 if (skippedFolders.Add(folder))
                 {
-                    var message = error is LinkedFolderSkippedException ? LinkedFolderSkippedException.MessagePrefix : InaccessibleFolderMessage;
-                    errors.Add(new ScanError(folder, message + folder));
+                    errors.Add(FolderError(folder, error));
                 }
             }).GetEnumerator();
             while (enumerator.MoveNext())
@@ -132,8 +131,15 @@ public sealed class Scanner(IFileSystem fileSystem, IMetadataReader reader, File
         return paths;
     }
 
+    /// <summary>열 수 없어 건너뛴 폴더의 오류. 연결 폴더는 따로 안내한다.</summary>
+    internal static ScanError FolderError(string folder, Exception error)
+    {
+        var message = error is LinkedFolderSkippedException ? LinkedFolderSkippedException.MessagePrefix : InaccessibleFolderMessage;
+        return new ScanError(folder, message + folder);
+    }
+
     /// <summary>.photook 폴더 아래이거나 임시 파일(이름에 .photook-tmp 포함)이면 true.</summary>
-    private static bool IsInternal(string path)
+    internal static bool IsInternal(string path)
     {
         var segments = path.Split('\\', '/');
         for (var i = 0; i < segments.Length - 1; i++)

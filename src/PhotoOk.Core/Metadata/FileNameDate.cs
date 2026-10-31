@@ -23,6 +23,15 @@ public static partial class FileNameDate
     [GeneratedRegex(@"KakaoTalk_(\d{4})(\d{2})(\d{2})(?!\d)", RegexOptions.CultureInvariant)]
     private static partial Regex DateOnlyKakao();
 
+    // yyyy.MM.dd, 앞뒤에 숫자가 붙지 않아야 한다. 시각은 00:00으로 본다.
+    [GeneratedRegex(@"(?<!\d)(\d{4})\.(\d{2})\.(\d{2})(?!\d)", RegexOptions.CultureInvariant)]
+    private static partial Regex DottedDate();
+
+    // yyyyMMdd, 앞뒤에 숫자가 붙지 않아야 한다(13자리 밀리초 시각 같은 긴 숫자는 날짜로 보지 않는다).
+    // 뒤에 _HHmmss 모양이 이어지면 시각이 있는 이름인데 시각이 올바르지 않은 것이므로 날짜만 읽지 않는다. 시각은 00:00으로 본다.
+    [GeneratedRegex(@"(?<!\d)(\d{4})(\d{2})(\d{2})(?!\d|_\d{6})", RegexOptions.CultureInvariant)]
+    private static partial Regex CompactDate();
+
     /// <summary>파일 이름에서 읽은 현지 벽시계 시각(<see cref="DateTimeKind.Unspecified"/>). 없거나 올바르지 않으면 null.</summary>
     public static DateTime? TryParse(string fileName, DateTime todayLocal)
     {
@@ -30,7 +39,7 @@ public static partial class FileNameDate
 
         var limit = todayLocal.Date.AddDays(1);
         // 형식마다 처음 맞는 곳 하나만 본다. 그것이 달력에 없는 날짜면 같은 형식의 뒤쪽 일치가 아니라 다음 형식으로 넘어간다.
-        foreach (var regex in new[] { Dashed(), Compact(), DateOnlyKakao() })
+        foreach (var regex in new[] { Dashed(), Compact(), DateOnlyKakao(), DottedDate(), CompactDate() })
         {
             var match = regex.Match(fileName);
             if (match.Success && ToDateTime(match, limit) is { } value)

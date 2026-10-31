@@ -15,6 +15,11 @@ public class FileNameDateTests
     [InlineData("KakaoTalk_20260109_143628675.mp4", "2026-01-09T14:36:28")]
     [InlineData("IMG_20231214_161919.jpg", "2023-12-14T16:19:19")]
     [InlineData("KakaoTalk_20251220.jpg", "2025-12-20T00:00:00")]
+    [InlineData("2025.11.25 가나.mp4", "2025-11-25T00:00:00")]
+    [InlineData("20250306 양식영상2.mp4", "2025-03-06T00:00:00")]
+    [InlineData("IMG_20250306.jpg", "2025-03-06T00:00:00")]
+    [InlineData("20250306_120000.jpg", "2025-03-06T12:00:00")] // 시각이 있는 형식이 먼저
+    [InlineData("a 2025.11.25.jpg", "2025-11-25T00:00:00")]
     public void TryParse_ReadsKnownFormats(string name, string expected)
     {
         var result = FileNameDate.TryParse(name, Today);
@@ -26,11 +31,17 @@ public class FileNameDateTests
     [Theory]
     [InlineData("1690164207730.jpg")]
     [InlineData("20231399_161919.jpg")]
-    [InlineData("20231214_256019.jpg")]
     [InlineData("photo_1989-12-31_10-00-00.jpg")]
     [InlineData("20261030_101010.jpg")] // 내일모레(미래)
     [InlineData("김공장 도면1.jpg")]
     [InlineData("120231214_161919.jpg")] // 앞에 숫자가 붙음
+    [InlineData("20231214_256019.jpg")] // 시각이 올바르지 않으면 날짜만 읽지 않는다
+    [InlineData("1690164019845.jpg")] // 긴 숫자는 날짜가 아니다
+    [InlineData("2025.13.45.jpg")]
+    [InlineData("99991231.jpg")] // 미래
+    [InlineData("12025.11.25.jpg")] // 점 형식도 앞에 숫자가 붙으면 안 된다
+    [InlineData("2025.11.251.jpg")]
+    [InlineData("202503061.jpg")] // 숫자만 있는 형식도 뒤에 숫자가 붙으면 안 된다
     public void TryParse_RejectsOthers(string name)
     {
         Assert.Null(FileNameDate.TryParse(name, Today));

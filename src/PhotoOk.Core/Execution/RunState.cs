@@ -17,4 +17,11 @@ public sealed record OpState(PlannedOperation Operation, OpStatus Status, string
 /// <paramref name="UndoStarted"/>는 UndoStarted 항목이 있으면 true다.
 /// </summary>
 public sealed record RunState(string RunId, string ArchiveRoot, IReadOnlyList<OpState> Operations, bool Finished,
-    int ExpectedOperations, int EntryCount, bool UndoStarted);
+    int ExpectedOperations, int EntryCount, bool UndoStarted)
+{
+    /// <summary>비게 된 폴더를 치울 때 넘지 않는 고른 폴더들(CleanupRoot 항목). 이전 버전의 기록에는 없어 빈 목록이다.</summary>
+    public IReadOnlyList<string> CleanupRoots { get; init; } = [];
+
+    /// <summary>이어 해도 사라지지 않아야 하는 경고(Warning 항목), 기록된 순서대로. 이전 버전의 기록에는 없어 빈 목록이다.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}

@@ -131,7 +131,7 @@ public class ShellViewModelTests
         Assert.False(shell.ReturnHomeAfterError(() => throw new InvalidOperationException("부르면 안 됨")));
 
         var start = new StartViewModel(shell, new FakeDrives(), new FakeRunHistory(),
-            new PhotoOk.Services.FileLog(new FakeFileSystem(), @"L:\logs"), _ => new IdleScreen(), _ => new IdleScreen(),
+            new PhotoOk.Services.FileLog(new FakeFileSystem(), @"L:\logs"), (_, _) => new IdleScreen(), _ => new IdleScreen(),
             _ => new IdleScreen());
         shell.Navigate(start);
 

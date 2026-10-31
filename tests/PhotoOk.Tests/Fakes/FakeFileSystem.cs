@@ -603,6 +603,15 @@ public sealed class FakeFileSystem : IFileSystem
         }
     }
 
+    /// <summary><see cref="AddLinkedDirectory"/>로 만든 폴더인지. 볼륨이 없어도 던지지 않는다.</summary>
+    public bool IsLinkedDirectory(string path)
+    {
+        lock (_gate)
+        {
+            return _linkedDirs.Contains(Normalize(path));
+        }
+    }
+
     public void AppendLine(string path, string line)
     {
         ArgumentNullException.ThrowIfNull(line);

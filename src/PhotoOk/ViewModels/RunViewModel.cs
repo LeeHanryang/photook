@@ -15,6 +15,7 @@ namespace PhotoOk.ViewModels;
 /// "검증 완료 — 원본을 직접 정리해도 안전합니다"는 실행이 실패 없이 끝까지 마쳤고(<see cref="RunOutcome.Completed"/>, 실패 0)
 /// 스캔 때 읽지 못한 파일도, 가져오지 않은 파일(사진·동영상이 아닌 파일)도, 가져오지 않은 하위 폴더도 없다고 알 때만 보인다.
 /// 그것을 모르는 경우(기록에서 이어 하기)에는 보이지 않는다.
+/// 재정리와 이동으로 처리한 흡수는 그 문구 대신 <see cref="SummaryLines"/>(옮긴 파일·그대로 둔 파일 수 등)를 보인다.
 /// 상태는 화면(UI) 스레드에서만 바꾼다.
 /// </summary>
 public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
@@ -51,6 +52,12 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     /// <summary>이번 실행이 이어받을 앞부분의 알림. 처음 실행에는 없다.</summary>
     private IReadOnlyList<string> _carriedWarnings = [];
     private int? _succeededFiles;
+
+    /// <summary>기록에서 센, 최종 자리로 옮긴 파일 수(임시 이름으로 비켜 둔 이동은 세지 않는다). 모르면 null.</summary>
+    private int? _movedFiles;
+
+    /// <summary>기록에서 센, 최종 자리에 복사한 파일 수. 모르면 null.</summary>
+    private int? _copiedFiles;
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ProgressText))]
@@ -136,11 +143,78 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     public string? CurrentFileName => string.IsNullOrEmpty(CurrentPath) ? null : Path.GetFileName(CurrentPath);
 
     /// <summary>끝나기 전에는 null.</summary>
-    public string? ResultTitle => _faultTitle ?? (_result is null ? null : TitleOf(_result.Outcome));
+    public string? ResultTitle => _faultTitle ?? (_result is null ? null : TitleOf(_result.Outcome, _scan?.Kind));
 
-    /// <summary>실패 없이 끝까지 마쳤고 스캔 오류도, 가져오지 않은 파일도, 가져오지 않은 하위 폴더도 없다고 알 때만 문구가 있고, 아니면 null.</summary>
+    /// <summary>
+    /// 실패 없이 끝까지 마쳤고 스캔 오류도, 가져오지 않은 파일도, 가져오지 않은 하위 폴더도 없다고 알 때만 문구가 있고, 아니면 null.
+    /// 재정리와, 이동으로 처리한 파일이 있는 흡수는 원본이 아카이브 안이거나 옮겨져 "원본을 정리"할 일이 없으므로 쓰지 않는다.
+    /// 흡수에서 복사하지 않고 제자리에 둔 파일(하위 폴더·판단 필요·다른 볼륨)이 있으면 그 파일은 아카이브에 없으므로 쓰지 않는다.
+    /// 흡수에서 아카이브에 이미 있어 남긴 파일은 그 내용이 아카이브에 있으므로 막지 않는다.
+    /// </summary>
     public string? SafeToCleanMessage =>
-        CompletedWithoutFailures && _scan is { ScanErrors: 0, IgnoredFiles: 0, SubfoldersNotImported: false } ? SafeMessage : null;
+        CompletedWithoutFailures && _scan is { ScanErrors: 0, IgnoredFiles: 0, SubfoldersNotImported: false } scan && !BlocksSafeMessage(scan)
+            ? SafeMessage
+            : null;
+
+    /// <summary>
+    /// 끝난 재정리·흡수의 요약 줄("옮긴 파일 N개" 등). 재정리는 옮긴 줄이 늘 있고, 흡수는 이동이 있으면 옮긴 줄이, 없으면 복사 줄이 있다. 나머지는 0보다 클 때만 있다.
+    /// 가져오기, 기록에서 이어 한 실행(스캔을 모른다), 끝나지 않은 실행에는 없다.
+    /// </summary>
+    public IReadOnlyList<string> SummaryLines
+    {
+        get
+        {
+            if (_scan is not { Kind: JobKind.Absorb or JobKind.Reorganize } scan
+                || _result is not { Outcome: RunOutcome.Completed or RunOutcome.CompletedWithFailures })
+            {
+                return [];
+            }
+
+            var lines = new List<string>();
+            if (scan.Kind == JobKind.Reorganize)
+            {
+                if (_movedFiles is { } moved)
+                {
+                    lines.Add(Count("옮긴 파일", moved));
+                }
+
+                AddIfAny(lines, "그대로 둔 파일", scan.KeptInPlace);
+                AddIfAny(lines, "판단 필요로 그대로 둔 파일", scan.ReviewKept);
+                AddIfAny(lines, "같은 파일이 있어 그대로 둔 파일", scan.DuplicateKept);
+            }
+            else
+            {
+                // 옮긴 파일과 복사한 파일을 따로 센다. 계획에 이동이 있으면 옮긴 줄이, 없으면 복사한 줄이 0개여도 보인다.
+                if (_movedFiles is { } moved && (moved > 0 || scan.AnyMoved))
+                {
+                    lines.Add(Count("옮긴 파일", moved));
+                }
+
+                if (_copiedFiles is { } copied && (copied > 0 || !scan.AnyMoved))
+                {
+                    lines.Add(Count("복사한 파일", copied));
+                }
+
+                AddIfAny(lines, "그대로 둔 파일", scan.KeptInPlace);
+                AddIfAny(lines, "이미 있어 남긴 파일", scan.AlreadyInArchive);
+            }
+
+            return lines;
+        }
+    }
+
+    private static bool BlocksSafeMessage(ScanFacts scan) =>
+        scan.Kind == JobKind.Reorganize || (scan.Kind == JobKind.Absorb && (scan.AnyMoved || scan.KeptInPlace > 0));
+
+    private static string Count(string label, int count) => string.Create(CultureInfo.InvariantCulture, $"{label} {count}개");
+
+    private static void AddIfAny(List<string> lines, string label, int count)
+    {
+        if (count > 0)
+        {
+            lines.Add(Count(label, count));
+        }
+    }
 
     /// <summary>
     /// 원본을 정리하기 전에 확인할 것(스캔 때 읽지 못한 파일, 가져오지 않은 파일, 가져오지 않은 하위 폴더). 실행 결과가 있으면
@@ -166,14 +240,18 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             var lines = new List<string>();
             if (_scan.ScanErrors is > 0 and var errors)
             {
-                lines.Add(string.Create(CultureInfo.InvariantCulture,
-                    $"스캔할 때 읽지 못한 파일이 {errors}개 있습니다. 원본을 직접 정리하기 전에 그 파일을 확인해 주세요"));
+                lines.Add(_scan.Kind == JobKind.Reorganize
+                    ? string.Create(CultureInfo.InvariantCulture, $"스캔할 때 읽지 못한 파일이 {errors}개 있습니다")
+                    : string.Create(CultureInfo.InvariantCulture,
+                        $"스캔할 때 읽지 못한 파일이 {errors}개 있습니다. 원본을 직접 정리하기 전에 그 파일을 확인해 주세요"));
             }
 
             if (_scan.IgnoredFiles is > 0 and var ignored)
             {
-                lines.Add(string.Create(CultureInfo.InvariantCulture,
-                    $"사진·동영상이 아닌 파일 {ignored}개는 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요"));
+                lines.Add(_scan.Kind == JobKind.Reorganize
+                    ? string.Create(CultureInfo.InvariantCulture, $"사진·동영상이 아닌 파일 {ignored}개는 옮기지 않았습니다")
+                    : string.Create(CultureInfo.InvariantCulture,
+                        $"사진·동영상이 아닌 파일 {ignored}개는 가져오지 않았습니다. 원본을 정리하기 전에 확인해 주세요"));
             }
 
             if (_scan.SubfoldersNotImported)
@@ -269,10 +347,10 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         var progress = new ProgressRelay(ApplyProgress);
         try
         {
-            var (result, succeededFiles) = await Task.Run(() =>
+            var (result, counts) = await Task.Run(() =>
             {
                 var finished = work(cts.Token, progress);
-                return (finished, CountSucceededFiles(finished));
+                return (finished, CountFiles(finished));
             });
 
             // 늦게 도착하는 진행률 알림이 있어도 마지막 보고로 맞춰 둔다.
@@ -281,7 +359,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
                 ApplyProgress(latest);
             }
 
-            ShowResult(result, succeededFiles);
+            ShowResult(result, counts);
         }
         catch (JournalUnavailableException ex)
         {
@@ -323,13 +401,17 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         _warningLines = [];
         _allWarnings = [];
         _succeededFiles = null;
+        _movedFiles = null;
+        _copiedFiles = null;
         NotifyResultChanged();
     }
 
-    private void ShowResult(ExecutionResult result, int? succeededFiles)
+    private void ShowResult(ExecutionResult result, JournalCounts? counts)
     {
         _result = result;
-        _succeededFiles = succeededFiles;
+        _succeededFiles = counts?.Succeeded;
+        _movedFiles = counts?.Moved;
+        _copiedFiles = counts?.Copied;
 
         // 화면에는 까닭의 요약(" — " 앞)만 보인다. 운영체제 예외 원문은 뒤에 붙어 있으므로 로그에만 남긴다.
         var failures = result.Failures.Select(f => (Full: FormatFailure(f, f.Message), Shown: FormatFailure(f, Summary(f.Message)))).ToList();
@@ -382,10 +464,10 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
     }
 
     /// <summary>
-    /// 기록에서 폴더 만들기를 뺀 작업 중 끝난(완료·이미 있어 건너뜀) 수. 기록을 읽지 못하면 null(그 줄은 보이지 않는다).
+    /// 기록에서 폴더 만들기를 뺀 작업 중 끝난(완료·이미 있어 건너뜀) 수와, 최종 자리에 옮기거나 복사한(완료) 파일 수. 기록을 읽지 못하면 null(그 줄은 보이지 않는다).
     /// 이어 하기는 이전 실행에서 끝낸 파일도 센다. 실행기가 일하는 스레드에서 부른다.
     /// </summary>
-    private int? CountSucceededFiles(ExecutionResult result)
+    private JournalCounts? CountFiles(ExecutionResult result)
     {
         if (result.JournalPath is null)
         {
@@ -394,8 +476,12 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
 
         try
         {
-            return JournalReader.Load(_fileSystem, result.JournalPath).Operations
-                .Count(o => o.Operation.Kind != OperationKind.CreateDirectory && o.Status is OpStatus.Completed or OpStatus.Skipped);
+            var operations = JournalReader.Load(_fileSystem, result.JournalPath).Operations;
+            return new JournalCounts(
+                operations.Count(o => o.Operation.Kind != OperationKind.CreateDirectory && o.Status is OpStatus.Completed or OpStatus.Skipped),
+                operations.Count(o => o.Operation.Kind == OperationKind.Move && FolderNodeViewModel.IsPlacement(o.Operation)
+                    && o.Status == OpStatus.Completed),
+                operations.Count(o => o.Operation.Kind == OperationKind.Copy && o.Status == OpStatus.Completed));
         }
         catch (Exception ex)
         {
@@ -404,6 +490,8 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             return null;
         }
     }
+
+    private readonly record struct JournalCounts(int Succeeded, int Moved, int Copied);
 
     private void Fault(string title)
     {
@@ -421,6 +509,7 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
         OnPropertyChanged(nameof(SafeToCleanMessage));
         OnPropertyChanged(nameof(CautionMessage));
         OnPropertyChanged(nameof(SucceededFilesText));
+        OnPropertyChanged(nameof(SummaryLines));
         OnPropertyChanged(nameof(FailureLines));
         OnPropertyChanged(nameof(WarningLines));
         OnPropertyChanged(nameof(CanResume));
@@ -432,9 +521,9 @@ public sealed partial class RunViewModel : ObservableObject, IBusyViewModel
             ? lines
             : [.. lines.Take(LineLimit), string.Create(CultureInfo.InvariantCulture, $"외 {lines.Count - LineLimit}건")];
 
-    private static string TitleOf(RunOutcome outcome) => outcome switch
+    private static string TitleOf(RunOutcome outcome, JobKind? kind) => outcome switch
     {
-        RunOutcome.Completed => "정리를 마쳤습니다",
+        RunOutcome.Completed => kind == JobKind.Reorganize ? "재정리를 마쳤습니다" : "정리를 마쳤습니다",
         RunOutcome.CompletedWithFailures => "일부 파일을 처리하지 못했습니다",
         RunOutcome.Cancelled => "취소했습니다. 이어 하거나 되돌릴 수 있습니다",
         RunOutcome.Interrupted => "드라이브가 연결되어 있지 않아 멈췄습니다. 다시 연결하고 이어 하세요",

@@ -158,6 +158,21 @@ public class ViewLayoutTests
     }
 
     [Fact]
+    public void PreviewView_NeverUseNameButton_HasItsOwnLine()
+    {
+        var button = Load("Views", "PreviewView.xaml").Descendants(Wpf + "Button")
+            .Single(b => (string?)b.Attribute("Content") == "이 이름 다시 쓰지 않기");
+        var panel = button.Parent!;
+        var note = panel.Elements(Wpf + "TextBlock").Single(t => (string?)t.Attribute("Text") == "폴더 이름에서 읽음");
+
+        // 안내와 버튼을 위아래로 두어 카드 너비에서 버튼 글자가 잘리지 않게 한다. 버튼은 줄 전체로 늘어나지 않는다.
+        Assert.Equal(Wpf + "StackPanel", panel.Name);
+        Assert.NotEqual("Horizontal", (string?)panel.Attribute("Orientation"));
+        Assert.Contains(button, note.ElementsAfterSelf());
+        Assert.Equal("Left", (string?)button.Attribute("HorizontalAlignment"));
+    }
+
+    [Fact]
     public void PreviewView_ShowsIgnoredFiles()
     {
         var xaml = File.ReadAllText(Path.Combine(RepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));

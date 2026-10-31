@@ -152,8 +152,39 @@ public sealed class PhysicalFileSystem : IFileSystem
             throw new IOException($"비어 있지 않은 폴더는 지우지 않습니다: {path}");
         }
 
-        Directory.Delete(path, recursive: false);
+        // Windows의 폴더에 붙은 읽기 전용은 대개 표시일 뿐이지만(탐색기는 그런 폴더도 지운다) Directory.Delete는 거부한다.
+        // 비어 있음을 확인한 이 폴더의 표시만 잠깐 풀고, 지우지 못하면 되돌린다. 파일은 건드리지 않는다.
+        var attributes = File.GetAttributes(path);
+        var readOnly = attributes.HasFlag(FileAttributes.ReadOnly);
+        if (readOnly)
+        {
+            File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
+        }
+
+        try
+        {
+            Directory.Delete(path, recursive: false);
+        }
+        catch (Exception ex) when (readOnly && ex is IOException or UnauthorizedAccessException)
+        {
+            RestoreAttributes(path, attributes);
+            throw;
+        }
     }
+
+    // 지우기 실패를 알리는 것이 먼저다. 표시를 되돌리지 못해도 그 오류를 가리지 않는다.
+    private static void RestoreAttributes(string path, FileAttributes attributes)
+    {
+        try
+        {
+            File.SetAttributes(path, attributes);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+    }
+
+    public bool IsLinkedDirectory(string path) => Directory.Exists(path) && IsLinkedFolder(path);
 
     public void AppendLine(string path, string line)
     {

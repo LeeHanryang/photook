@@ -131,6 +131,38 @@ public class SafeDeleteTests
     }
 
     [Fact]
+    public void RemoveVacatedDirectory_RemovesEmptyFolder_OutsideArchiveToo()
+    {
+        _fs.AddDirectory(@"D:\Inbox\empty");
+
+        Assert.True(NewSafeDelete().RemoveVacatedDirectory(@"D:\Inbox\empty"));
+
+        Assert.False(_fs.DirectoryExists(@"D:\Inbox\empty"));
+        Assert.True(_fs.DirectoryExists(@"D:\Inbox"));
+    }
+
+    [Fact]
+    public void RemoveVacatedDirectory_ReturnsFalse_WhenNotEmptyOrMissing()
+    {
+        _fs.AddFile(@"D:\Inbox\full\a.jpg", new byte[] { 1 });
+
+        Assert.False(NewSafeDelete().RemoveVacatedDirectory(@"D:\Inbox\full"));
+        Assert.False(NewSafeDelete().RemoveVacatedDirectory(@"D:\Inbox\nothing"));
+
+        Assert.True(_fs.FileExists(@"D:\Inbox\full\a.jpg"));
+    }
+
+    [Fact]
+    public void RemoveVacatedDirectory_KeepsLinkedFolder_EvenWhenEmpty()
+    {
+        _fs.AddLinkedDirectory(@"D:\Inbox\link");
+
+        Assert.False(NewSafeDelete().RemoveVacatedDirectory(@"D:\Inbox\link"));
+
+        Assert.True(_fs.DirectoryExists(@"D:\Inbox\link"));
+    }
+
+    [Fact]
     public void RemoveEmptyDirectory_RemovesEmptyFolder()
     {
         _fs.AddDirectory(@"D:\Archive\2026\empty");

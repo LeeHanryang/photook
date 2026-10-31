@@ -94,6 +94,17 @@ public sealed class SafeDelete
     /// </summary>
     public bool RemoveCreatedDirectory(string path) => RemoveEmptyDirectory(path);
 
+    /// <summary>
+    /// 이동으로 비게 된 폴더를 치울 때 쓴다. 동작은 <see cref="RemoveEmptyDirectory"/>와 같고(비어 있을 때만 지운다), 아카이브 밖의 폴더도 받는다.
+    /// 연결 폴더(정션·심볼릭 링크)는 false: 비어 보이는 것은 연결 대상이지 사용자가 만든 연결이 필요 없다는 뜻이 아니다.
+    /// 폴더 제거를 부르는 코드는 이 파일에만 둔다는 구조 테스트 규칙 때문에 따로 둔 입구다.
+    /// </summary>
+    public bool RemoveVacatedDirectory(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        return !_fileSystem.IsLinkedDirectory(path) && RemoveEmptyDirectory(path);
+    }
+
     // 드라이브 루트(D:\)는 끝의 구분자를 남겨야 Path.Combine이 올바르게 동작한다.
     private static string TrimSeparators(string path) =>
         path == Path.GetPathRoot(path)

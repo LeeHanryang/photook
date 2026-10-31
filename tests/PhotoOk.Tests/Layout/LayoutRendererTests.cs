@@ -77,15 +77,77 @@ public class LayoutRendererTests
     }
 
     [Fact]
-    public void Render_EventName_WithBackslash_StaysOneFolder()
+    public void Event_Backslash_SplitsAfterFirstPiece()
+    {
+        var preset = OneBranch(new LevelTemplate("[{기간}] {이벤트}"));
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"[2026-10-14] 가족여행\제주 바닷가", Render(preset, group, eventName: @"가족여행\제주 바닷가"));
+        Assert.Equal(@"2026\2026-10-14 여행\제주", Render(BuiltInPresets.DateEvent, group, eventName: @"여행\제주"));
+    }
+
+    [Fact]
+    public void Event_Backslash_ThenLevels()
+    {
+        var preset = OneBranch(new LevelTemplate("[{기간}] {이벤트}"), new LevelTemplate("{기기}"));
+        var group = Group(@"D:\S\a.jpg", Oct14, "FUJIFILM", "X100VI");
+
+        Assert.Equal(@"[2026-10-14] 가족여행\제주 바닷가\X100VI", Render(preset, group, eventName: @"가족여행\제주 바닷가"));
+    }
+
+    [Fact]
+    public void Event_Backslash_PiecesAreSanitized()
+    {
+        var preset = OneBranch(new LevelTemplate("[{기간}] {이벤트}"));
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"[2026-10-14] a_b\c_\NUL_", Render(preset, group, eventName: @"a/b\c?\NUL"));
+        Assert.Equal(@"[2026-10-14] 가\나", Render(preset, group, eventName: @"가 \ 나 "));
+    }
+
+    [Fact]
+    public void Event_Backslash_LiteralAfterTokenJoinsLastPiece()
+    {
+        var preset = OneBranch(new LevelTemplate("{이벤트} 사진"));
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"가\나 사진", Render(preset, group, eventName: @"가\나"));
+    }
+
+    [Fact]
+    public void Event_Backslash_InNeedsReviewBranch_Splits()
+    {
+        var preset = new Preset("t", TimeOnly.MinValue,
+        [
+            new LayoutBranch("검토", BranchCondition.NeedsReview, [new LevelTemplate("판단 필요"), new LevelTemplate("{이벤트}")]),
+            new LayoutBranch("기본", BranchCondition.Always, [new LevelTemplate("{날짜}")]),
+        ], [], BuiltInPresets.DateDeviceFormat.FormatGroups);
+        var group = Group(@"D:\S\a.jpg", Oct14);
+
+        Assert.Equal(@"판단 필요\가\나", Render(preset, group, [ReviewReason.NoCaptureDate], eventName: @"가\나"));
+        Assert.Equal(@"판단 필요\x", Render(preset, group, [ReviewReason.NoCaptureDate], eventName: @"..\..\x"));
+        Assert.Equal(@"판단 필요", Render(preset, group, [ReviewReason.NoCaptureDate], eventName: @"\"));
+    }
+
+    [Theory]
+    [InlineData(@"..\..\x", @"2026\2026-10-14 x")]
+    [InlineData(@".\x", @"2026\2026-10-14 x")]
+    [InlineData(@"a\\b", @"2026\2026-10-14 a\b")]
+    [InlineData(@"\", @"2026\2026-10-14")]
+    [InlineData(@"..", @"2026\2026-10-14")]
+    [InlineData(@"x\..\y", @"2026\2026-10-14 x\y")]
+    [InlineData(@"\a\", @"2026\2026-10-14 a")]
+    public void Event_DotSegments_Dropped(string eventName, string expected)
     {
         var group = Group(@"D:\S\a.jpg", Oct14);
 
-        // 이벤트 이름의 '\'는 폴더 구분자가 되지 않는다(다른 금지 문자와 같은 치환).
-        var result = Render(BuiltInPresets.DateEvent, group, eventName: @"여행\제주");
+        var result = Render(BuiltInPresets.DateEvent, group, eventName: eventName);
 
-        Assert.Equal(@"2026\2026-10-14 여행_제주", result);
-        Assert.Equal(2, result.Split('\\').Length);
+        Assert.Equal(expected, result);
+        Assert.DoesNotContain("..", result);
+        Assert.DoesNotContain(@"\\", result);
+        Assert.DoesNotContain(@"\.\", result);
+        Assert.False(result.StartsWith('\\') || result.EndsWith('\\'));
     }
 
     [Fact]
@@ -171,6 +233,38 @@ public class LayoutRendererTests
         var group = Group(@"D:\S\a.jpg", new DateTime(2026, 10, 15, 2, 0, 0, DateTimeKind.Unspecified));
 
         Assert.Equal("2026-10-14", Render(preset, group, session: SessionOf(group)));
+    }
+
+    [Fact]
+    public void Render_OriginalFolder_RenderedByDefault()
+    {
+        var group = Group(@"D:\S\라이트룸\a.jpg", Oct14);
+
+        Assert.Equal(@"판단 필요\라이트룸", Render(OneBranch(new LevelTemplate("판단 필요"), new LevelTemplate("{원래폴더}")), group));
+    }
+
+    [Fact]
+    public void Render_OmitOriginalFolder_OmitsLevel()
+    {
+        var group = Group(@"D:\S\라이트룸\a.jpg", Oct14);
+        var preset = OneBranch(new LevelTemplate("판단 필요"), new LevelTemplate("{원래폴더}"));
+
+        var result = new LayoutRenderer(preset).RenderDirectory(
+            new LayoutInput(SessionOf(group), group, [], Utc, OmitOriginalFolder: true));
+
+        Assert.Equal("판단 필요", result);
+    }
+
+    [Fact]
+    public void Render_OmitOriginalFolder_KeepsOtherTokensInLevel()
+    {
+        var group = Group(@"D:\S\라이트룸\a.jpg", Oct14);
+        var preset = OneBranch(new LevelTemplate("{날짜} {원래폴더}"));
+
+        var result = new LayoutRenderer(preset).RenderDirectory(
+            new LayoutInput(SessionOf(group), group, [], Utc, OmitOriginalFolder: true));
+
+        Assert.Equal("2026-10-14", result);
     }
 
     [Fact]

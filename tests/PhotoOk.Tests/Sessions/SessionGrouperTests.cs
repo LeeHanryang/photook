@@ -100,4 +100,92 @@ public class SessionGrouperTests
     {
         Assert.Empty(SessionGrouper.GroupByDay([], TimeOnly.MinValue, Utc));
     }
+
+    [Fact]
+    public void GroupByDay_SplitsSameDayByName()
+    {
+        var groups = new[]
+        {
+            Group(@"D:\S\a.jpg", T(3, 9, 9)),
+            Group(@"D:\S\b.jpg", T(3, 9, 10)),
+            Group(@"D:\S\c.jpg", T(3, 9, 11)),
+        };
+
+        var sessions = SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc, g => g.Id switch
+        {
+            @"D:\S\a.jpg" => "데이트",
+            @"D:\S\b.jpg" => "여행",
+            _ => null,
+        });
+
+        Assert.Equal(["2026-03-09", "2026-03-09|데이트", "2026-03-09|여행"], sessions.Select(s => s.Id));
+        Assert.Null(sessions[0].SuggestedEventName);
+        Assert.Equal("데이트", sessions[1].SuggestedEventName);
+        Assert.Equal("여행", sessions[2].SuggestedEventName);
+    }
+
+    [Fact]
+    public void GroupByDay_FormatName_AnyGroupMarksSession()
+    {
+        var groups = new[]
+        {
+            Group(@"D:\S\a.jpg", T(3, 9, 9)),
+            Group(@"D:\S\b.jpg", T(3, 9, 10)),
+            Group(@"D:\S\c.jpg", T(3, 9, 11)),
+            Group(@"D:\S\d.jpg", T(3, 9, 12)),
+        };
+
+        var sessions = SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc,
+            g => g.Id switch
+            {
+                @"D:\S\a.jpg" or @"D:\S\b.jpg" => "데이트", // 나중 그룹만 형식에서 읽었다
+                @"D:\S\c.jpg" => "여행",
+                _ => null,
+            },
+            g => g.Id == @"D:\S\b.jpg");
+
+        Assert.Equal([false, true, false], sessions.Select(s => s.SuggestedFromFormat));
+        Assert.All(SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc, _ => "데이트"), s => Assert.False(s.SuggestedFromFormat));
+    }
+
+    [Fact]
+    public void GroupByDay_SameNameIgnoringCaseAndSpace_IsOneSession()
+    {
+        var groups = new[]
+        {
+            Group(@"D:\S\a.jpg", T(3, 9, 9)),
+            Group(@"D:\S\b.jpg", T(3, 9, 10)),
+            Group(@"D:\S\c.jpg", T(3, 9, 11)),
+        };
+        var names = new Dictionary<string, string> { [@"D:\S\a.jpg"] = "Trip", [@"D:\S\b.jpg"] = "trip ", [@"D:\S\c.jpg"] = " TRIP" };
+
+        var sessions = SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc, g => names[g.Id]);
+
+        var session = Assert.Single(sessions);
+        Assert.Equal("Trip", session.SuggestedEventName);
+        Assert.Equal("2026-03-09|Trip", session.Id);
+        Assert.Equal(3, session.Groups.Count);
+    }
+
+    [Fact]
+    public void GroupByDay_NoNameFunc_IdIsDateOnly()
+    {
+        var groups = new[] { Group(@"D:\S\a.jpg", T(3, 9, 9)), Group(@"D:\S\b.jpg", T(3, 9, 10)) };
+
+        var session = Assert.Single(SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc));
+
+        Assert.Equal("2026-03-09", session.Id);
+        Assert.Null(session.SuggestedEventName);
+    }
+
+    [Fact]
+    public void GroupByDay_BlankNameCountsAsNoName()
+    {
+        var groups = new[] { Group(@"D:\S\a.jpg", T(3, 9, 9)) };
+
+        var session = Assert.Single(SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc, _ => "  "));
+
+        Assert.Equal("2026-03-09", session.Id);
+        Assert.Null(session.SuggestedEventName);
+    }
 }

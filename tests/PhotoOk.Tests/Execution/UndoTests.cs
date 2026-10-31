@@ -1233,6 +1233,8 @@ public class UndoTests
 
         public void RemoveEmptyDirectory(string path) => inner.RemoveEmptyDirectory(path);
 
+        public bool IsLinkedDirectory(string path) => inner.IsLinkedDirectory(path);
+
         public void AppendLine(string path, string line) => inner.AppendLine(path, line);
 
         public void AppendLines(string path, IEnumerable<string> lines) => inner.AppendLines(path, lines);

@@ -16,6 +16,7 @@ namespace PhotoOk.Tests.ViewModels;
 public class PreviewViewModelTests
 {
     private const string Archive = @"D:\Archive";
+    private const string IgnoredNamesPath = @"C:\Users\test\AppData\Roaming\PhotoOk\ignored-folder-names.txt";
     private const string LogFolder = @"C:\Users\test\AppData\Local\PhotoOk\logs";
     private const long Gb = 1024L * 1024 * 1024;
     private static readonly TimeSpan Wait = TimeSpan.FromSeconds(10);
@@ -76,8 +77,9 @@ public class PreviewViewModelTests
                 _runRequests.Add((plan, scan.ScanErrors, scan.IgnoredFiles, scan.SubfoldersNotImported));
                 return _runScreen;
             },
-            createBack: () => _backScreen,
+            createBack: _ => _backScreen,
             replanDelay: TimeSpan.Zero,
+            ignoredNamesPath: IgnoredNamesPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
             buildPlan: buildPlan);
         _shell.Navigate(vm);
         await vm.WhenPlanned;
@@ -667,7 +669,8 @@ public class PreviewViewModelTests
         var scan = await ScanAsync();
 
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
-            createRun: (_, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
+            createRun: (_, _) => _runScreen, createBack: _ => _backScreen, replanDelay: TimeSpan.Zero,
+            ignoredNamesPath: IgnoredNamesPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
             buildPlan: (settings, s, names) =>
             {
                 gate.Wait(Wait);
@@ -691,7 +694,8 @@ public class PreviewViewModelTests
         var scan = await ScanAsync();
 
         var vm = new PreviewViewModel(_shell, _workflow, _settings, scan, _fs, _thumbnails, _dialogs, new FileLog(_fs, LogFolder),
-            createRun: (_, _) => _runScreen, createBack: () => _backScreen, replanDelay: TimeSpan.Zero,
+            createRun: (_, _) => _runScreen, createBack: _ => _backScreen, replanDelay: TimeSpan.Zero,
+            ignoredNamesPath: IgnoredNamesPath, presets: PresetLibrary.BuiltIn, saveChoices: _ => { },
             buildPlan: (settings, s, names) =>
             {
                 gate.Wait(Wait);

@@ -7,7 +7,9 @@ namespace PhotoOk.Services;
 /// <param name="PresetFolder">사용자 프리셋. <c>%AppData%\PhotoOk\presets</c>.</param>
 /// <param name="SettingsPath">마지막 선택을 덧붙여 저장하는 설정 파일. <c>%AppData%\PhotoOk\settings.jsonl</c>.</param>
 /// <param name="LogFolder">오류 로그. <c>%LocalAppData%\PhotoOk\logs</c>.</param>
-public sealed record AppPaths(string AppDataRoot, string PresetFolder, string SettingsPath, string LogFolder)
+/// <param name="IgnoredFolderNamesPath">"이 이름 다시 쓰지 않기"로 고른 폴더 이름. <c>%AppData%\PhotoOk\ignored-folder-names.txt</c>.</param>
+public sealed record AppPaths(string AppDataRoot, string PresetFolder, string SettingsPath, string LogFolder,
+    string IgnoredFolderNamesPath)
 {
     private const string AppFolderName = "PhotoOk";
 
@@ -19,6 +21,7 @@ public sealed record AppPaths(string AppDataRoot, string PresetFolder, string Se
             AppDataRoot: local,
             PresetFolder: Path.Combine(roaming, "presets"),
             SettingsPath: Path.Combine(roaming, "settings.jsonl"),
-            LogFolder: Path.Combine(local, "logs"));
+            LogFolder: Path.Combine(local, "logs"),
+            IgnoredFolderNamesPath: Path.Combine(roaming, "ignored-folder-names.txt"));
     }
 }

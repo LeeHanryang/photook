@@ -49,6 +49,9 @@ public interface IFileSystem
     /// <summary>비어 있는 폴더만 지운다. 비어 있지 않으면 <see cref="IOException"/>.</summary>
     void RemoveEmptyDirectory(string path);
 
+    /// <summary>폴더가 연결 폴더(정션·심볼릭 링크)인지. 없는 경로나 속성을 읽을 수 없는 경로는 false.</summary>
+    bool IsLinkedDirectory(string path);
+
     /// <summary>파일이 없으면 만들고, 한 줄을 덧붙인 뒤 디스크까지 flush한다.</summary>
     void AppendLine(string path, string line);
 

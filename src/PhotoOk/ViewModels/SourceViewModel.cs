@@ -4,6 +4,7 @@ using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PhotoOk.Core.IO;
+using PhotoOk.Core.Naming;
 using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Settings;
@@ -14,6 +15,9 @@ namespace PhotoOk.ViewModels;
 
 /// <summary>
 /// 가져올 폴더, 보관 폴더, 정리 방식, 복사/이동을 고르는 화면. 사용자 파일은 만지지 않고 폴더 존재만 확인한다.
+/// 같은 화면을 작업 종류(<see cref="JobKind"/>)에 맞게 바꾼다. 흡수는 아카이브 밖 폴더를 고르고(복사/이동 선택은 이동이 기본),
+/// 재정리는 아카이브 안의 폴더를 고르며 이동·하위 폴더 포함이 고정이다. 흡수·재정리는 고른 폴더 목록을 저장하지 않는다
+/// (가져오기의 마지막 선택을 덮지 않도록 가져오기 값은 그대로 두고 저장한다).
 /// 보관 폴더가 있는지는 경로가 바뀔 때 한 번만 백그라운드에서 확인해 기억한다(보관 폴더가 꺼진 네트워크 경로여도 안내 문구를
 /// 읽을 때마다 화면이 멈추지 않게). 확인하는 동안은 다음으로 갈 수 없고, "다음"을 누를 때 한 번 더 확인한다.
 /// 다음·뒤로 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다.
@@ -25,6 +29,9 @@ public sealed partial class SourceViewModel : ObservableObject
     private const string CheckingArchiveMessage = "보관 폴더를 확인하는 중…";
     private const string MoveHintText = "같은 드라이브에서는 원본을 보관 폴더로 옮깁니다. 다른 드라이브에서는 이동을 골라도 복사합니다.";
     private const string CrossDriveMoveNoticeText = "가져올 폴더 중 보관 폴더와 다른 드라이브에 있는 곳은 복사합니다";
+    private const string PhotookFolderName = ".photook";
+    private const string EventsNotUsedText = "이 정리 방식은 이벤트 이름을 쓰지 않습니다";
+    private const string WholeArchiveText = "아카이브 전체가 대상입니다. 손으로 모은 폴더도 옮겨질 수 있습니다";
 
     private readonly ShellViewModel _shell;
     private readonly IFileSystem _fileSystem;
@@ -38,6 +45,12 @@ public sealed partial class SourceViewModel : ObservableObject
     private readonly Func<ObservableObject> _createStart;
     private readonly Func<Func<bool>, Task<bool>> _runCheck;
 
+    /// <summary>화면을 만들 때 받은 설정. 가져오기가 아닌 작업이 저장할 때 가져오기 값과 미리보기 옵션을 그대로 되돌려 쓴다.</summary>
+    private readonly AppSettings _loaded;
+
+    /// <summary>스캔·미리보기에서 뒤로 왔을 때 그쪽에서 보낸 선택. 처음 온 화면이면 null.</summary>
+    private readonly ImportSettings? _previous;
+
     /// <summary>보관 폴더가 있는지(경로가 바뀔 때 확인한 값). 확인하는 중이면 null.</summary>
     private bool? _archiveExists;
 
@@ -47,6 +60,7 @@ public sealed partial class SourceViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ValidationMessage))]
     [NotifyPropertyChangedFor(nameof(MoveNotice))]
+    [NotifyPropertyChangedFor(nameof(WholeArchiveNotice))]
     [NotifyCanExecuteChangedFor(nameof(NextCommand))]
     private string? archiveRoot;
 
@@ -54,7 +68,11 @@ public sealed partial class SourceViewModel : ObservableObject
     private bool includeSubfolders;
 
     [ObservableProperty]
+    private bool useFolderNames;
+
+    [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(ValidationMessage))]
+    [NotifyPropertyChangedFor(nameof(EventsNotUsedNotice))]
     [NotifyCanExecuteChangedFor(nameof(NextCommand))]
     private PresetEntry? selectedPreset;
 
@@ -64,14 +82,23 @@ public sealed partial class SourceViewModel : ObservableObject
     private TransferMode mode;
 
     /// <param name="settings">처음에 보여 줄 값(마지막 작업의 선택).</param>
+    /// <param name="kind">작업 종류. 가져오기가 아니면 저장된 가져올 폴더를 채우지 않는다.</param>
     /// <param name="driveRoot">시작 화면에서 드라이브를 골라 왔으면 그 루트. 있으면 저장된 가져올 폴더 대신 이것만 채운다.</param>
+    /// <param name="previous">
+    /// 이 화면에서 스캔·미리보기로 갔다가 뒤로 온 경우 그때 보낸 선택. 흡수·재정리는 고른 폴더, 복사/이동, 하위 폴더 포함, 폴더 이름 사용을
+    /// 이것으로 되살린다(설정에는 저장하지 않으므로). 가져오기는 저장된 설정을 그대로 쓴다. 정리 방식과 미리보기 옵션은 실행할 때에야
+    /// 저장되므로 모든 작업에서 이것으로 되살린다.
+    /// </param>
     /// <param name="runCheck">보관 폴더 확인을 돌리는 방법. 생략하면 스레드 풀(<see cref="Task.Run{TResult}(Func{TResult})"/>)에서 돌린다.</param>
     public SourceViewModel(ShellViewModel shell, IFileSystem fileSystem, PresetLibrary presetLibrary, string settingsPath,
-        AppSettings settings, string? driveRoot, IFolderPicker folderPicker, IFileOpenPicker filePicker,
+        AppSettings settings, JobKind kind, string? driveRoot, IFolderPicker folderPicker, IFileOpenPicker filePicker,
         IDialogService dialogs, FileLog log, Func<ImportSettings, ObservableObject> createScan, Func<ObservableObject> createStart,
-        Func<Func<bool>, Task<bool>>? runCheck = null)
+        Func<Func<bool>, Task<bool>>? runCheck = null, ImportSettings? previous = null)
     {
         _shell = shell;
+        Kind = kind;
+        _loaded = settings;
+        _previous = previous;
         _fileSystem = fileSystem;
         _presetLibrary = presetLibrary;
         _settingsPath = settingsPath;
@@ -83,7 +110,12 @@ public sealed partial class SourceViewModel : ObservableObject
         _createStart = createStart;
         _runCheck = runCheck ?? (check => Task.Run(check));
 
-        foreach (var source in driveRoot is null ? settings.Sources : [driveRoot])
+        // 흡수·재정리는 고른 폴더를 저장하지 않으므로 미리 채우지 않는다.
+        var restore = kind == JobKind.Import ? null : previous;
+        IReadOnlyList<string> initialSources = driveRoot is not null ? [driveRoot]
+            : kind == JobKind.Import ? settings.Sources
+            : restore?.Sources ?? [];
+        foreach (var source in initialSources)
         {
             Sources.Add(source);
         }
@@ -91,8 +123,9 @@ public sealed partial class SourceViewModel : ObservableObject
         Sources.CollectionChanged += OnSourcesChanged;
 
         archiveRoot = settings.ArchiveRoot;
-        includeSubfolders = settings.IncludeSubfolders;
-        mode = settings.Mode;
+        includeSubfolders = kind == JobKind.Reorganize || (restore?.IncludeSubfolders ?? settings.IncludeSubfolders);
+        mode = kind == JobKind.Import ? settings.Mode : kind == JobKind.Absorb ? restore?.Mode ?? TransferMode.Move : TransferMode.Move;
+        useFolderNames = restore?.UseFolderNames ?? settings.UseFolderNames;
 
         var (presets, _) = presetLibrary.LoadAll();
         foreach (var preset in presets)
@@ -100,9 +133,55 @@ public sealed partial class SourceViewModel : ObservableObject
             Presets.Add(preset);
         }
 
-        selectedPreset = ChooseInitialPreset(settings);
+        selectedPreset = ChooseInitialPreset(previous is null
+            ? settings
+            : settings with { PresetName = previous.Preset.Name, PresetFile = previous.PresetFile });
         CheckArchive();
     }
+
+    public JobKind Kind { get; }
+
+    public string Title => Kind switch
+    {
+        JobKind.Absorb => "어떤 폴더를 합칠까요?",
+        JobKind.Reorganize => "어떤 폴더를 재정리할까요?",
+        _ => "무엇을 어디로 가져올까요?",
+    };
+
+    /// <summary>"가져올 폴더" 목록의 제목.</summary>
+    public string SourcesTitle => Kind switch
+    {
+        JobKind.Absorb => "합칠 폴더",
+        JobKind.Reorganize => "재정리할 폴더",
+        _ => "가져올 폴더",
+    };
+
+    /// <summary>폴더 고르기 창의 제목.</summary>
+    public string PickSourceTitle => SourcesTitle + " 선택";
+
+    /// <summary>복사/이동 선택을 보인다. 재정리는 이동으로 고정이라 숨긴다.</summary>
+    public bool ShowModeChoice => Kind != JobKind.Reorganize;
+
+    /// <summary>"하위 폴더까지 포함"을 보인다. 재정리는 항상 포함이라 숨긴다.</summary>
+    public bool ShowIncludeSubfolders => Kind != JobKind.Reorganize;
+
+    /// <summary>"폴더 이름을 이벤트 이름으로 쓰기"를 보인다. 가져오기는 폴더 이름을 읽지 않으므로 숨긴다.</summary>
+    public bool ShowUseFolderNames => Kind != JobKind.Import;
+
+    /// <summary>재정리는 보관 폴더를 먼저 고르고 그 안의 폴더를 고른다.</summary>
+    public bool ArchiveFirst => Kind == JobKind.Reorganize;
+
+    /// <summary>폴더 이름을 읽는 작업인데 고른 정리 방식이 이벤트 이름을 쓰지 않으면 알린다. 아니면 null.</summary>
+    public string? EventsNotUsedNotice =>
+        ShowUseFolderNames && SelectedPreset is { } preset && !EventNameReader.PresetUsesEvents(preset.Preset)
+            ? EventsNotUsedText
+            : null;
+
+    /// <summary>재정리에서 보관 폴더 자체를 골랐으면 알린다(막지는 않는다). 아니면 null.</summary>
+    public string? WholeArchiveNotice =>
+        Kind == JobKind.Reorganize && !string.IsNullOrWhiteSpace(ArchiveRoot) && Sources.Any(s => SamePath(s, ArchiveRoot))
+            ? WholeArchiveText
+            : null;
 
     public ObservableCollection<string> Sources { get; } = [];
 
@@ -116,9 +195,15 @@ public sealed partial class SourceViewModel : ObservableObject
     {
         get
         {
+            // 재정리는 보관 폴더를 먼저 고르므로 그 안내가 먼저다.
+            if (Kind == JobKind.Reorganize && string.IsNullOrWhiteSpace(ArchiveRoot))
+            {
+                return "보관 폴더를 고르세요";
+            }
+
             if (Sources.Count == 0)
             {
-                return "가져올 폴더를 하나 이상 고르세요";
+                return Kind == JobKind.Reorganize ? "재정리할 폴더를 하나 이상 고르세요" : "가져올 폴더를 하나 이상 고르세요";
             }
 
             if (string.IsNullOrWhiteSpace(ArchiveRoot))
@@ -134,9 +219,9 @@ public sealed partial class SourceViewModel : ObservableObject
                 }
             }
 
-            if (Sources.Any(source => Overlaps(source, ArchiveRoot)))
+            if (FolderChoiceMessage(ArchiveRoot) is { } folderMessage)
             {
-                return "보관 폴더와 가져올 폴더가 겹칩니다. 서로 다른 폴더를 고르세요";
+                return folderMessage;
             }
 
             // 설정 파일을 손으로 고친 상대 경로나 사라진 폴더는 받지 않는다(상대 경로면 계획이 현재 작업 폴더 기준이 된다).
@@ -154,8 +239,49 @@ public sealed partial class SourceViewModel : ObservableObject
         }
     }
 
-    /// <summary>이동을 고르면 이동이 무엇을 하는지 알린다. 복사를 고르면 null.</summary>
-    public string? MoveHint => Mode == TransferMode.Move ? MoveHintText : null;
+    /// <summary>작업 종류에 맞게 고른 폴더가 보관 폴더와 어떻게 놓이는지 따져 안 되는 이유를 돌려준다. 괜찮으면 null.</summary>
+    private string? FolderChoiceMessage(string archive)
+    {
+        if (Kind == JobKind.Reorganize)
+        {
+            // 보관 폴더가 상대 경로면 뒤의 "보관 폴더를 찾을 수 없습니다"가 알리므로 여기서는 넘어간다.
+            if (!Path.IsPathFullyQualified(archive))
+            {
+                return null;
+            }
+
+            var photook = Path.Combine(archive, PhotookFolderName);
+            if (Sources.Any(source => !IsInside(source, archive) || IsInside(source, photook)))
+            {
+                return "보관 폴더 안의 폴더를 고르세요";
+            }
+
+            for (var i = 0; i < Sources.Count; i++)
+            {
+                for (var j = i + 1; j < Sources.Count; j++)
+                {
+                    if (Overlaps(Sources[i], Sources[j]))
+                    {
+                        return "서로 겹치는 폴더는 함께 고를 수 없습니다";
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        if (Kind == JobKind.Absorb && Sources.Any(source => IsInside(source, archive)))
+        {
+            return "아카이브 안의 폴더는 재정리를 쓰세요";
+        }
+
+        return Sources.Any(source => Overlaps(source, archive))
+            ? "보관 폴더와 가져올 폴더가 겹칩니다. 서로 다른 폴더를 고르세요"
+            : null;
+    }
+
+    /// <summary>이동을 고르면 이동이 무엇을 하는지 알린다. 복사를 고르거나 이동 고정이어서 선택을 숨기면 null.</summary>
+    public string? MoveHint => ShowModeChoice && Mode == TransferMode.Move ? MoveHintText : null;
 
     /// <summary>
     /// 이동을 골랐는데 가져올 폴더 중 보관 폴더와 다른 드라이브에 있는 것이 있으면 알린다(그 파일은 복사로 처리된다).
@@ -165,7 +291,7 @@ public sealed partial class SourceViewModel : ObservableObject
     {
         get
         {
-            if (Mode != TransferMode.Move || string.IsNullOrWhiteSpace(ArchiveRoot))
+            if (!ShowModeChoice || Mode != TransferMode.Move || string.IsNullOrWhiteSpace(ArchiveRoot))
             {
                 return null;
             }
@@ -185,7 +311,9 @@ public sealed partial class SourceViewModel : ObservableObject
     [RelayCommand]
     private void AddSource()
     {
-        var picked = _folderPicker.PickFolder("가져올 폴더 선택", Sources.Count > 0 ? Sources[^1] : null);
+        // 재정리는 보관 폴더 안에서 고르므로 보관 폴더에서 시작한다.
+        var initial = Kind == JobKind.Reorganize ? ArchiveRoot : Sources.Count > 0 ? Sources[^1] : null;
+        var picked = _folderPicker.PickFolder(PickSourceTitle, initial);
         if (picked is null || Sources.Any(s => SamePath(s, picked)))
         {
             return;
@@ -250,7 +378,9 @@ public sealed partial class SourceViewModel : ObservableObject
 
         var sources = Sources.ToList();
         Save(sources);
-        _shell.Navigate(_createScan(new ImportSettings(sources, IncludeSubfolders, ArchiveRoot, SelectedPreset.Preset, Mode)));
+        _shell.Navigate(_createScan(new ImportSettings(sources, IncludeSubfolders, ArchiveRoot, SelectedPreset.Preset, Mode, Kind,
+            UseFolderNames, _previous?.SplitUnderscores ?? _loaded.SplitUnderscores, _previous?.Subfolders ?? _loaded.Subfolders,
+            _previous?.KeepReviewInPlace ?? _loaded.KeepReviewInPlace, SelectedPreset.FilePath)));
     }
 
     private bool CanNext() => ValidationMessage is null;
@@ -315,9 +445,19 @@ public sealed partial class SourceViewModel : ObservableObject
 
     private void Save(List<string> sources)
     {
-        var settings = new AppSettings(sources, IncludeSubfolders, ArchiveRoot, SelectedPreset?.Name, SelectedPreset?.FilePath, Mode);
+        // 흡수·재정리는 가져오기의 폴더·하위 폴더·복사/이동 선택을 그대로 둔다(다음 가져오기에 영향을 주지 않게).
+        // 미리보기 옵션은 실행할 때 저장하므로 여기서는 받은 값을 되돌려 쓴다.
+        var isImport = Kind == JobKind.Import;
+        var settings = new AppSettings(isImport ? sources : _loaded.Sources, isImport ? IncludeSubfolders : _loaded.IncludeSubfolders,
+            ArchiveRoot, SelectedPreset?.Name, SelectedPreset?.FilePath, isImport ? Mode : _loaded.Mode, UseFolderNames,
+            _loaded.SplitUnderscores, _loaded.Subfolders, _loaded.KeepReviewInPlace);
         try
         {
+            if (!isImport)
+            {
+                AppSettingsStore.EnsureSavedChoicesReadable(_fileSystem, _settingsPath);
+            }
+
             AppSettingsStore.Save(_fileSystem, _settingsPath, settings);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -331,6 +471,7 @@ public sealed partial class SourceViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(ValidationMessage));
         OnPropertyChanged(nameof(MoveNotice));
+        OnPropertyChanged(nameof(WholeArchiveNotice));
         NextCommand.NotifyCanExecuteChanged();
     }
 
@@ -390,6 +531,10 @@ public sealed partial class SourceViewModel : ObservableObject
 
     private static bool SamePath(string a, string b) =>
         string.Equals(NormalizedWithSeparator(a), NormalizedWithSeparator(b), StringComparison.OrdinalIgnoreCase);
+
+    /// <summary><paramref name="path"/>가 <paramref name="folder"/> 안에 있거나 같으면 true(구분자까지 맞춰 비교한다).</summary>
+    private static bool IsInside(string path, string folder) =>
+        NormalizedWithSeparator(path).StartsWith(NormalizedWithSeparator(folder), StringComparison.OrdinalIgnoreCase);
 
     /// <summary>한쪽이 다른 쪽 안에 있거나 같으면 true. 구분자까지 맞춰 비교해서 <c>D:\Photos2</c>는 <c>D:\Photos</c> 밖이다.</summary>
     private static bool Overlaps(string a, string b)

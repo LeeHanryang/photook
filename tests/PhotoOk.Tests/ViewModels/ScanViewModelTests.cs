@@ -55,10 +55,10 @@ public class ScanViewModelTests
     private static ImportSettings Settings() =>
         new([@"E:\DCIM"], true, Archive, BuiltInPresets.DateEvent, TransferMode.Copy);
 
-    private ScanViewModel Create(IMetadataReader? reader = null)
+    private ScanViewModel Create(IMetadataReader? reader = null, ImportSettings? settings = null)
     {
         var workflow = new ImportWorkflow(_fs, reader ?? _reader, new XxHasher(_fs), TimeZoneInfo.Utc);
-        var vm = new ScanViewModel(_shell, workflow, Settings(), _dialogs, new FileLog(_fs, LogFolder),
+        var vm = new ScanViewModel(_shell, workflow, settings ?? Settings(), _dialogs, new FileLog(_fs, LogFolder),
             createPreview: scan =>
             {
                 _previewRequests.Add(scan);
@@ -238,6 +238,33 @@ public class ScanViewModelTests
         {
             SynchronizationContext.SetSynchronizationContext(previous);
         }
+    }
+
+    [Fact]
+    public async Task Absorb_ShowsArchiveCheck_WhileIndexIsBuilt()
+    {
+        AddPhoto(@"E:\DCIM\A.JPG", [1], Oct14);
+        var settings = Settings() with { Kind = JobKind.Absorb, Mode = TransferMode.Move };
+        var vm = Create(settings: settings);
+        var texts = new ConcurrentQueue<string>();
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ScanViewModel.FilesReadText))
+            {
+                texts.Enqueue(vm.FilesReadText);
+            }
+        };
+
+        await vm.StartAsync();
+
+        // 진행률은 화면 스레드로 넘어오므로 스캔이 끝난 뒤에 도착할 수 있다.
+        var deadline = DateTime.UtcNow + Wait;
+        while (!texts.Contains("보관 폴더의 파일을 확인하는 중…") && DateTime.UtcNow < deadline)
+        {
+            await Task.Delay(5);
+        }
+
+        Assert.Contains("보관 폴더의 파일을 확인하는 중…", texts);
     }
 
     [Fact]

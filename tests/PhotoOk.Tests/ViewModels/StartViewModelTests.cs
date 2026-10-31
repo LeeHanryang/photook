@@ -21,6 +21,7 @@ public class StartViewModelTests
     private readonly FakeDrives _drives = new();
     private readonly ShellViewModel _shell = new(new FakeDialogService());
     private readonly List<string?> _requestedRoots = [];
+    private readonly List<JobKind> _requestedKinds = [];
     private readonly ObservableObject _sourceScreen = new SourceStub();
 
     private sealed class SourceStub : ObservableObject;
@@ -32,8 +33,9 @@ public class StartViewModelTests
 
     private StartViewModel Create(IRunHistory? history = null) => new(_shell, _drives, history ?? new RunHistory(_fs, AppData),
         new FileLog(_fs, LogFolder),
-        createSource: root =>
+        createSource: (kind, root) =>
         {
+            _requestedKinds.Add(kind);
             _requestedRoots.Add(root);
             return _sourceScreen;
         },
@@ -143,6 +145,31 @@ public class StartViewModelTests
 
         Assert.Same(_sourceScreen, _shell.Current);
         Assert.Equal([(string?)null], _requestedRoots);
+        Assert.Equal([JobKind.Import], _requestedKinds);
+    }
+
+    [Fact]
+    public async Task StartAbsorb_NavigatesWithKind()
+    {
+        var start = await CreateAsync();
+
+        start.StartAbsorbCommand.Execute(null);
+
+        Assert.Same(_sourceScreen, _shell.Current);
+        Assert.Equal([JobKind.Absorb], _requestedKinds);
+        Assert.Equal([(string?)null], _requestedRoots);
+    }
+
+    [Fact]
+    public async Task StartReorganize_NavigatesWithKind()
+    {
+        var start = await CreateAsync();
+
+        start.StartReorganizeCommand.Execute(null);
+
+        Assert.Same(_sourceScreen, _shell.Current);
+        Assert.Equal([JobKind.Reorganize], _requestedKinds);
+        Assert.Equal([(string?)null], _requestedRoots);
     }
 
     [Fact]
@@ -156,6 +183,7 @@ public class StartViewModelTests
 
         Assert.Same(_sourceScreen, _shell.Current);
         Assert.Equal([@"E:\"], _requestedRoots);
+        Assert.Equal([JobKind.Import], _requestedKinds);
     }
 
     [Fact]

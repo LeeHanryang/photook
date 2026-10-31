@@ -118,20 +118,21 @@ public partial class App : Application
             Log: _log);
     }
 
-    /// <summary>시작 화면. 가져오기·작업 기록·이어 하기는 각 화면 팩토리로 화면을 만든다.</summary>
+    /// <summary>시작 화면. 가져오기·흡수·재정리·작업 기록·이어 하기는 각 화면 팩토리로 화면을 만든다.</summary>
     private static StartViewModel CreateStartScreen(AppServices services, ShellViewModel shell) =>
         new(shell, services.Drives, services.History, services.Log,
-            createSource: driveRoot => CreateSourceScreen(services, shell, driveRoot),
+            createSource: (kind, driveRoot) => CreateSourceScreen(services, shell, kind, driveRoot),
             createHistory: runId => CreateHistoryScreen(services, shell, runId),
             createResume: journalPath => CreateResumeScreen(services, shell, journalPath));
 
-    /// <summary>가져오기 화면. 마지막 선택은 화면을 만들 때마다 다시 읽는다(앞서 저장한 값이 보이도록).</summary>
-    private static SourceViewModel CreateSourceScreen(AppServices services, ShellViewModel shell, string? driveRoot) =>
+    /// <summary>소스 화면(가져오기·흡수·재정리). 마지막 선택은 화면을 만들 때마다 다시 읽는다(앞서 저장한 값이 보이도록).</summary>
+    private static SourceViewModel CreateSourceScreen(AppServices services, ShellViewModel shell, JobKind kind, string? driveRoot,
+        ImportSettings? previous = null) =>
         new(shell, services.FileSystem, services.Presets, services.Paths.SettingsPath,
-            AppSettingsStore.Load(services.FileSystem, services.Paths.SettingsPath), driveRoot,
+            AppSettingsStore.Load(services.FileSystem, services.Paths.SettingsPath), kind, driveRoot,
             services.FolderPicker, services.FilePicker, services.Dialogs, services.Log,
             createScan: settings => CreateScanScreen(services, shell, settings),
-            createStart: () => CreateStartScreen(services, shell));
+            createStart: () => CreateStartScreen(services, shell), previous: previous);
 
     /// <summary>
     /// 스캔 화면. 가져오기 한 번에 쓰는 <see cref="ImportWorkflow"/>(해시 캐시)를 여기서 만들어 미리보기 화면과 나눠 쓴다.
@@ -139,21 +140,28 @@ public partial class App : Application
     /// </summary>
     private static ScanViewModel CreateScanScreen(AppServices services, ShellViewModel shell, ImportSettings settings)
     {
-        var workflow = new ImportWorkflow(services.FileSystem, services.Reader, services.Hasher, TimeZoneInfo.Local);
+        var workflow = new ImportWorkflow(services.FileSystem, services.Reader, services.Hasher, TimeZoneInfo.Local,
+            services.Paths.IgnoredFolderNamesPath);
         var scan = new ScanViewModel(shell, workflow, settings, services.Dialogs, services.Log,
             createPreview: outcome => CreatePreviewScreen(services, shell, workflow, settings, outcome),
-            createSource: () => CreateSourceScreen(services, shell, driveRoot: null));
+            createSource: () => CreateSourceScreen(services, shell, settings.Kind, driveRoot: null, previous: settings));
         _ = scan.StartAsync();
         return scan;
     }
 
-    /// <summary>미리보기 화면. 뒤로 가면 가져오기 화면(저장해 둔 마지막 선택이 다시 보인다).</summary>
+    /// <summary>
+    /// 미리보기 화면. 뒤로 가면 같은 작업 종류의 소스 화면(미리보기에서 바꾼 정리 방식과 옵션도 함께 간다).
+    /// 정리 방식과 옵션은 실행할 때 설정 파일에 한 줄 덧붙여 저장한다.
+    /// </summary>
     private static PreviewViewModel CreatePreviewScreen(AppServices services, ShellViewModel shell, ImportWorkflow workflow,
         ImportSettings settings, ScanOutcome outcome) =>
         new(shell, workflow, settings, outcome, services.FileSystem, services.Thumbnails, services.Dialogs, services.Log,
             createRun: (plan, scan) => CreateRunScreen(services, shell, plan, scan),
-            createBack: () => CreateSourceScreen(services, shell, driveRoot: null),
-            replanDelay: ReplanDelay);
+            createBack: current => CreateSourceScreen(services, shell, settings.Kind, driveRoot: null, previous: current),
+            replanDelay: ReplanDelay,
+            ignoredNamesPath: services.Paths.IgnoredFolderNamesPath,
+            presets: services.Presets.LoadAll().Presets,
+            saveChoices: choices => AppSettingsStore.SaveChoices(services.FileSystem, services.Paths.SettingsPath, choices));
 
     /// <summary>
     /// 실행 화면. 미리보기에서 "정리 시작"을 눌러 온 것이므로 화면을 만들자마자 실행한다(<see cref="RunViewModel.StartAsync"/>는 예외를 밖으로 던지지 않는다).

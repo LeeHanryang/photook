@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using PhotoOk.Core.IO;
 
@@ -39,6 +41,101 @@ public sealed class PhysicalFileSystemTests : IDisposable
         {
             stream.Write(Encoding.UTF8.GetBytes(text));
         }
+    }
+
+    private static void SetReadOnly(string path) =>
+        File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.ReadOnly);
+
+    private static void ClearReadOnly(string path) =>
+        File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+
+    private static bool IsReadOnly(string path) => File.GetAttributes(path).HasFlag(FileAttributes.ReadOnly);
+
+    [Fact]
+    public void RemoveEmptyDirectory_RemovesReadOnlyFolder()
+    {
+        var folder = P("readonly-empty");
+        Directory.CreateDirectory(folder);
+        SetReadOnly(folder);
+
+        _fs.RemoveEmptyDirectory(folder);
+
+        Assert.False(Directory.Exists(folder));
+    }
+
+    [Theory]
+    [InlineData(FileAttributes.Normal)]
+    [InlineData(FileAttributes.Hidden | FileAttributes.System)] // 폴더 꾸미기 파일, 미리 보기 캐시
+    public void RemoveEmptyDirectory_ReadOnlyNonEmptyFolder_StaysWithAttribute(FileAttributes fileAttributes)
+    {
+        var folder = P("readonly-full");
+        var file = Path.Combine(folder, "desktop.ini");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(file, "memo");
+        File.SetAttributes(file, fileAttributes);
+        SetReadOnly(folder);
+        try
+        {
+            Assert.Throws<IOException>(() => _fs.RemoveEmptyDirectory(folder));
+
+            Assert.True(IsReadOnly(folder));
+            Assert.Equal("memo", File.ReadAllText(file));
+            Assert.Equal(fileAttributes, File.GetAttributes(file));
+        }
+        finally
+        {
+            ClearReadOnly(folder);
+            File.SetAttributes(file, FileAttributes.Normal);
+        }
+    }
+
+    [Fact]
+    public void RemoveEmptyDirectory_DeleteFails_RestoresReadOnly()
+    {
+        var parent = P("locked-parent");
+        var folder = Path.Combine(parent, "locked");
+        Directory.CreateDirectory(folder);
+        SetReadOnly(folder);
+
+        // 이 폴더를 지울 권한만 막는다(속성 바꾸기는 그대로 된다).
+        var user = WindowsIdentity.GetCurrent().User!;
+        var denyFolder = new FileSystemAccessRule(user, FileSystemRights.Delete, AccessControlType.Deny);
+        var denyParent = new FileSystemAccessRule(user, FileSystemRights.DeleteSubdirectoriesAndFiles, AccessControlType.Deny);
+        var folderInfo = new DirectoryInfo(folder);
+        var parentInfo = new DirectoryInfo(parent);
+        var folderSecurity = folderInfo.GetAccessControl();
+        var parentSecurity = parentInfo.GetAccessControl();
+        folderSecurity.AddAccessRule(denyFolder);
+        parentSecurity.AddAccessRule(denyParent);
+        folderInfo.SetAccessControl(folderSecurity);
+        parentInfo.SetAccessControl(parentSecurity);
+        try
+        {
+            var error = Record.Exception(() => _fs.RemoveEmptyDirectory(folder));
+
+            Assert.True(error is IOException or UnauthorizedAccessException, $"뜻밖의 오류: {error}");
+            Assert.True(Directory.Exists(folder));
+            Assert.True(IsReadOnly(folder));
+        }
+        finally
+        {
+            folderSecurity.RemoveAccessRule(denyFolder);
+            parentSecurity.RemoveAccessRule(denyParent);
+            folderInfo.SetAccessControl(folderSecurity);
+            parentInfo.SetAccessControl(parentSecurity);
+            ClearReadOnly(folder);
+        }
+    }
+
+    [Fact]
+    public void RemoveEmptyDirectory_NormalFolder_StillRemoved()
+    {
+        var folder = P("plain");
+        Directory.CreateDirectory(folder);
+
+        _fs.RemoveEmptyDirectory(folder);
+
+        Assert.False(Directory.Exists(folder));
     }
 
     [Fact]
@@ -487,6 +584,36 @@ public sealed class PhysicalFileSystemTests : IDisposable
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             return false;
+        }
+    }
+
+    [Fact]
+    public void IsLinkedDirectory_TellsLinkFromPlainFolder_AndSafeDeleteKeepsLink()
+    {
+        var target = P("target");
+        Directory.CreateDirectory(target);
+        var link = P("link");
+        if (!TryCreateFolderLink(link, target))
+        {
+            _output.WriteLine("건너뜀: 이 환경에서는 폴더 연결(심볼릭 링크, 정션)을 만들 수 없습니다.");
+            return;
+        }
+
+        try
+        {
+            Assert.True(_fs.IsLinkedDirectory(link));
+            Assert.False(_fs.IsLinkedDirectory(target));
+            Assert.False(_fs.IsLinkedDirectory(P("none")));
+
+            // 연결 대상이 비어 있어도 연결 폴더는 치우지 않는다.
+            var safeDelete = new PhotoOk.Core.Execution.SafeDelete(_fs, _root, "run");
+            Assert.False(safeDelete.RemoveVacatedDirectory(link));
+            Assert.True(Directory.Exists(link));
+            Assert.True(Directory.Exists(target));
+        }
+        finally
+        {
+            Directory.Delete(link);
         }
     }
 

@@ -52,7 +52,7 @@ public class SourceViewModelTests
     /// <summary>보관 폴더 확인은 기본으로 그 자리에서 끝낸다(결과가 바로 보인다). 백그라운드 동작은 따로 시험한다.</summary>
     private SourceViewModel Create(AppSettings? settings = null, string? driveRoot = null,
         PhotoOk.Core.IO.IFileSystem? fileSystem = null, Func<Func<bool>, Task<bool>>? runCheck = null) =>
-        new(_shell, fileSystem ?? _fs, new PresetLibrary(_fs, PresetFolder), SettingsPath, settings ?? AppSettings.Default, driveRoot,
+        new(_shell, fileSystem ?? _fs, new PresetLibrary(_fs, PresetFolder), SettingsPath, settings ?? AppSettings.Default, JobKind.Import, driveRoot,
             _folders, _files, _dialogs, new FileLog(_fs, LogFolder),
             createScan: s =>
             {

@@ -113,6 +113,30 @@ public class PlannerTests
             FileOps(plan).Select(o => o.Destination));
     }
 
+    [Theory]
+    [InlineData(@"..\..\x")]
+    [InlineData(@"..")]
+    [InlineData(@"a\..\..\..\b")]
+    [InlineData(@"C:\Windows\x")]
+    [InlineData(@"\\server\share\x")]
+    [InlineData(@"/../x")]
+    public void Plan_HostileEventName_StaysUnderArchiveRoot(string eventName)
+    {
+        var a = Add(@"E:\DCIM\A.JPG", [1], Oct14);
+        var names = new Dictionary<string, string> { ["2026-10-14"] = eventName };
+
+        var plan = Create(new XxHasher(_fs), BuiltInPresets.DateEvent, TransferMode.Copy, names, Group(a));
+
+        Assert.NotEmpty(plan.Operations);
+        var root = Path.GetFullPath(Archive).TrimEnd('\\') + "\\";
+        foreach (var operation in plan.Operations)
+        {
+            var full = Path.GetFullPath(operation.Destination);
+            Assert.StartsWith(root, full, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("..", operation.Destination.Split('\\'));
+        }
+    }
+
     [Fact]
     public void Plan_ForcesCopy_AcrossVolumes()
     {

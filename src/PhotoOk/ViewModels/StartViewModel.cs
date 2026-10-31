@@ -3,13 +3,14 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using PhotoOk.Core.History;
 using PhotoOk.Core.IO;
+using PhotoOk.Core.Planning;
 using PhotoOk.Services;
 
 namespace PhotoOk.ViewModels;
 
 /// <summary>
-/// 시작 화면. 연결된 이동식 드라이브와 최근 작업을 보여 주고, 가져오기 화면으로 보낸다.
-/// 다음 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다. 가져오기 화면의 인자는 미리 채울 드라이브 루트(없으면 null),
+/// 시작 화면. 연결된 이동식 드라이브와 최근 작업을 보여 주고, 가져오기·흡수·재정리의 소스 화면으로 보낸다.
+/// 다음 화면은 직접 만들지 않고 생성자로 받은 팩토리로 만든다. 소스 화면의 인자는 작업 종류와 미리 채울 드라이브 루트(없으면 null),
 /// 작업 기록 화면의 인자는 미리 고를 실행 ID(없으면 null), 이어 하기 화면의 인자는 기록 경로다.
 /// 작업 기록은 백그라운드에서 읽는다(기록이 많거나 보관 폴더가 꺼진 네트워크 경로여도 화면이 멈추지 않게).
 /// 드라이브나 기록을 읽지 못해도 예외를 밖으로 던지지 않는다(로그에 남기고 빈 목록을 보인다). 상태는 화면(UI) 스레드에서만 바꾼다.
@@ -24,7 +25,7 @@ public sealed partial class StartViewModel : ObservableObject, ILeavableScreen
     private readonly IRemovableDrives _drives;
     private readonly IRunHistory _history;
     private readonly FileLog _log;
-    private readonly Func<string?, ObservableObject> _createSource;
+    private readonly Func<JobKind, string?, ObservableObject> _createSource;
     private readonly Func<string?, ObservableObject> _createHistory;
     private readonly Func<string, ObservableObject> _createResume;
 
@@ -44,7 +45,7 @@ public sealed partial class StartViewModel : ObservableObject, ILeavableScreen
     private bool isLoadingHistory;
 
     public StartViewModel(ShellViewModel shell, IRemovableDrives drives, IRunHistory history, FileLog log,
-        Func<string?, ObservableObject> createSource, Func<string?, ObservableObject> createHistory,
+        Func<JobKind, string?, ObservableObject> createSource, Func<string?, ObservableObject> createHistory,
         Func<string, ObservableObject> createResume)
     {
         _shell = shell;
@@ -151,10 +152,18 @@ public sealed partial class StartViewModel : ObservableObject, ILeavableScreen
     }
 
     [RelayCommand]
-    private void StartImport() => _shell.Navigate(_createSource(null));
+    private void StartImport() => _shell.Navigate(_createSource(JobKind.Import, null));
 
     [RelayCommand]
-    private void ImportFromDrive(DriveChoice drive) => _shell.Navigate(_createSource(drive.Root));
+    private void ImportFromDrive(DriveChoice drive) => _shell.Navigate(_createSource(JobKind.Import, drive.Root));
+
+    /// <summary>흩어진 폴더를 아카이브로 합친다.</summary>
+    [RelayCommand]
+    private void StartAbsorb() => _shell.Navigate(_createSource(JobKind.Absorb, null));
+
+    /// <summary>아카이브 안의 폴더를 프리셋에 맞게 다시 정리한다.</summary>
+    [RelayCommand]
+    private void StartReorganize() => _shell.Navigate(_createSource(JobKind.Reorganize, null));
 
     [RelayCommand]
     private void OpenHistory() => _shell.Navigate(_createHistory(null));

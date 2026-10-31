@@ -35,6 +35,55 @@ public sealed class PhysicalEndToEndTests : IDisposable
     }
 
     [Fact]
+    public void RealDisk_MoveCleanupThenUndo_RestoresFolders()
+    {
+        var archive = Path.Combine(_root, "archive");
+        var picked = Path.Combine(archive, "picked");
+        var appData = Path.Combine(_root, "appdata");
+        var deep = Path.Combine(picked, "old", "sub");
+        var kept = Path.Combine(picked, "kept");
+        var target = Path.Combine(archive, "2026");
+        Directory.CreateDirectory(deep);
+        Directory.CreateDirectory(kept);
+        Directory.CreateDirectory(target);
+        var photo = Path.Combine(deep, "a.jpg");
+        var other = Path.Combine(kept, "b.jpg");
+        var memo = Path.Combine(kept, "memo.txt");
+        byte[] photoBytes = [1, 2, 3];
+        byte[] otherBytes = [4, 5];
+        File.WriteAllBytes(photo, photoBytes);
+        File.WriteAllBytes(other, otherBytes);
+        File.WriteAllText(memo, "memo");
+        var photoTime = new DateTime(2020, 5, 1, 3, 4, 5, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(photo, photoTime);
+
+        var fs = new PhysicalFileSystem();
+        var context = new ExecutionContext(fs, new XxHasher(fs), appData, () => DateTime.UtcNow);
+        var plan = new Plan(archive,
+            [
+                new PlannedOperation("op1", OperationKind.Move, photo, Path.Combine(target, "a.jpg"), photoBytes.Length, []),
+                new PlannedOperation("op2", OperationKind.Move, other, Path.Combine(target, "b.jpg"), otherBytes.Length, []),
+            ],
+            [], [], [picked]);
+
+        var result = new Executor(context).Execute(plan);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Warnings);
+        Assert.False(Directory.Exists(Path.Combine(picked, "old")));
+        Assert.True(Directory.Exists(picked));
+        Assert.True(File.Exists(memo)); // 문서가 남은 폴더는 그대로다
+        Assert.Equal(photoBytes, File.ReadAllBytes(Path.Combine(target, "a.jpg")));
+
+        var undo = new Undoer(context).Undo(result.JournalPath!);
+
+        Assert.Empty(undo.Skipped);
+        Assert.Equal(photoBytes, File.ReadAllBytes(photo));
+        Assert.Equal(photoTime, File.GetLastWriteTimeUtc(photo));
+        Assert.Equal(otherBytes, File.ReadAllBytes(other));
+    }
+
+    [Fact]
     public void RealDisk_ImportThenUndo()
     {
         var source = Path.Combine(_root, "card", "DCIM");

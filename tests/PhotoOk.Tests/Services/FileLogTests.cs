@@ -63,5 +63,6 @@ public class FileLogTests
         Assert.Equal(Path.Combine(roaming, "PhotoOk", "presets"), paths.PresetFolder);
         Assert.Equal(Path.Combine(roaming, "PhotoOk", "settings.jsonl"), paths.SettingsPath);
         Assert.Equal(Path.Combine(local, "PhotoOk", "logs"), paths.LogFolder);
+        Assert.Equal(Path.Combine(roaming, "PhotoOk", "ignored-folder-names.txt"), paths.IgnoredFolderNamesPath);
     }
 }

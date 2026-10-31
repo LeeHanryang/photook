@@ -12,6 +12,7 @@ namespace PhotoOk.ViewModels;
 /// </summary>
 public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
 {
+    private const string CheckingArchiveMessage = "보관 폴더의 파일을 확인하는 중…";
     private const string ErrorTitle = "스캔하지 못했습니다";
     private const string ErrorMessage = "예기치 못한 오류로 스캔을 멈췄습니다. 자세한 내용은 로그 폴더에 남겼습니다.";
 
@@ -27,6 +28,10 @@ public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(FilesReadText))]
     private int filesRead;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(FilesReadText))]
+    private bool checkingArchive;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(CancelCommand))]
@@ -57,8 +62,10 @@ public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
     /// <summary>읽는 폴더들.</summary>
     public string SourcesText { get; }
 
-    /// <summary>진행률은 미디어 파일을 읽은 수다(목록을 먼저 다 모은 뒤 읽는다).</summary>
-    public string FilesReadText => string.Create(CultureInfo.InvariantCulture, $"읽은 파일 {FilesRead}개");
+    /// <summary>진행률은 미디어 파일을 읽은 수다(목록을 먼저 다 모은 뒤 읽는다). 흡수에서 아카이브 색인을 만드는 동안에는 그 안내를 보인다.</summary>
+    public string FilesReadText => CheckingArchive
+        ? CheckingArchiveMessage
+        : string.Create(CultureInfo.InvariantCulture, $"읽은 파일 {FilesRead}개");
 
     /// <summary>
     /// 스캔한다. 끝나면 미리보기 화면으로, 취소되면 가져오기 화면으로 간다. 예기치 못한 오류는 로그에 남기고
@@ -73,7 +80,8 @@ public sealed partial class ScanViewModel : ObservableObject, IBusyViewModel
             await Task.Yield();
 
             var progress = new Progress<int>(n => FilesRead = n);
-            var scan = await _workflow.ScanAsync(_settings, progress, _cts.Token);
+            var checking = new Progress<bool>(value => CheckingArchive = value);
+            var scan = await _workflow.ScanAsync(_settings, progress, _cts.Token, checking);
 
             // 스캔이 막 끝난 뒤에 취소를 눌렀어도(창 닫기 포함) 사용자는 멈추기를 골랐으므로 미리보기로 가지 않는다.
             if (_cts.IsCancellationRequested)

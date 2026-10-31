@@ -57,6 +57,7 @@ public sealed class Undoer(ExecutionContext context)
     internal const string RenamedBackMessage = "원래 자리에 다른 파일이 있어 이름을 바꿔 되돌렸습니다: ";
     internal const string SizeChangedRestoredMessage = "크기가 달라졌지만 숨겨지지 않도록 원래 자리로 되돌렸습니다: ";
     internal const string RescueFailedMessage = "임시 이름의 파일을 꺼내지 못했습니다: ";
+    internal const string FolderSpotTakenMessage = "원래 폴더 자리에 다른 파일이 있어 되돌리지 못했습니다: ";
 
     public UndoResult Undo(string journalPath, CancellationToken ct = default)
     {
@@ -129,7 +130,7 @@ public sealed class Undoer(ExecutionContext context)
                     break;
                 }
 
-                outcome = Outcome.Blocked(Executor.DescribeFailure(ex));
+                outcome = Outcome.Blocked(DescribeFolderSpotTaken(opState.Operation) ?? Executor.DescribeFailure(ex));
             }
 
             Apply(run, opState.Operation, outcome);
@@ -437,6 +438,28 @@ public sealed class Undoer(ExecutionContext context)
         {
             return SourceState.Unavailable;
         }
+    }
+
+    /// <summary>
+    /// 옮긴 파일의 원래 폴더 경로 중 파일이 차지한 자리가 있으면 알릴 문구, 없으면 null. 치운 폴더 자리에 같은 이름의 파일이 생기면
+    /// 폴더를 다시 만들 수 없다. 아무것도 덮어쓰지 않고 옮긴 파일은 대상 자리에 둔 채 멈추며, 그 파일을 치운 뒤 되돌리기를 다시 하면 이어서 처리된다.
+    /// </summary>
+    private string? DescribeFolderSpotTaken(PlannedOperation op)
+    {
+        if (op.Kind != OperationKind.Move || op.Source is null)
+        {
+            return null;
+        }
+
+        for (var folder = Path.GetDirectoryName(op.Source); !string.IsNullOrEmpty(folder); folder = Path.GetDirectoryName(folder))
+        {
+            if (context.FileSystem.FileExists(folder))
+            {
+                return FolderSpotTakenMessage + folder;
+            }
+        }
+
+        return null;
     }
 
     private void MoveBack(PlannedOperation op)

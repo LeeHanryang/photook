@@ -42,6 +42,8 @@ public static class JournalReader
         var entryCount = 0;
         var order = new List<string>();
         var operations = new Dictionary<string, OpState>(StringComparer.Ordinal);
+        var cleanupRoots = new List<string>();
+        var warnings = new List<string>();
 
         for (var i = 0; i <= lastNonEmpty; i++)
         {
@@ -109,6 +111,26 @@ public static class JournalReader
                     undoStarted = true;
                     break;
 
+                // 작업 상태와 상관없는 사건이다. 값이 빠져 있어도 손상으로 보지 않는다: 이 줄들 때문에 되돌리기가 막히면 안 된다.
+                case JournalEvent.CleanupRoot:
+                    if (!string.IsNullOrWhiteSpace(entry.Destination))
+                    {
+                        cleanupRoots.Add(entry.Destination);
+                    }
+
+                    break;
+
+                case JournalEvent.Warning:
+                    if (!string.IsNullOrWhiteSpace(entry.Message))
+                    {
+                        warnings.Add(entry.Message);
+                    }
+
+                    break;
+
+                case JournalEvent.FolderRemoved:
+                    break;
+
                 default:
                     var opId = RequireOpId(entry, lineNumber);
                     if (!operations.TryGetValue(opId, out var current))
@@ -137,7 +159,11 @@ public static class JournalReader
         }
 
         return new RunState(runId, archiveRoot, order.Select(id => operations[id]).ToList(), finished,
-            expectedOperations, entryCount, undoStarted);
+            expectedOperations, entryCount, undoStarted)
+        {
+            CleanupRoots = cleanupRoots,
+            Warnings = warnings,
+        };
     }
 
     private static string RequireOpId(JournalEntry entry, int lineNumber) =>
