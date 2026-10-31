@@ -113,14 +113,23 @@ public class PreservationInvariantTests(ITestOutputHelper output)
             }
         }
 
+        /// <summary>계획이 건드리지 않아야 하는 원본(뺀 파일, 여러 날 폴더의 파일). 원본이면서 어느 시점에도 그대로 있어야 한다.</summary>
+        public void Untouched(params string[] paths)
+        {
+            foreach (var path in paths)
+            {
+                Bystanders[path] = Originals[path];
+            }
+        }
+
         public Scenario Plan(IReadOnlyList<string> sources, Preset preset, TransferMode mode, JobKind kind = JobKind.Import,
-            IReadOnlyList<string>? roots = null)
+            IReadOnlyList<string>? roots = null, IReadOnlySet<string>? excluded = null)
         {
             var scan = new Scanner(Fs, Meta, FileKinds.Default).Scan(sources, recursive: true);
             Assert.Empty(scan.Errors);
             var sessions = SessionGrouper.GroupByDay(scan.Groups, preset.DayStart, Zone);
             var plan = new Planner(Fs, new XxHasher(Fs)).Create(new PlanRequest(sessions, preset, Archive, mode, Zone,
-                Kind: kind, Roots: roots));
+                Kind: kind, Roots: roots, ExcludedGroups: excluded));
             return new Scenario
             {
                 Fs = Fs, Originals = Originals, Preexisting = Preexisting, Plan = plan, MoveRun = mode == TransferMode.Move,
@@ -265,6 +274,90 @@ public class PreservationInvariantTests(ITestOutputHelper output)
             Inbox, $@"{Inbox}\keep",
             $@"{Inbox}\side", $@"{Inbox}\side\beside", $@"{Inbox}\unrelated", $@"{Inbox}\unrelated\empty",
         ];
+        return s;
+    }
+
+    private const string Trip = @"D:\Archive\[2026-10-14~10-15] 소풍";
+
+    /// <summary>
+    /// 재정리: 뺀 파일 둘(14일 폴더의 15일 사진, RAW+xmp 묶음)과 여러 날 폴더의 파일은 그대로다. 다른 파일이 뺀 파일의 자리로 들어가면 순번을 붙인다.
+    /// 뺀 파일이 남은 폴더와 여러 날 폴더는 치우지 않고, 빠져나간 폴더만 치운다.
+    /// </summary>
+    private static Scenario ReorganizeWithExcludedAndMultiDay()
+    {
+        var setup = new Setup();
+        var oct14 = new DateTime(2026, 10, 14, 9, 0, 0, DateTimeKind.Unspecified);
+        var oct15 = new DateTime(2026, 10, 15, 9, 0, 0, DateTimeKind.Unspecified);
+        string excludedSpot = $@"{Day14}\X.JPG", excludedRaw = $@"{Picked}\mixed\IMG.NEF", excludedXmp = $@"{Picked}\mixed\IMG.xmp";
+        string tripA = $@"{Trip}\a.jpg", tripB = $@"{Trip}\sub\b.jpg", tripRaw = $@"{Trip}\sub\RAW.NEF", tripXmp = $@"{Trip}\sub\RAW.xmp";
+        setup.Original(excludedSpot, Bytes(700, 41), oct15);
+        setup.Original(excludedRaw, Bytes(1024 * 1024 + 5, 42), oct15);
+        setup.Original(excludedXmp, Bytes(90, 43));
+        setup.Original(tripA, Bytes(610, 44), oct14);
+        setup.Original(tripB, Bytes(620, 45), oct15);
+        setup.Original(tripRaw, Bytes(630, 46), oct15);
+        setup.Original(tripXmp, Bytes(91, 47));
+        setup.Original($@"{Picked}\one\X.JPG", Bytes(900, 48), oct14); // 뺀 파일의 자리로 간다
+        setup.Original($@"{Picked}\mixed\m.jpg", Bytes(1024 * 1024 + 11, 49), oct14); // 뺀 파일 옆에서 빠져나간다
+        setup.Original($@"{Picked}\gone\deep\n.jpg", Bytes(640, 50), oct15);
+        setup.Untouched(excludedSpot, excludedRaw, excludedXmp, tripA, tripB, tripRaw, tripXmp);
+
+        string[] roots = [Archive];
+        var s = setup.Plan(roots, BuiltInPresets.DateOnly, TransferMode.Move, JobKind.Reorganize, roots,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { excludedSpot, excludedRaw });
+
+        foreach (var path in s.Bystanders.Keys)
+        {
+            Assert.DoesNotContain(s.Plan.Operations, o => string.Equals(o.Source, path, StringComparison.OrdinalIgnoreCase)
+                                                          || string.Equals(o.Destination, path, StringComparison.OrdinalIgnoreCase));
+        }
+
+        Assert.Equal(3, s.Plan.Skipped.Count(k => k.Reason == SkipReason.ExcludedByUser));
+        Assert.Equal(4, s.Plan.Skipped.Count(k => k.Reason == SkipReason.MultiDayFolderKept));
+        Assert.Contains(s.Plan.Operations, o => o.Destination == $@"{Day14}\X_1.JPG");
+        Assert.Equal(3, s.Plan.Operations.Count(o => o.Kind == OperationKind.Move));
+        s.RemovedFolders = [$@"{Picked}\one", $@"{Picked}\gone\deep", $@"{Picked}\gone", ];
+        s.KeptFolders = [Day14, $@"{Picked}\mixed", Picked, Trip, $@"{Trip}\sub"];
+        return s;
+    }
+
+    /// <summary>흡수(같은 드라이브 이동): 뺀 묶음은 출처에 그대로 있고 그 폴더는 치우지 않는다.</summary>
+    private static Scenario AbsorbMoveWithExcluded()
+    {
+        var setup = new Setup();
+        var oct14 = new DateTime(2026, 10, 14, 9, 0, 0, DateTimeKind.Unspecified);
+        string raw = $@"{Inbox}\keep\IMG.NEF", xmp = $@"{Inbox}\keep\IMG.xmp";
+        setup.Original(raw, Bytes(1024 * 1024 + 3, 51), oct14);
+        setup.Original(xmp, Bytes(92, 52));
+        setup.Original($@"{Inbox}\keep\a.jpg", Bytes(600, 53), oct14);
+        setup.Original($@"{Inbox}\gone\b.jpg", Bytes(610, 54), oct14);
+        setup.Untouched(raw, xmp);
+
+        string[] roots = [Inbox];
+        var s = setup.Plan(roots, BuiltInPresets.DateOnly, TransferMode.Move, JobKind.Absorb, roots,
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase) { raw });
+
+        Assert.Equal(2, s.Plan.Skipped.Count(k => k.Reason == SkipReason.ExcludedByUser));
+        Assert.Equal(2, s.Plan.Operations.Count(o => o.Kind == OperationKind.Move));
+        s.RemovedFolders = [$@"{Inbox}\gone"];
+        s.KeptFolders = [Inbox, $@"{Inbox}\keep"];
+        return s;
+    }
+
+    /// <summary>가져오기(복사): 뺀 파일은 복사되지 않는다.</summary>
+    private static Scenario ImportCopyWithExcluded()
+    {
+        var setup = new Setup();
+        var oct14 = new DateTime(2026, 10, 14, 9, 0, 0, DateTimeKind.Unspecified);
+        setup.Original(@"E:\DCIM\a.jpg", Bytes(600, 61), oct14);
+        setup.Original(@"E:\DCIM\b.jpg", Bytes(1024 * 1024 + 2, 62), oct14);
+        setup.Original(@"E:\DCIM\c.jpg", Bytes(620, 63), oct14);
+
+        var s = setup.Plan([@"E:\DCIM"], BuiltInPresets.DateOnly, TransferMode.Copy,
+            excluded: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"E:\DCIM\a.jpg" });
+
+        Assert.Equal(new PlannedSkip(@"E:\DCIM\a.jpg", @"E:\DCIM\a.jpg", SkipReason.ExcludedByUser), Assert.Single(s.Plan.Skipped));
+        Assert.Equal(2, s.Plan.Operations.Count(o => o.Kind == OperationKind.Copy));
         return s;
     }
 
@@ -459,6 +552,18 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     public void AbsorbMoveRun_WithCleanup_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashExecuteAtEveryStep("흡수 이동(빈 폴더 치우기)", AbsorbMoveWithCleanup, minimumOps: 30);
 
+    [Fact]
+    public void ReorganizeRun_WithExcludedAndMultiDay_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashExecuteAtEveryStep("재정리(뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay, minimumOps: 20);
+
+    [Fact]
+    public void AbsorbMoveRun_WithExcluded_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashExecuteAtEveryStep("흡수 이동(뺀 파일)", AbsorbMoveWithExcluded, minimumOps: 15);
+
+    [Fact]
+    public void CopyRun_WithExcluded_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashExecuteAtEveryStep("가져오기(뺀 파일)", ImportCopyWithExcluded, minimumOps: 15);
+
     private void CrashExecuteAtEveryStep(string name, Func<Scenario> build, int minimumOps)
     {
         var clean = build();
@@ -521,6 +626,10 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     public void AbsorbMoveRun_WithCleanup_UndoRightAfterCrash_RestoresFiles_AtEveryStep() =>
         CrashThenUndoAtEveryStep("흡수 이동(끊긴 뒤 바로 되돌리기)", AbsorbMoveWithCleanup);
 
+    [Fact]
+    public void ReorganizeRun_WithExcludedAndMultiDay_UndoRightAfterCrash_RestoresFiles_AtEveryStep() =>
+        CrashThenUndoAtEveryStep("재정리(뺀 파일, 여러 날 폴더, 끊긴 뒤 바로 되돌리기)", ReorganizeWithExcludedAndMultiDay);
+
     /// <summary>폴더를 일부만 치운 채 끊긴 경우를 포함해, 어느 시점에 끊겨도 이어 하지 않고 되돌리면 처음과 같아야 한다.</summary>
     private void CrashThenUndoAtEveryStep(string name, Func<Scenario> build)
     {
@@ -575,6 +684,10 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     [Fact]
     public void Resume_ReorganizeRun_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashResumeAtEveryStep("이어 하기(재정리, 빈 폴더 치우기)", ReorganizeWithCleanup, copyTempRequired: false);
+
+    [Fact]
+    public void Resume_ReorganizeRun_WithExcludedAndMultiDay_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(재정리, 뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay, copyTempRequired: false);
 
     /// <summary>
     /// 실행을 작업 도중(기록에 Started로 남은 작업이 있고, <paramref name="copyTempRequired"/>면 쓰다 만 복사 임시 파일도 있는 시점)
@@ -661,6 +774,10 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     [Fact]
     public void Undo_AbsorbMoveRun_WithCleanup_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashUndoAtEveryStep("되돌리기(흡수 이동, 치운 폴더 복원)", AbsorbMoveWithCleanup);
+
+    [Fact]
+    public void Undo_ReorganizeRun_WithExcludedAndMultiDay_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashUndoAtEveryStep("되돌리기(재정리, 뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay);
 
     private void CrashUndoAtEveryStep(string name, Func<Scenario> build)
     {
