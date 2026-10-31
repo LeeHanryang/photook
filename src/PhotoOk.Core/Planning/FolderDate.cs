@@ -16,9 +16,9 @@ public static partial class FolderDate
     [GeneratedRegex(@"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)", RegexOptions.CultureInvariant)]
     private static partial Regex AnyDay();
 
-    // [2026-07-08~07-09] 소풍, [2026-07-08~2026-07-09], 2026-07-08~07-09 소풍. 끝은 숫자와 구분 표시뿐이고 그 뒤는 닫는 대괄호, 빈칸, 이름의 끝이다
-    // (2024-06-15 ~ 16시 모임은 기간이 아니다).
-    [GeneratedRegex(@"^\[?\s*\d{4}[-.]\d{1,2}[-.]\d{1,2}\s*[~～–]\s*\d[\d\-.]*(?:\s*\]|\s|$)", RegexOptions.CultureInvariant)]
+    // [2026-07-08~07-09] 소풍, [2026-07-08~2026-07-09], 2026-07-08~07-09_소풍, 2026-07-08~09. 끝은 날짜 조각(dd, MM-dd, yyyy-MM-dd)이고
+    // 그 뒤는 닫는 대괄호, 빈칸, _, -, 이름의 끝이다(2024-06-15 ~ 16시 모임은 기간이 아니다).
+    [GeneratedRegex(@"^\[?\s*\d{4}[-.]\d{1,2}[-.]\d{1,2}\s*[~～–]\s*(?:\d{4}[-.])?(?:\d{1,2}[-.])?\d{1,2}(?:\s*\]|[\s_]|-(?!\d)|$)", RegexOptions.CultureInvariant)]
     private static partial Regex MultiDay();
 
     /// <summary>폴더 이름 하나가 하루 폴더면 그 날짜. 날짜가 앞에 하나만 있어야 하고(뒤에 이름은 있어도 된다), 기간은 하루 폴더가 아니다.</summary>
