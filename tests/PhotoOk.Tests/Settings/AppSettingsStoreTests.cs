@@ -147,6 +147,20 @@ public class AppSettingsStoreTests
         Assert.DoesNotContain("MultiDay", Text(), StringComparison.OrdinalIgnoreCase);
     }
 
+    [Theory]
+    [InlineData(JobKind.Import)]
+    [InlineData(JobKind.Reorganize)]
+    public void SaveChoices_NeverWritesPhotoDateGroups(JobKind kind)
+    {
+        const string chosen = @"D:\B\모음\고른 파일.jpg";
+
+        AppSettingsStore.SaveChoices(_fs, SettingsPath, new ImportSettings([@"D:\B\모음"], true, @"D:\B", BuiltInPresets.DateOnly, TransferMode.Move,
+            kind, PhotoDateGroups: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { chosen }));
+
+        Assert.DoesNotContain("고른 파일", Text(), StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("PhotoDate", Text(), StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void SaveChoices_Import_SavesSourcesAndMode()
     {

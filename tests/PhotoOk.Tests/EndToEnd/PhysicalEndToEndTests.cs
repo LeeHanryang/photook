@@ -1,4 +1,5 @@
 using System.IO;
+using System.Security.Cryptography;
 using PhotoOk.Core.Execution;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.IO;
@@ -7,6 +8,7 @@ using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Scanning;
 using PhotoOk.Core.Sessions;
+using PhotoOk.Core.Workflow;
 using PhotoOk.Tests.Fakes;
 using ExecutionContext = PhotoOk.Core.Execution.ExecutionContext;
 
@@ -119,7 +121,7 @@ public sealed class PhysicalEndToEndTests : IDisposable
 
         var sessions = SessionGrouper.GroupByDay(scan.Groups, preset.DayStart, zone);
         Assert.Equal(2, sessions.Count);
-        var plan = new Planner(fs, new XxHasher(fs)).Create(new PlanRequest(sessions, preset, archive, TransferMode.Copy, zone));
+        var plan = new Planner(fs, new XxHasher(fs)).Create(new PlanRequest(sessions, preset, archive, TransferMode.Copy));
 
         var context = new ExecutionContext(fs, new XxHasher(fs), appData, () => DateTime.UtcNow);
         var result = new Executor(context).Execute(plan);
@@ -159,9 +161,112 @@ public sealed class PhysicalEndToEndTests : IDisposable
             Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories).Order(StringComparer.OrdinalIgnoreCase));
     }
 
+    [Fact]
+    public async Task Reorganize_FolderDate_ThenUndo_RestoresEverything()
+    {
+        var archive = Path.Combine(_root, "archive");
+        var appData = Path.Combine(_root, "appdata");
+        var day14 = Path.Combine(archive, "2026", "2026-10-14");
+        var day15 = Path.Combine(archive, "2026", "2026-10-15");
+        var day16 = Path.Combine(archive, "2026", "2026-10-16");
+        var subA = Path.Combine(day15, "sub", "a.jpg"); // 폴더 날짜(15일)로 간다
+        var otherA = Path.Combine(day15, "other", "a.jpg"); // 이름이 같고 내용이 달라 순번(a_1.jpg)이 붙는다
+        var chosen = Path.Combine(day15, "keep", "b.jpg"); // 사진 날짜(14일)를 골랐다
+        var deepC = Path.Combine(day16, "deep", "er", "c.jpg"); // 폴더 날짜와 사진 날짜가 같다
+        var originals = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase)
+        {
+            [subA] = TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 0, 0), "Canon", "EOS R6"),
+            [otherA] = TestImages.Jpeg(new DateTime(2026, 10, 14, 9, 30, 0), "Canon", "EOS R6"),
+            [chosen] = TestImages.Jpeg(new DateTime(2026, 10, 14, 10, 0, 0), "Canon", "EOS R6"),
+            [deepC] = TestImages.Jpeg(new DateTime(2026, 10, 16, 11, 0, 0), "Canon", "EOS R6"),
+        };
+        var fileTime = new DateTime(2026, 10, 20, 12, 0, 0, DateTimeKind.Utc);
+        foreach (var (path, content) in originals)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllBytes(path, content);
+            File.SetLastWriteTimeUtc(path, fileTime);
+            fileTime = fileTime.AddMinutes(7);
+        }
+
+        var before = Snapshot(archive);
+
+        var fs = new PhysicalFileSystem();
+        var zone = TimeZoneInfo.Utc;
+        var workflow = new ImportWorkflow(fs, new MetadataExtractorReader(fs, FileKinds.Default, zone), new XxHasher(fs), zone);
+        var settings = new ImportSettings([archive], true, archive, BuiltInPresets.DateOnly, TransferMode.Move, JobKind.Reorganize,
+            Subfolders: SubfolderPolicy.Merge, PhotoDateGroups: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { chosen });
+        var scan = await workflow.ScanAsync(settings, null, CancellationToken.None);
+        Assert.Empty(scan.Errors);
+        var plan = workflow.BuildPlan(settings, scan, new Dictionary<string, string>());
+        Assert.False(plan.HasBlockingIssue);
+
+        var context = new ExecutionContext(fs, new XxHasher(fs), appData, () => DateTime.UtcNow);
+        var result = new Executor(context).Execute(plan.Plan);
+
+        Assert.Equal(RunOutcome.Completed, result.Outcome);
+        Assert.Empty(result.Failures);
+        var expected = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [Path.Combine(day15, "a.jpg")] = subA,
+            [Path.Combine(day15, "a_1.jpg")] = otherA,
+            [Path.Combine(day14, "b.jpg")] = chosen,
+            [Path.Combine(day16, "c.jpg")] = deepC,
+        };
+        foreach (var (destination, original) in expected)
+        {
+            Assert.True(File.Exists(destination), $"대상이 없습니다: {destination}");
+            Assert.Equal(originals[original], File.ReadAllBytes(destination));
+            Assert.Equal(before[Path.GetRelativePath(archive, original)].Time, File.GetLastWriteTimeUtc(destination));
+        }
+
+        Assert.Equal(expected.Keys.Order(StringComparer.OrdinalIgnoreCase), FilesOutsidePhotook(archive));
+        Assert.False(Directory.Exists(Path.Combine(day15, "sub")));
+        Assert.False(Directory.Exists(Path.Combine(day15, "other")));
+        Assert.False(Directory.Exists(Path.Combine(day15, "keep")));
+        Assert.False(Directory.Exists(Path.Combine(day16, "deep")));
+
+        // 정리한 결과를 다시 계획하면 할 일이 없다(사진 날짜를 고른 사진도 이제 14일 폴더에 있다).
+        var rerun = settings with { PhotoDateGroups = null };
+        var rescan = await workflow.ScanAsync(rerun, null, CancellationToken.None);
+        Assert.Empty(rescan.Errors);
+        var replan = workflow.BuildPlan(rerun, rescan, new Dictionary<string, string>());
+        Assert.Empty(replan.Plan.Operations);
+
+        var undo = new Undoer(context).Undo(result.JournalPath!);
+
+        Assert.Empty(undo.Skipped);
+        var after = Snapshot(archive);
+        Assert.Equal(before.Keys.Order(StringComparer.Ordinal), after.Keys.Order(StringComparer.Ordinal));
+        foreach (var (relative, expectedFile) in before)
+        {
+            var actual = after[relative];
+            Assert.Equal(expectedFile.Hash, actual.Hash);
+            Assert.Equal(expectedFile.Time, actual.Time);
+        }
+
+        // 이번 실행이 만든 14일 폴더는 치웠고, 치웠던 폴더는 돌아왔다.
+        Assert.False(Directory.Exists(day14));
+        Assert.True(Directory.Exists(Path.Combine(day15, "sub")));
+        Assert.True(Directory.Exists(Path.Combine(day15, "other")));
+        Assert.True(Directory.Exists(Path.Combine(day15, "keep")));
+        Assert.True(Directory.Exists(Path.Combine(day16, "deep", "er")));
+    }
+
+    /// <summary>아카이브 안(<c>.photook</c> 밖)의 파일마다 아카이브 기준 상대 경로 → 내용 해시와 수정 시각.</summary>
+    private static Dictionary<string, (string Hash, DateTime Time)> Snapshot(string archive) =>
+        Directory.EnumerateFiles(archive, "*", SearchOption.AllDirectories)
+            .Where(p => IsOutsidePhotook(archive, p))
+            .ToDictionary(p => Path.GetRelativePath(archive, p),
+                p => (Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(p))), File.GetLastWriteTimeUtc(p)),
+                StringComparer.OrdinalIgnoreCase);
+
+    private static bool IsOutsidePhotook(string archive, string path) =>
+        !path.StartsWith(Path.Combine(archive, ".photook") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+
     private static List<string> FilesOutsidePhotook(string archive) =>
         Directory.EnumerateFiles(archive, "*", SearchOption.AllDirectories)
-            .Where(p => !p.StartsWith(Path.Combine(archive, ".photook") + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+            .Where(p => IsOutsidePhotook(archive, p))
             .Order(StringComparer.OrdinalIgnoreCase)
             .ToList();
 }

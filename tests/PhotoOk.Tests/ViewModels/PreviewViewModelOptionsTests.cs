@@ -765,6 +765,24 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
     }
 
     [Fact]
+    public async Task FailedPlan_ClearsTheDateNotices()
+    {
+        Add(FolderDateRelative, Oct14);
+        var vm = await CreateAsync(Settings() with { Preset = BuiltInPresets.DateOnly });
+        vm.Sessions[0].SendToPhotoDateCommand.Execute(null);
+        await vm.WhenPlanned;
+        Assert.NotNull(vm.PhotoDateRevertNotice);
+
+        Interlocked.Exchange(ref _failPlans, 1);
+        vm.UseFolderNames = false;
+        await vm.WhenPlanned;
+
+        Assert.False(vm.HasPlan);
+        Assert.Null(vm.PhotoDateRevertNotice);
+        Assert.Null(vm.DayFolderLostNotice);
+    }
+
+    [Fact]
     public async Task RegroupFailure_FailsSafe_ThenRecovers()
     {
         Add(Trip + @"\a.jpg", Oct14);
@@ -1174,7 +1192,7 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
     });
 
     [Fact]
-    public void View_MismatchTextAndTopControls_AreBound() => OnUiThread(async () =>
+    public void View_TopControls_AreBound() => OnUiThread(async () =>
     {
         const string dated = "2026-10-15 " + Trip;
         Add(dated + @"\a.jpg", Oct14);
@@ -1183,13 +1201,8 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
         var view = new PreviewView { DataContext = vm };
         await SettleAsync();
         var all = Descendants(view);
-        var mismatchCard = vm.Sessions.Single(card => card.DateMismatch is not null);
-        var text = CardContent(view, mismatchCard).OfType<TextBlock>().ToList();
-        await SettleAsync();
 
-        Assert.Contains(text, t => t.Text == "폴더 날짜 2026-10-15 → 사진 날짜 2026-10-14 (사진 정보)");
-        Assert.Contains(all.OfType<TextBlock>(), t => t.Text == "폴더 날짜와 다른 촬영 1개");
-        Assert.Contains(all.OfType<TextBlock>(), t => t.Text == "제외 1개");
+        Assert.Contains(all.OfType<TextBlock>(), t => t.Text == "제외 0개");
 
         var includeAll = all.OfType<Button>().Single(b => b.Content as string == "모두 옮기기");
         var excludeAll = all.OfType<Button>().Single(b => b.Content as string == "모두 빼기");
@@ -1217,6 +1230,190 @@ public sealed class PreviewViewModelOptionsTests : IDisposable
         var split = Descendants(view).OfType<CheckBox>().Single(c => c.Content as string == "여러 날 폴더도 날짜별로 나누기");
 
         Assert.Equal(Visibility.Collapsed, ((FrameworkElement)split.Parent).Visibility);
+    });
+
+    private const string FolderDateRelative = @"[2026-10-15] 일상\a.jpg";
+
+    /// <summary>자기와 논리 부모가 모두 보이는가(버튼이 든 줄을 숨기는 경우까지 본다).</summary>
+    private static bool Shown(DependencyObject element, DependencyObject stopAt)
+    {
+        for (var current = element; current is not null && !ReferenceEquals(current, stopAt); current = LogicalTreeHelper.GetParent(current))
+        {
+            if (current is UIElement { Visibility: not Visibility.Visible })
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static Button FindButton(IEnumerable<DependencyObject> scope, string content) =>
+        scope.OfType<Button>().Single(b => b.Content as string == content);
+
+    private static string FindRepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "Directory.Build.props")))
+        {
+            dir = dir.Parent;
+        }
+
+        return dir?.FullName ?? throw new InvalidOperationException("저장소 위치를 찾지 못했습니다");
+    }
+
+    [Fact]
+    public void PreviewView_DateDiffer_ShowsAllButtons() => OnUiThread(async () =>
+    {
+        Add(Trip + @"\b.jpg", Oct14);
+        var vm = await CreateAsync();
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var none = Descendants(view);
+
+        Assert.Null(vm.DateDifferText);
+        Assert.False(Shown(FindButton(none, "모두 폴더 날짜로"), view));
+        Assert.False(Shown(FindButton(none, "모두 사진 날짜로"), view));
+
+        Add(FolderDateRelative, Oct14, fill: 2);
+        var differing = await CreateAsync();
+        var differingView = new PreviewView { DataContext = differing };
+        await SettleAsync();
+        var all = Descendants(differingView);
+        var toFolder = FindButton(all, "모두 폴더 날짜로");
+        var toPhoto = FindButton(all, "모두 사진 날짜로");
+
+        Assert.Equal("날짜 다른 파일 1개", differing.DateDifferText);
+        Assert.True(Shown(toFolder, differingView));
+        Assert.True(Shown(toPhoto, differingView));
+        Assert.Same(differing.AllToFolderDateCommand, toFolder.Command);
+        Assert.Same(differing.AllToPhotoDateCommand, toPhoto.Command);
+    });
+
+    [Fact]
+    public void PreviewView_Card_ShowsSendButton_AndRevertAfterSending() => OnUiThread(async () =>
+    {
+        Add(FolderDateRelative, Oct14);
+        var vm = await CreateAsync();
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var card = Assert.Single(vm.Sessions);
+        var content = CardContent(view, card);
+        await SettleAsync();
+        var root = (DependencyObject)content[0];
+        var send = FindButton(content, "사진 날짜로 보내기");
+        var revert = FindButton(content, "폴더 날짜로 되돌리기");
+
+        Assert.True(Shown(send, root));
+        Assert.False(Shown(revert, root));
+        Assert.Same(card.SendToPhotoDateCommand, send.Command);
+
+        send.Command.Execute(null);
+        await vm.WhenPlanned;
+        await SettleAsync();
+        var sent = Assert.Single(vm.Sessions);
+        content = CardContent(view, sent);
+        await SettleAsync();
+        root = content[0];
+        send = FindButton(content, "사진 날짜로 보내기");
+        revert = FindButton(content, "폴더 날짜로 되돌리기");
+
+        Assert.False(Shown(send, root));
+        Assert.True(Shown(revert, root));
+        Assert.Same(sent.BackToFolderDateCommand, revert.Command);
+    });
+
+    [Fact]
+    public void PreviewView_FirstPlanPending_ShowsDateDifferAndButtons_ButNotTheLostNotice() => OnUiThread(async () =>
+    {
+        Add(@"[2026-10-15]\a.jpg", Oct14); // 월 단위로는 하루 폴더가 남지 않으니 계획이 끝나면 안내가 뜬다
+        var settings = Settings() with { Preset = BuiltInPresets.Monthly };
+        var scan = await _workflow.ScanAsync(settings, null, CancellationToken.None);
+        _gate.Reset();
+        var vm = Create(settings, scan);
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var waiting = Descendants(view);
+
+        // 첫 계획 전에도 묶음은 이미 나와 있어 날짜 안내와 두 버튼이 보이지만, 계획이 낳는 하루 폴더 안내는 숨는다.
+        Assert.False(vm.HasPlan);
+        Assert.Equal("날짜 다른 파일 1개", vm.DateDifferText);
+        Assert.Null(vm.DayFolderLostNotice);
+        Assert.Contains(waiting.OfType<TextBlock>(), t => t.Text == vm.DateDifferText && Shown(t, view));
+        Assert.True(Shown(FindButton(waiting, "모두 폴더 날짜로"), view));
+        Assert.True(Shown(FindButton(waiting, "모두 사진 날짜로"), view));
+        Assert.DoesNotContain(waiting.OfType<TextBlock>(), t => t.Text.Contains("하루 폴더를 남기지 않아") && Shown(t, view));
+
+        _gate.Set();
+        await vm.WhenPlanned;
+        await SettleAsync();
+
+        Assert.True(vm.HasPlan);
+        Assert.NotNull(vm.DayFolderLostNotice);
+        Assert.Contains(Descendants(view).OfType<TextBlock>(), t => t.Text == vm.DayFolderLostNotice && Shown(t, view));
+    });
+
+    [Fact]
+    public void PreviewView_NoBindingToRemovedProperty()
+    {
+        var xaml = File.ReadAllText(Path.Combine(FindRepoRoot(), "src", "PhotoOk", "Views", "PreviewView.xaml"));
+
+        Assert.DoesNotContain("DateMismatchText", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PreviewView_DateTexts_AreBound() => OnUiThread(async () =>
+    {
+        Add(@"[2026-10-15]\a.jpg", Oct14); // 이름 없는 하루 폴더: 월 단위로는 하루 폴더가 남지 않는다
+        var vm = await CreateAsync(Settings() with { Preset = BuiltInPresets.Monthly });
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        var card = Assert.Single(vm.Sessions);
+        var top = Descendants(view);
+        var content = CardContent(view, card);
+        await SettleAsync();
+
+        Assert.Equal("날짜 다른 파일 1개", vm.DateDifferText);
+        Assert.Equal("이 정리 방식은 하루 폴더를 남기지 않아, 다시 재정리하면 사진 날짜로 옮겨질 수 있습니다", vm.DayFolderLostNotice);
+        Assert.Null(vm.PhotoDateRevertNotice);
+        Assert.Equal("폴더 날짜로 정리 · 사진 날짜가 다른 파일 1개 (2026-10-14)", card.FolderDateNote);
+        Assert.Contains(top.OfType<TextBlock>(), t => t.Text == vm.DateDifferText && Shown(t, view));
+        Assert.Contains(top.OfType<TextBlock>(), t => t.Text == vm.DayFolderLostNotice && Shown(t, view));
+        Assert.Contains(content.OfType<TextBlock>(), t => t.Text == card.FolderDateNote && Shown(t, content[0]));
+
+        Assert.Single(vm.Sessions).SendToPhotoDateCommand.Execute(null);
+        await vm.WhenPlanned;
+        await SettleAsync();
+        var sent = Assert.Single(vm.Sessions);
+        content = CardContent(view, sent);
+        await SettleAsync();
+
+        Assert.NotNull(sent.PhotoDateNote);
+        Assert.Equal("날짜 다른 파일 1개 · 사진 날짜로 보냄 1개", vm.DateDifferText); // 사진 날짜로 보낸 파일도 날짜가 다른 파일이다
+        Assert.Null(vm.DayFolderLostNotice);
+        Assert.Contains(content.OfType<TextBlock>(), t => t.Text == sent.PhotoDateNote && Shown(t, content[0]));
+        Assert.DoesNotContain(content.OfType<TextBlock>(), t => t.Text == card.FolderDateNote && Shown(t, content[0]));
+        Assert.DoesNotContain(Descendants(view).OfType<TextBlock>(), t => t.Text.Contains("하루 폴더를 남기지 않아") && Shown(t, view));
+    });
+
+    [Fact]
+    public void PreviewView_PhotoDateRevertNotice_IsBound() => OnUiThread(async () =>
+    {
+        Add(FolderDateRelative, Oct14); // 유지한 폴더 이름의 날짜가 사진 날짜로 보낸 뒤에도 남는다
+        var vm = await CreateAsync(Settings() with { Preset = BuiltInPresets.DateOnly });
+        var view = new PreviewView { DataContext = vm };
+        await SettleAsync();
+        const string text = "유지한 폴더 이름의 날짜 때문에, 다시 재정리하면 폴더 날짜로 돌아갈 수 있습니다";
+
+        Assert.Null(vm.PhotoDateRevertNotice);
+        Assert.DoesNotContain(Descendants(view).OfType<TextBlock>(), t => t.Text == text && Shown(t, view));
+
+        Assert.Single(vm.Sessions).SendToPhotoDateCommand.Execute(null);
+        await vm.WhenPlanned;
+        await SettleAsync();
+
+        Assert.Equal(text, vm.PhotoDateRevertNotice);
+        Assert.Contains(Descendants(view).OfType<TextBlock>(), t => t.Text == text && Shown(t, view));
     });
 
     private static IEnumerable<T> VisualDescendants<T>(DependencyObject root)

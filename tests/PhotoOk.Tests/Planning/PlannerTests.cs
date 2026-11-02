@@ -44,7 +44,7 @@ public class PlannerTests
     {
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
         return new Planner(_fs, hasher).Create(
-            new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc, eventNames));
+            new PlanRequest(sessions, preset, Archive, mode, eventNames));
     }
 
     private static List<PlannedOperation> FileOps(Plan plan) =>

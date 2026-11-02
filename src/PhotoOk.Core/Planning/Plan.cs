@@ -57,7 +57,7 @@ public sealed record Plan(string ArchiveRoot, IReadOnlyList<PlannedOperation> Op
 /// <paramref name="SplitMultiDayFolders"/>를 켜지 않으면 재정리에서 여러 날 폴더 안의 파일을 옮기지 않는다.
 /// </summary>
 public sealed record PlanRequest(IReadOnlyList<Session> Sessions, Preset Preset, string ArchiveRoot,
-    TransferMode Mode, TimeZoneInfo Zone, IReadOnlyDictionary<string, string>? EventNames = null,
+    TransferMode Mode, IReadOnlyDictionary<string, string>? EventNames = null,
     JobKind Kind = JobKind.Import, IReadOnlyList<string>? Roots = null, ArchiveIndex? Index = null,
     bool KeepReviewInPlace = false, SubfolderPolicy Subfolders = SubfolderPolicy.Keep,
     Func<FileGroup, IReadOnlyList<string>>? KeptFoldersOf = null,

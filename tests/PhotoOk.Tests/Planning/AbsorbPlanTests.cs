@@ -45,7 +45,7 @@ public class AbsorbPlanTests
         var sessions = SessionGrouper.GroupByDay(groups, BuiltInPresets.DateOnly.DayStart, TimeZoneInfo.Utc, null);
         var index = indexed ? ArchiveIndex.Build(_fs, Archive, null, CancellationToken.None) : null;
         return new Planner(_fs, hasher ?? new XxHasher(_fs)).Create(new PlanRequest(sessions, BuiltInPresets.DateOnly, Archive,
-            mode, TimeZoneInfo.Utc, null, kind, Roots, index));
+            mode, null, kind, Roots, index));
     }
 
     [Fact]

@@ -173,6 +173,20 @@ public class SourceViewModelJobKindTests
     }
 
     [Fact]
+    public void Next_WithPrevious_DropsPhotoDateGroups()
+    {
+        var previous = Sent(JobKind.Reorganize, [@"D:\Archive\2024"], TransferMode.Move, useFolderNames: true) with
+        {
+            PhotoDateGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { @"D:\Archive\2024\a.jpg" },
+        };
+
+        var vm = Create(JobKind.Reorganize, previous: previous);
+        vm.NextCommand.Execute(null);
+
+        Assert.Null(Assert.Single(_scanRequests).PhotoDateGroups); // 미리보기를 다시 열면 폴더 날짜로 돌아간다
+    }
+
+    [Fact]
     public void Back_AfterNext_ThenNextAgain_SendsTheSameChoices()
     {
         var first = Create(JobKind.Absorb);

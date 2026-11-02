@@ -41,6 +41,6 @@ public sealed class FileDetailViewModel(
     /// <summary>이번 실행에서 옮기지 않는 이유. 옮기면 null.</summary>
     public string? SkipNote { get; } = skipNote;
 
-    /// <summary>폴더 날짜와 사진 날짜가 다르다는 안내. 없으면 null.</summary>
+    /// <summary>이 파일의 폴더 날짜와 사진 날짜(또는 수정 시각)가 다르다는 안내. 없으면 null.</summary>
     public string? DateMismatch { get; } = dateMismatch;
 }

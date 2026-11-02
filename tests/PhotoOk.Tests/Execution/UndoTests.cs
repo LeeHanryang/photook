@@ -433,7 +433,7 @@ public class UndoTests
         var preset = BuiltInPresets.DateOnly;
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
         var plan = new Planner(_fs, new XxHasher(_fs))
-            .Create(new PlanRequest(sessions, preset, Archive, TransferMode.Move, TimeZoneInfo.Utc));
+            .Create(new PlanRequest(sessions, preset, Archive, TransferMode.Move));
         Assert.Contains(plan.Operations, o => o.Destination.Contains(".photook-tmp-", StringComparison.Ordinal));
 
         var run = Run(plan);
@@ -854,7 +854,7 @@ public class UndoTests
         var preset = BuiltInPresets.DateOnly;
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
         var plan = new Planner(_fs, new XxHasher(_fs))
-            .Create(new PlanRequest(sessions, preset, Archive, TransferMode.Move, TimeZoneInfo.Utc));
+            .Create(new PlanRequest(sessions, preset, Archive, TransferMode.Move));
         Assert.Contains(plan.Operations, o => o.Kind == OperationKind.Copy && o.Destination == $@"{Day14Dir}\P.JPG");
         Assert.Contains(plan.Operations, o => o.Kind == OperationKind.Move && o.Destination.Contains(".photook-tmp-"));
 

@@ -26,6 +26,21 @@
             <Setter Property="Margin" Value="0,0,24,0" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
+        <!-- 계획에서 나온 안내. 값이 없거나 계획이 아직 없으면 숨긴다. -->
+        <Style x:Key="PlanNotice" TargetType="TextBlock">
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="{StaticResource MismatchBrush}" />
+            <Setter Property="TextWrapping" Value="Wrap" />
+            <Setter Property="Margin" Value="0,6,0,0" />
+            <Style.Triggers>
+                <Trigger Property="Text" Value="">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </Trigger>
+                <DataTrigger Binding="{Binding HasPlan}" Value="False">
+                    <Setter Property="Visibility" Value="Collapsed" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
         <Style x:Key="FieldLabel" TargetType="TextBlock">
             <Setter Property="Opacity" Value="0.7" />
             <Setter Property="Margin" Value="0,6,12,0" />
@@ -111,17 +126,31 @@
                 <Button Content="모두 옮기기" Command="{Binding IncludeAllCommand}" Padding="8,2" Margin="0,0,6,0" VerticalAlignment="Center" />
                 <Button Content="모두 빼기" Command="{Binding ExcludeAllCommand}" Padding="8,2" Margin="0,0,24,0" VerticalAlignment="Center" />
                 <TextBlock Style="{StaticResource SummaryItem}" Text="{Binding ExcludedText}" FontWeight="SemiBold" Visibility="{Binding HasPlan, Converter={StaticResource BoolToVisibility}}" />
-                <TextBlock Text="{Binding DateMismatchText}" FontWeight="SemiBold" Foreground="{StaticResource MismatchBrush}">
+                <TextBlock Text="{Binding DateDifferText}" FontWeight="SemiBold" Foreground="{StaticResource MismatchBrush}">
                     <TextBlock.Style>
                         <Style TargetType="TextBlock" BasedOn="{StaticResource SummaryItem}">
                             <Style.Triggers>
-                                <DataTrigger Binding="{Binding DateMismatchText}" Value="{x:Null}">
+                                <DataTrigger Binding="{Binding DateDifferText}" Value="{x:Null}">
                                     <Setter Property="Visibility" Value="Collapsed" />
                                 </DataTrigger>
                             </Style.Triggers>
                         </Style>
                     </TextBlock.Style>
                 </TextBlock>
+                <!-- 날짜가 다른 파일이 있을 때만 보인다(값이 null이면 두 버튼을 함께 숨김). -->
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <StackPanel.Style>
+                        <Style TargetType="StackPanel">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding DateDifferText}" Value="{x:Null}">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </StackPanel.Style>
+                    <Button Content="모두 폴더 날짜로" Command="{Binding AllToFolderDateCommand}" Padding="8,2" Margin="0,0,6,0" VerticalAlignment="Center" />
+                    <Button Content="모두 사진 날짜로" Command="{Binding AllToPhotoDateCommand}" Padding="8,2" Margin="0,0,16,0" VerticalAlignment="Center" />
+                </StackPanel>
                 <TextBlock Style="{StaticResource SummaryItem}">
                     <Run Text="판단 필요" /> <Run Text="{Binding ReviewCount, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="개" />
                 </TextBlock>
@@ -176,6 +205,11 @@
                     </TextBlock.Style>
                 </TextBlock>
             </WrapPanel>
+            <!-- 긴 안내는 숫자 사이에 끼지 않게 요약 아래에 한 줄씩 둔다. -->
+            <StackPanel>
+                <TextBlock Text="{Binding DayFolderLostNotice}" Style="{StaticResource PlanNotice}" />
+                <TextBlock Text="{Binding PhotoDateRevertNotice}" Style="{StaticResource PlanNotice}" />
+            </StackPanel>
             <Expander Margin="0,8,0,0">
                 <Expander.Style>
                     <Style TargetType="Expander">
@@ -339,11 +373,37 @@
                                             </Style>
                                         </TextBlock.Style>
                                     </TextBlock>
-                                    <TextBlock Text="{Binding DateMismatch}" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap" Margin="0,4,0,0">
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <WrapPanel.Style>
+                                            <Style TargetType="WrapPanel">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding FolderDateNote}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </WrapPanel.Style>
+                                        <TextBlock Text="{Binding FolderDateNote}" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <Button Content="사진 날짜로 보내기" Command="{Binding SendToPhotoDateCommand}" Padding="8,2" VerticalAlignment="Center" />
+                                    </WrapPanel>
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <WrapPanel.Style>
+                                            <Style TargetType="WrapPanel">
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding PhotoDateNote}" Value="{x:Null}">
+                                                        <Setter Property="Visibility" Value="Collapsed" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </WrapPanel.Style>
+                                        <TextBlock Text="{Binding PhotoDateNote}" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                        <Button Content="폴더 날짜로 되돌리기" Command="{Binding BackToFolderDateCommand}" Padding="8,2" VerticalAlignment="Center" />
+                                    </WrapPanel>
+                                    <TextBlock Text="{Binding NoCaptureNote}" Foreground="{StaticResource MismatchBrush}" TextWrapping="Wrap" Margin="0,4,0,0">
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">
                                                 <Style.Triggers>
-                                                    <DataTrigger Binding="{Binding DateMismatch}" Value="{x:Null}">
+                                                    <DataTrigger Binding="{Binding NoCaptureNote}" Value="{x:Null}">
                                                         <Setter Property="Visibility" Value="Collapsed" />
                                                     </DataTrigger>
                                                 </Style.Triggers>
@@ -373,7 +433,7 @@
             <DockPanel Grid.Column="2">
                 <TextBlock DockPanel.Dock="Top" Text="선택한 촬영" Style="{StaticResource PaneTitle}" />
                 <ListBox DockPanel.Dock="Top" ItemsSource="{Binding Thumbnails}" SelectedItem="{Binding SelectedThumbnail}"
-                         MaxHeight="300" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                         MaxHeight="210" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                     <ListBox.ItemsPanel>
                         <ItemsPanelTemplate>
                             <WrapPanel />

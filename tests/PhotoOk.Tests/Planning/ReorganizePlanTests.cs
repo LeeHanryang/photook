@@ -43,7 +43,7 @@ public class ReorganizePlanTests
         IReadOnlyDictionary<string, string>? names = null, Func<FileGroup, string?>? nameOf = null, bool splitMultiDay = false)
     {
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc, nameOf);
-        return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc, names,
+        return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode, names,
             kind, roots ?? Roots, null, keepReview, subfolders, keptOf, SplitMultiDayFolders: splitMultiDay));
     }
 

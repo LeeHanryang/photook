@@ -59,7 +59,7 @@ public sealed class Planner(IFileSystem fileSystem, IHasher hasher)
                     continue;
                 }
 
-                var relative = renderer.RenderDirectory(new LayoutInput(session, group, reasons, request.Zone,
+                var relative = renderer.RenderDirectory(new LayoutInput(session, group, reasons,
                     request.EventNames?.GetValueOrDefault(session.Id), OmitOriginalFolder: kept.Count > 0));
                 var directory = TargetDirectory(request, group, root, relative, kept);
                 if (!SamePath(directory, root) && !IsUnder(directory, root))

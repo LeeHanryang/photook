@@ -15,6 +15,8 @@ public sealed partial class SessionItemViewModel : ObservableObject
     private readonly Action<SessionItemViewModel>? _thumbnailNeeded;
     private readonly Action<SessionItemViewModel>? _neverUseName;
     private readonly Action<SessionItemViewModel>? _includeToggled;
+    private readonly Action<SessionItemViewModel>? _sendToPhotoDate;
+    private readonly Action<SessionItemViewModel>? _backToFolderDate;
     private readonly bool _suggestedFromFormat;
     private int _excludedGroups;
     private int _excludedFiles;
@@ -38,18 +40,32 @@ public sealed partial class SessionItemViewModel : ObservableObject
     /// <param name="note">제목 아래에 보일 안내(재정리의 판단 필요 카드). 없으면 null.</param>
     /// <param name="suggestedFromFormat">읽어 온 이름이 프리셋 형식에서 왔다. 제외 목록을 따르지 않는 이름이라 "이 이름 다시 쓰지 않기"를 보이지 않는다.</param>
     /// <param name="includeToggled">"이번에 옮기기" 체크박스를 눌렀을 때 부를 알림. 뺀 상태는 부모가 파일 묶음마다 기억한다.</param>
-    /// <param name="dateMismatch">폴더 날짜와 사진 날짜가 다르다는 안내. 없으면 null.</param>
+    /// <param name="noCaptureNote">촬영 시각이 없는 파일의 폴더 날짜가 수정 시각과 다르다는 안내. 없으면 null.</param>
     /// <param name="showIncludeCheckBox">"이번에 옮기기" 체크박스를 보인다. 옵션 때문에 어차피 제자리인 판단 필요 카드에는 보이지 않는다.</param>
+    /// <param name="folderDateNote">폴더 날짜로 정리하는데 사진 날짜가 다른 파일이 있다는 안내. 없으면 null.</param>
+    /// <param name="photoDateNote">사진 날짜로 보낸 파일이 있다는 안내. 없으면 null.</param>
+    /// <param name="folderDateGroups">이 카드에서 사진 날짜로 보낼 수 있는 묶음의 Id. 없으면 빈 목록.</param>
+    /// <param name="photoDateGroups">이 카드에서 폴더 날짜로 되돌릴 수 있는 묶음의 Id. 없으면 빈 목록.</param>
+    /// <param name="sendToPhotoDate">"사진 날짜로 보내기"를 눌렀을 때 부를 알림.</param>
+    /// <param name="backToFolderDate">"폴더 날짜로 되돌리기"를 눌렀을 때 부를 알림.</param>
     public SessionItemViewModel(string sessionId, string title, string devices, bool isReviewGroup,
         IReadOnlyList<string> files, string? suggestedEventName, Action<SessionItemViewModel>? eventNameChanged,
         Action<SessionItemViewModel>? thumbnailNeeded = null, Action<SessionItemViewModel>? neverUseName = null,
         string? note = null, bool suggestedFromFormat = false, Action<SessionItemViewModel>? includeToggled = null,
-        string? dateMismatch = null, bool showIncludeCheckBox = true)
+        string? noCaptureNote = null, bool showIncludeCheckBox = true, string? folderDateNote = null, string? photoDateNote = null,
+        IReadOnlyList<string>? folderDateGroups = null, IReadOnlyList<string>? photoDateGroups = null,
+        Action<SessionItemViewModel>? sendToPhotoDate = null, Action<SessionItemViewModel>? backToFolderDate = null)
     {
         ShowIncludeCheckBox = showIncludeCheckBox;
         _suggestedFromFormat = suggestedFromFormat;
         _includeToggled = includeToggled;
-        DateMismatch = dateMismatch;
+        NoCaptureNote = noCaptureNote;
+        FolderDateNote = folderDateNote;
+        PhotoDateNote = photoDateNote;
+        FolderDateGroups = folderDateGroups ?? [];
+        PhotoDateGroups = photoDateGroups ?? [];
+        _sendToPhotoDate = sendToPhotoDate;
+        _backToFolderDate = backToFolderDate;
         SessionId = sessionId;
         Title = title;
         Devices = devices;
@@ -101,8 +117,20 @@ public sealed partial class SessionItemViewModel : ObservableObject
 
     public IReadOnlyList<string> Files { get; }
 
-    /// <summary>폴더 날짜와 사진 날짜가 다르다는 안내. 없으면 null.</summary>
-    public string? DateMismatch { get; }
+    /// <summary>촬영 시각이 없는 파일의 폴더 날짜가 수정 시각과 다르다는 안내. 없으면 null.</summary>
+    public string? NoCaptureNote { get; }
+
+    /// <summary>폴더 날짜로 정리하는데 사진 날짜가 다른 파일이 있다는 안내. 없으면 null.</summary>
+    public string? FolderDateNote { get; }
+
+    /// <summary>사진 날짜로 보낸 파일이 있다는 안내. 없으면 null.</summary>
+    public string? PhotoDateNote { get; }
+
+    /// <summary>폴더 날짜로 정리하는데 사진 날짜가 다른 묶음의 Id. "사진 날짜로 보내기"가 듣는 묶음이다.</summary>
+    public IReadOnlyList<string> FolderDateGroups { get; }
+
+    /// <summary>사진 날짜로 보낸 묶음의 Id. "폴더 날짜로 되돌리기"가 듣는 묶음이다.</summary>
+    public IReadOnlyList<string> PhotoDateGroups { get; }
 
     /// <summary>"이번에 옮기기" 체크박스를 보이는가.</summary>
     public bool ShowIncludeCheckBox { get; }
@@ -154,6 +182,14 @@ public sealed partial class SessionItemViewModel : ObservableObject
     /// <summary>체크박스를 눌렀다. 어느 쪽으로 바꿀지는 부모가 지금 상태를 보고 정한다.</summary>
     [RelayCommand]
     private void ToggleIncluded() => _includeToggled?.Invoke(this);
+
+    /// <summary>이 카드에서 날짜가 다른 묶음을 사진 날짜로 보낸다. 날짜가 같은 파일은 그대로다.</summary>
+    [RelayCommand]
+    private void SendToPhotoDate() => _sendToPhotoDate?.Invoke(this);
+
+    /// <summary>이 카드에서 사진 날짜로 보낸 묶음을 폴더 날짜로 되돌린다.</summary>
+    [RelayCommand]
+    private void BackToFolderDate() => _backToFolderDate?.Invoke(this);
 
     /// <summary>이 카드에서 뺀 묶음 수와 그 파일 수(대표·딸린 파일), 옮길 수 있는 묶음 수(모르면 카드의 모든 묶음)를 알린다.</summary>
     internal void SetExclusion(int excludedGroups, int excludedFiles, int? movableGroups = null)

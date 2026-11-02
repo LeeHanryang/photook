@@ -98,11 +98,12 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
         if (settings.Kind == JobKind.Import)
         {
             // 가져오기는 이름을 읽지 않으므로 제외 단어 파일도 기기 어휘도 필요 없다.
-            return SessionGrouper.GroupByDay(groups, settings.Preset.DayStart, zone);
+            return SessionGrouper.GroupByDay(groups, settings.Preset.DayStart, zone, dayOf: settings.DayResolver(zone).Resolve);
         }
 
         var reader = NameReader(settings, groups);
-        return SessionGrouper.GroupByDay(groups, settings.Preset.DayStart, zone, reader.Read, reader.IsFormatName);
+        return SessionGrouper.GroupByDay(groups, settings.Preset.DayStart, zone, reader.Read, reader.IsFormatName,
+            settings.DayResolver(zone).Resolve);
     }
 
     private EventNameReader NameReader(ImportSettings settings, IReadOnlyList<FileGroup> groups)
@@ -123,7 +124,7 @@ public sealed class ImportWorkflow(IFileSystem fileSystem, IMetadataReader reade
 
         // 판단 필요 파일을 제자리에 두는 것은 재정리뿐이다(설정의 기본값은 켬이므로 여기서 가른다).
         var plan = new Planner(fileSystem, _hasher).Create(
-            new PlanRequest(scan.Sessions, settings.Preset, settings.ArchiveRoot, settings.Mode, zone, eventNames,
+            new PlanRequest(scan.Sessions, settings.Preset, settings.ArchiveRoot, settings.Mode, eventNames,
                 settings.Kind, settings.Sources, scan.Index,
                 settings.Kind == JobKind.Reorganize && settings.KeepReviewInPlace,
                 settings.Subfolders, KeptFoldersOf(settings, scan), excludedGroups, settings.SplitMultiDayFolders));

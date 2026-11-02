@@ -37,6 +37,24 @@ public class SessionGrouperTests
     }
 
     [Fact]
+    public void GroupByDay_UsesGivenDay()
+    {
+        var groups = new[]
+        {
+            Group(@"D:\S\a.jpg", T(10, 14, 9)),
+            Group(@"D:\S\b.jpg", T(10, 16, 9)),
+        };
+
+        var sessions = SessionGrouper.GroupByDay(groups, TimeOnly.MinValue, Utc, dayOf: _ => new DateOnly(2026, 10, 15));
+
+        var session = Assert.Single(sessions);
+        Assert.Equal("2026-10-15", session.Id);
+        Assert.Equal(new DateOnly(2026, 10, 15), session.Start);
+        Assert.Equal(new DateOnly(2026, 10, 15), session.End);
+        Assert.Equal(2, session.Groups.Count);
+    }
+
+    [Fact]
     public void GroupByDay_UsesDayStart()
     {
         var groups = new[] { Group(@"D:\S\a.jpg", T(10, 15, 3, 30)) };

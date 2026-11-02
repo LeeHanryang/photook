@@ -10,12 +10,14 @@ using PhotoOk.Core.Sessions;
 namespace PhotoOk.Core.Layout;
 
 /// <param name="OmitOriginalFolder">원래 폴더를 유지할 폴더가 따로 나타내므로 <c>{원래폴더}</c>를 빈 값으로 본다.</param>
-public sealed record LayoutInput(Session Session, FileGroup Group, IReadOnlyList<ReviewReason> Reasons, TimeZoneInfo Zone,
+public sealed record LayoutInput(Session Session, FileGroup Group, IReadOnlyList<ReviewReason> Reasons,
     string? EventName = null, bool OmitOriginalFolder = false);
 
 /// <summary>프리셋의 폴더 템플릿을 파일 그룹마다 실제 상대 폴더로 바꾼다.</summary>
 public sealed class LayoutRenderer(Preset preset)
 {
+    private static readonly HashSet<string> DateTokens = new(StringComparer.Ordinal) { "연도", "월", "일", "날짜", "기간" };
+
     private readonly DeviceAliasResolver _devices = new(preset.DeviceAliases);
     private readonly ConcurrentDictionary<string, PathTemplate> _templates = new(StringComparer.Ordinal);
 
@@ -32,6 +34,14 @@ public sealed class LayoutRenderer(Preset preset)
         }
 
         throw new InvalidOperationException("조건에 맞는 분기가 없습니다");
+    }
+
+    /// <summary>이 사유로 고르는 분기의 폴더 단계에 날짜 토큰(연도·월·일·날짜·기간)이 하나라도 있는가. 없으면 어느 날짜로 보내도 대상이 같다.</summary>
+    public bool UsesDate(IReadOnlyList<ReviewReason> reasons)
+    {
+        ArgumentNullException.ThrowIfNull(reasons);
+        return SelectBranch(reasons).Levels.Any(level =>
+            _templates.GetOrAdd(level.Template, PathTemplate.Parse).Tokens.Any(DateTokens.Contains));
     }
 
     /// <summary>아카이브 루트 기준 상대 폴더. 구분자는 <c>\</c>.</summary>
@@ -135,10 +145,10 @@ public sealed class LayoutRenderer(Preset preset)
         var culture = CultureInfo.InvariantCulture;
         switch (part.Token)
         {
-            case "연도": return ShootDay(input).ToString(part.Format ?? "yyyy", culture);
-            case "월": return ShootDay(input).ToString(part.Format ?? "MM", culture);
-            case "일": return ShootDay(input).ToString(part.Format ?? "dd", culture);
-            case "날짜": return ShootDay(input).ToString(part.Format ?? "yyyy-MM-dd", culture);
+            case "연도": return input.Session.Start.ToString(part.Format ?? "yyyy", culture);
+            case "월": return input.Session.Start.ToString(part.Format ?? "MM", culture);
+            case "일": return input.Session.Start.ToString(part.Format ?? "dd", culture);
+            case "날짜": return input.Session.Start.ToString(part.Format ?? "yyyy-MM-dd", culture);
             case "기간": return PeriodFormatter.Format(input.Session.Start, input.Session.End);
             case "기기": return _devices.Resolve(primary) ?? "";
             case "제조사": return primary.CameraMake?.Trim() ?? "";
@@ -151,9 +161,6 @@ public sealed class LayoutRenderer(Preset preset)
             default: throw new InvalidOperationException($"알 수 없는 토큰: {{{part.Token}}}");
         }
     }
-
-    private DateOnly ShootDay(LayoutInput input) =>
-        ShootDate.ShootDay(ShootDate.EffectiveTime(input.Group.Primary, input.Zone), preset.DayStart);
 
     private string FormatGroupName(PhotoInfo primary)
     {

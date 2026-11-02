@@ -46,7 +46,7 @@ public class ExclusionPlanTests
     {
         preset ??= BuiltInPresets.DateOnly;
         var sessions = SessionGrouper.GroupByDay(groups, preset.DayStart, TimeZoneInfo.Utc);
-        return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode, TimeZoneInfo.Utc,
+        return new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, preset, Archive, mode,
             Kind: kind, Roots: roots ?? [Archive], Index: index, KeepReviewInPlace: keepReview, Subfolders: subfolders, KeptFoldersOf: keptOf,
             ExcludedGroups: excluded?.ToHashSet(StringComparer.OrdinalIgnoreCase), SplitMultiDayFolders: split));
     }
@@ -91,7 +91,7 @@ public class ExclusionPlanTests
         var sessions = SessionGrouper.GroupByDay([Group(kept)], BuiltInPresets.DateOnly.DayStart, TimeZoneInfo.Utc);
 
         var plan = new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, BuiltInPresets.DateOnly, Archive, TransferMode.Move,
-            TimeZoneInfo.Utc, Kind: JobKind.Reorganize, ExcludedGroups: new HashSet<string>(StringComparer.Ordinal) { kept.Path.ToUpperInvariant() }));
+            Kind: JobKind.Reorganize, ExcludedGroups: new HashSet<string>(StringComparer.Ordinal) { kept.Path.ToUpperInvariant() }));
 
         Assert.Empty(plan.Operations);
         Assert.Equal(SkipReason.ExcludedByUser, Assert.Single(plan.Skipped).Reason);
@@ -288,7 +288,7 @@ public class ExclusionPlanTests
         var sessions = SessionGrouper.GroupByDay([Group(photo)], BuiltInPresets.DateOnly.DayStart, TimeZoneInfo.Utc);
 
         var plan = new Planner(_fs, new XxHasher(_fs)).Create(new PlanRequest(sessions, BuiltInPresets.DateOnly, @"D:\[2026-10-14~10-15] 소풍\Archive",
-            TransferMode.Move, TimeZoneInfo.Utc, Kind: JobKind.Reorganize));
+            TransferMode.Move, Kind: JobKind.Reorganize));
 
         Assert.Single(FileOps(plan));
     }

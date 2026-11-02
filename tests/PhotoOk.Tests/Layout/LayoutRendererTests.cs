@@ -9,7 +9,6 @@ namespace PhotoOk.Tests.Layout;
 
 public class LayoutRendererTests
 {
-    private static readonly TimeZoneInfo Utc = TimeZoneInfo.Utc;
     private static readonly DateTime Oct14 = new(2026, 10, 14, 10, 0, 0, DateTimeKind.Unspecified);
 
     private static FileGroup Group(string path, DateTime? capture = null, string? make = null, string? model = null,
@@ -26,7 +25,7 @@ public class LayoutRendererTests
     private static string Render(Preset preset, FileGroup group, IReadOnlyList<ReviewReason>? reasons = null,
         Session? session = null, string? eventName = null) =>
         new LayoutRenderer(preset).RenderDirectory(
-            new LayoutInput(session ?? SessionOf(group), group, reasons ?? [], Utc, eventName));
+            new LayoutInput(session ?? SessionOf(group), group, reasons ?? [], eventName));
 
     private static Preset OneBranch(params LevelTemplate[] levels) =>
         new("t", TimeOnly.MinValue, [new LayoutBranch("기본", BranchCondition.Always, levels)], [],
@@ -199,6 +198,42 @@ public class LayoutRendererTests
         Assert.Equal("판단 필요", renderer.SelectBranch([ReviewReason.OrphanSidecar]).Name);
     }
 
+    [Theory]
+    [InlineData("{연도}", true)]
+    [InlineData("{월}", true)]
+    [InlineData("{일}", true)]
+    [InlineData("{날짜}", true)]
+    [InlineData("{기간}", true)]
+    [InlineData("[{날짜:yyyy}] {이벤트}", true)]
+    [InlineData("{기기}", false)]
+    [InlineData("{포맷}", false)]
+    [InlineData("{사유}", false)]
+    [InlineData("{원래폴더}", false)]
+    [InlineData("판단 필요", false)]
+    public void UsesDate_IsTrueWhenTheSelectedBranchHasADateToken(string template, bool expected)
+    {
+        var renderer = new LayoutRenderer(OneBranch(new LevelTemplate("{기기}"), new LevelTemplate(template)));
+
+        Assert.Equal(expected, renderer.UsesDate([]));
+    }
+
+    [Fact]
+    public void UsesDate_LooksOnlyAtTheBranchTheReasonsSelect()
+    {
+        var withDate = new LayoutRenderer(BuiltInPresets.DateOnly);
+        var preset = new Preset("t", TimeOnly.MinValue,
+        [
+            new LayoutBranch("판단 필요", BranchCondition.NeedsReview, [new("{사유}")]),
+            new LayoutBranch("기본", BranchCondition.Always, [new("{연도}"), new("{날짜}")]),
+        ], [], BuiltInPresets.DateOnly.FormatGroups);
+        var renderer = new LayoutRenderer(preset);
+
+        Assert.True(renderer.UsesDate([]));
+        Assert.False(renderer.UsesDate([ReviewReason.UnknownDevice]));
+        Assert.False(withDate.UsesDate([ReviewReason.UnknownDevice])); // 내장 프리셋의 판단 필요 갈래에는 날짜가 없다
+        Assert.True(withDate.UsesDate([]));
+    }
+
     [Fact]
     public void Render_FormatLookup_IsCaseInsensitive_AndExtensionTokenIsUpperCase()
     {
@@ -226,13 +261,13 @@ public class LayoutRendererTests
     }
 
     [Fact]
-    public void Render_UsesDayStart()
+    public void Render_DateTokens_UseSessionDay()
     {
-        var preset = new Preset("t", new TimeOnly(4, 0),
-            [new LayoutBranch("기본", BranchCondition.Always, [new LevelTemplate("{날짜}")])], [], new Dictionary<string, IReadOnlyList<string>>());
-        var group = Group(@"D:\S\a.jpg", new DateTime(2026, 10, 15, 2, 0, 0, DateTimeKind.Unspecified));
+        var preset = OneBranch(new LevelTemplate("{연도}"), new LevelTemplate("{월}"), new LevelTemplate("{일}"), new LevelTemplate("{날짜}"));
+        var group = Group(@"D:\S\a.jpg", Oct14);
 
-        Assert.Equal("2026-10-14", Render(preset, group, session: SessionOf(group)));
+        Assert.Equal(@"2026\10\15\2026-10-15",
+            Render(preset, group, session: SessionOf(group, start: new DateOnly(2026, 10, 15))));
     }
 
     [Fact]
@@ -250,7 +285,7 @@ public class LayoutRendererTests
         var preset = OneBranch(new LevelTemplate("판단 필요"), new LevelTemplate("{원래폴더}"));
 
         var result = new LayoutRenderer(preset).RenderDirectory(
-            new LayoutInput(SessionOf(group), group, [], Utc, OmitOriginalFolder: true));
+            new LayoutInput(SessionOf(group), group, [], OmitOriginalFolder: true));
 
         Assert.Equal("판단 필요", result);
     }
@@ -262,21 +297,9 @@ public class LayoutRendererTests
         var preset = OneBranch(new LevelTemplate("{날짜} {원래폴더}"));
 
         var result = new LayoutRenderer(preset).RenderDirectory(
-            new LayoutInput(SessionOf(group), group, [], Utc, OmitOriginalFolder: true));
+            new LayoutInput(SessionOf(group), group, [], OmitOriginalFolder: true));
 
         Assert.Equal("2026-10-14", result);
-    }
-
-    [Fact]
-    public void Render_FallsBackToLastWriteTime_InGivenZone()
-    {
-        var kst = TimeZoneInfo.FindSystemTimeZoneById("Korea Standard Time");
-        var group = Group(@"D:\S\a.jpg", null, lastWriteUtc: new DateTime(2026, 10, 14, 20, 0, 0, DateTimeKind.Utc));
-        var preset = OneBranch(new LevelTemplate("{날짜}"));
-
-        var result = new LayoutRenderer(preset).RenderDirectory(new LayoutInput(SessionOf(group), group, [], kst));
-
-        Assert.Equal("2026-10-15", result);
     }
 
     [Fact]

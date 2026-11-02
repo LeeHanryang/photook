@@ -2,6 +2,7 @@ using System.IO;
 using PhotoOk.Core.Execution;
 using PhotoOk.Core.Hashing;
 using PhotoOk.Core.Metadata;
+using PhotoOk.Core.Naming;
 using PhotoOk.Core.Planning;
 using PhotoOk.Core.Presets;
 using PhotoOk.Core.Scanning;
@@ -123,13 +124,14 @@ public class PreservationInvariantTests(ITestOutputHelper output)
         }
 
         public Scenario Plan(IReadOnlyList<string> sources, Preset preset, TransferMode mode, JobKind kind = JobKind.Import,
-            IReadOnlyList<string>? roots = null, IReadOnlySet<string>? excluded = null)
+            IReadOnlyList<string>? roots = null, IReadOnlySet<string>? excluded = null, Func<FileGroup, DateOnly>? dayOf = null,
+            SubfolderPolicy subfolders = SubfolderPolicy.Keep, Func<FileGroup, IReadOnlyList<string>>? keptFoldersOf = null)
         {
             var scan = new Scanner(Fs, Meta, FileKinds.Default).Scan(sources, recursive: true);
             Assert.Empty(scan.Errors);
-            var sessions = SessionGrouper.GroupByDay(scan.Groups, preset.DayStart, Zone);
-            var plan = new Planner(Fs, new XxHasher(Fs)).Create(new PlanRequest(sessions, preset, Archive, mode, Zone,
-                Kind: kind, Roots: roots, ExcludedGroups: excluded));
+            var sessions = SessionGrouper.GroupByDay(scan.Groups, preset.DayStart, Zone, dayOf: dayOf);
+            var plan = new Planner(Fs, new XxHasher(Fs)).Create(new PlanRequest(sessions, preset, Archive, mode,
+                Kind: kind, Roots: roots, Subfolders: subfolders, KeptFoldersOf: keptFoldersOf, ExcludedGroups: excluded));
             return new Scenario
             {
                 Fs = Fs, Originals = Originals, Preexisting = Preexisting, Plan = plan, MoveRun = mode == TransferMode.Move,
@@ -318,6 +320,94 @@ public class PreservationInvariantTests(ITestOutputHelper output)
         Assert.Equal(3, s.Plan.Operations.Count(o => o.Kind == OperationKind.Move));
         s.RemovedFolders = [$@"{Picked}\one", $@"{Picked}\gone\deep", $@"{Picked}\gone", ];
         s.KeptFolders = [Day14, $@"{Picked}\mixed", Picked, Trip, $@"{Trip}\sub"];
+        return s;
+    }
+
+    private const string Day16 = @"D:\Archive\2026\2026-10-16";
+
+    /// <summary>
+    /// 재정리(폴더 날짜와 사진 날짜가 섞임): 폴더 날짜로 가는 사진 둘(이름이 겹쳐 순번이 붙는다), 사진 날짜를 골라 다른 날짜 폴더로 가는 RAW+xmp 묶음,
+    /// 두 날짜가 같은 사진, 뺀 묶음 하나. 하위 폴더는 합친다(유지하면 날짜 폴더 안의 하위 폴더 파일은 제자리에 남는다). 뺀 묶음은 그대로 있고 그 폴더는 치우지 않으며, 빠져나간 폴더만 치운다.
+    /// </summary>
+    private static Scenario ReorganizeWithFolderAndPhotoDates()
+    {
+        var setup = new Setup();
+        var oct14 = new DateTime(2026, 10, 14, 9, 0, 0, DateTimeKind.Unspecified);
+        var oct16 = new DateTime(2026, 10, 16, 9, 0, 0, DateTimeKind.Unspecified);
+        string subA = $@"{Day15}\sub\a.jpg", otherA = $@"{Day15}\other\a.jpg", held = $@"{Day15}\held\ex.jpg";
+        string raw = $@"{Day16}\sub\b.NEF", xmp = $@"{Day16}\sub\b.xmp", deep = $@"{Day16}\deep\er\c.jpg";
+        setup.Original(subA, Bytes(1024 * 1024 + 13, 71), oct14); // 폴더 날짜(15일)로 간다
+        setup.Original(otherA, Bytes(660, 72), oct14.AddHours(1)); // 이름이 같고 내용이 다르다: 순번이 붙는다
+        setup.Original(raw, Bytes(1024 * 1024 + 21, 73), oct14); // 사진 날짜(14일)를 골랐다
+        setup.Original(xmp, Bytes(93, 74));
+        setup.Original(deep, Bytes(670, 75), oct16); // 폴더 날짜와 사진 날짜가 같다
+        setup.Original(held, Bytes(680, 76), oct14); // 뺀 묶음
+        setup.Untouched(held);
+
+        var preset = BuiltInPresets.DateOnly;
+        var photoDate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { raw };
+        var excluded = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { held };
+        string[] roots = [Archive];
+        var s = setup.Plan(roots, preset, TransferMode.Move, JobKind.Reorganize, roots, excluded,
+            new ShootDayResolver(preset.DayStart, Zone, JobKind.Reorganize, Archive, photoDate).Resolve, SubfolderPolicy.Merge);
+
+        string[] expectedDestinations =
+        [
+            $@"{Day15}\a.jpg", $@"{Day15}\a_1.jpg", $@"{Day14}\b.NEF", $@"{Day14}\b.xmp", $@"{Day16}\c.jpg",
+        ];
+        Assert.Equal(expectedDestinations.Order(StringComparer.OrdinalIgnoreCase),
+            s.Plan.Operations.Where(o => o.Kind == OperationKind.Move).Select(o => o.Destination).Order(StringComparer.OrdinalIgnoreCase));
+        Assert.Equal($@"{Day15}\a.jpg", s.Plan.Operations.Single(o => o.Source == subA).Destination);
+        Assert.Equal($@"{Day15}\a_1.jpg", s.Plan.Operations.Single(o => o.Source == otherA).Destination);
+        Assert.Equal($@"{Day14}\b.NEF", s.Plan.Operations.Single(o => o.Source == raw).Destination);
+        Assert.Equal($@"{Day14}\b.xmp", s.Plan.Operations.Single(o => o.Source == xmp).Destination);
+        Assert.Equal($@"{Day16}\c.jpg", s.Plan.Operations.Single(o => o.Source == deep).Destination);
+        Assert.Single(s.Plan.Skipped, k => k.Reason == SkipReason.ExcludedByUser);
+        foreach (var path in s.Bystanders.Keys)
+        {
+            Assert.DoesNotContain(s.Plan.Operations, o => string.Equals(o.Source, path, StringComparison.OrdinalIgnoreCase)
+                                                          || string.Equals(o.Destination, path, StringComparison.OrdinalIgnoreCase));
+        }
+
+        s.RemovedFolders = [$@"{Day15}\sub", $@"{Day15}\other", $@"{Day16}\sub", $@"{Day16}\deep\er", $@"{Day16}\deep"];
+        s.KeptFolders = [@"D:\Archive\2026", Day15, $@"{Day15}\held", Day16];
+        return s;
+    }
+
+    /// <summary>
+    /// 재정리(기본값 하위 폴더 유지, 폴더 날짜와 사진 날짜가 섞임): 이름 있는 하루 폴더가 유지할 폴더로 붙는다. 한 폴더의 두 사진은 폴더 날짜와
+    /// 사진 날짜로 갈라지고(같은 이름이 다른 날짜 폴더 아래로 간다), 사진 날짜를 고른 RAW+xmp 묶음도 자기 폴더 이름을 달고 간다. 비게 된 옛 폴더만 치운다.
+    /// </summary>
+    private static Scenario ReorganizeWithKeptFoldersAndPhotoDates()
+    {
+        var setup = new Setup();
+        var oct14 = new DateTime(2026, 10, 14, 9, 0, 0, DateTimeKind.Unspecified);
+        var oct15 = new DateTime(2026, 10, 15, 9, 0, 0, DateTimeKind.Unspecified);
+        const string daily = @"D:\Archive\2026\[2026-10-15] 일상";
+        const string outing = @"D:\Archive\2026\[2026-10-16] 소풍";
+        string folderDated = $@"{daily}\a.jpg", photoDated = $@"{daily}\b.jpg", raw = $@"{outing}\c.NEF", xmp = $@"{outing}\c.xmp";
+        setup.Original(folderDated, Bytes(1024 * 1024 + 17, 81), oct14); // 폴더 날짜(15일)로 간다
+        setup.Original(photoDated, Bytes(710, 82), oct14); // 사진 날짜(14일)를 골랐다
+        setup.Original(raw, Bytes(1024 * 1024 + 29, 83), oct15); // 사진 날짜(15일)를 골랐다
+        setup.Original(xmp, Bytes(95, 84));
+
+        var preset = BuiltInPresets.DateOnly;
+        string[] roots = [Archive];
+        var photoDate = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { photoDated, raw };
+        var reader = new EventNameReader(preset, JobKind.Reorganize, useFolderNames: true, roots,
+            new FolderNameContext(DeviceVocabulary.Empty, IgnoredFolderNames.Empty), splitUnderscores: false, Archive);
+        var s = setup.Plan(roots, preset, TransferMode.Move, JobKind.Reorganize, roots, excluded: null,
+            new ShootDayResolver(preset.DayStart, Zone, JobKind.Reorganize, Archive, photoDate).Resolve, SubfolderPolicy.Keep, reader.KeptFolders);
+
+        string[] expectedDestinations =
+        [
+            $@"{Day15}\[2026-10-15] 일상\a.jpg", $@"{Day14}\[2026-10-15] 일상\b.jpg",
+            $@"{Day15}\[2026-10-16] 소풍\c.NEF", $@"{Day15}\[2026-10-16] 소풍\c.xmp",
+        ];
+        Assert.Equal(expectedDestinations.Order(StringComparer.OrdinalIgnoreCase),
+            s.Plan.Operations.Where(o => o.Kind == OperationKind.Move).Select(o => o.Destination).Order(StringComparer.OrdinalIgnoreCase));
+        s.RemovedFolders = [daily, outing];
+        s.KeptFolders = [@"D:\Archive\2026"];
         return s;
     }
 
@@ -557,6 +647,14 @@ public class PreservationInvariantTests(ITestOutputHelper output)
         CrashExecuteAtEveryStep("재정리(뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay, minimumOps: 20);
 
     [Fact]
+    public void ReorganizeRun_WithFolderAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashExecuteAtEveryStep("재정리(폴더 날짜와 사진 날짜)", ReorganizeWithFolderAndPhotoDates, minimumOps: 45);
+
+    [Fact]
+    public void ReorganizeRun_WithKeptFoldersAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashExecuteAtEveryStep("재정리(유지한 폴더, 폴더 날짜와 사진 날짜)", ReorganizeWithKeptFoldersAndPhotoDates, minimumOps: 45);
+
+    [Fact]
     public void AbsorbMoveRun_WithExcluded_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashExecuteAtEveryStep("흡수 이동(뺀 파일)", AbsorbMoveWithExcluded, minimumOps: 15);
 
@@ -630,6 +728,14 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     public void ReorganizeRun_WithExcludedAndMultiDay_UndoRightAfterCrash_RestoresFiles_AtEveryStep() =>
         CrashThenUndoAtEveryStep("재정리(뺀 파일, 여러 날 폴더, 끊긴 뒤 바로 되돌리기)", ReorganizeWithExcludedAndMultiDay);
 
+    [Fact]
+    public void ReorganizeRun_WithFolderAndPhotoDates_UndoRightAfterCrash_RestoresFiles_AtEveryStep() =>
+        CrashThenUndoAtEveryStep("재정리(폴더 날짜와 사진 날짜, 끊긴 뒤 바로 되돌리기)", ReorganizeWithFolderAndPhotoDates);
+
+    [Fact]
+    public void ReorganizeRun_WithKeptFoldersAndPhotoDates_UndoRightAfterCrash_RestoresFiles_AtEveryStep() =>
+        CrashThenUndoAtEveryStep("재정리(유지한 폴더, 폴더 날짜와 사진 날짜, 끊긴 뒤 바로 되돌리기)", ReorganizeWithKeptFoldersAndPhotoDates);
+
     /// <summary>폴더를 일부만 치운 채 끊긴 경우를 포함해, 어느 시점에 끊겨도 이어 하지 않고 되돌리면 처음과 같아야 한다.</summary>
     private void CrashThenUndoAtEveryStep(string name, Func<Scenario> build)
     {
@@ -688,6 +794,14 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     [Fact]
     public void Resume_ReorganizeRun_WithExcludedAndMultiDay_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashResumeAtEveryStep("이어 하기(재정리, 뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay, copyTempRequired: false);
+
+    [Fact]
+    public void Resume_ReorganizeRun_WithFolderAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(재정리, 폴더 날짜와 사진 날짜)", ReorganizeWithFolderAndPhotoDates, copyTempRequired: false);
+
+    [Fact]
+    public void Resume_ReorganizeRun_WithKeptFoldersAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashResumeAtEveryStep("이어 하기(재정리, 유지한 폴더, 폴더 날짜와 사진 날짜)", ReorganizeWithKeptFoldersAndPhotoDates, copyTempRequired: false);
 
     /// <summary>
     /// 실행을 작업 도중(기록에 Started로 남은 작업이 있고, <paramref name="copyTempRequired"/>면 쓰다 만 복사 임시 파일도 있는 시점)
@@ -778,6 +892,14 @@ public class PreservationInvariantTests(ITestOutputHelper output)
     [Fact]
     public void Undo_ReorganizeRun_WithExcludedAndMultiDay_PreservesFiles_WhenCrashingAtEveryStep() =>
         CrashUndoAtEveryStep("되돌리기(재정리, 뺀 파일, 여러 날 폴더)", ReorganizeWithExcludedAndMultiDay);
+
+    [Fact]
+    public void Undo_ReorganizeRun_WithFolderAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashUndoAtEveryStep("되돌리기(재정리, 폴더 날짜와 사진 날짜)", ReorganizeWithFolderAndPhotoDates);
+
+    [Fact]
+    public void Undo_ReorganizeRun_WithKeptFoldersAndPhotoDates_PreservesFiles_WhenCrashingAtEveryStep() =>
+        CrashUndoAtEveryStep("되돌리기(재정리, 유지한 폴더, 폴더 날짜와 사진 날짜)", ReorganizeWithKeptFoldersAndPhotoDates);
 
     private void CrashUndoAtEveryStep(string name, Func<Scenario> build)
     {
